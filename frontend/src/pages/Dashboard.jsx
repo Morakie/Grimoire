@@ -5,7 +5,7 @@ import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -147,7 +147,10 @@ export default function Dashboard() {
 
       <Dialog open={newOpen} onOpenChange={setNewOpen}>
         <DialogContent className="bg-slate-900 border-slate-700 text-slate-100" data-testid="new-deck-dialog">
-          <DialogHeader><DialogTitle className="font-display">New deck</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle className="font-display">New deck</DialogTitle>
+            <DialogDescription className="text-slate-400">Name your deck and pick a format to start building.</DialogDescription>
+          </DialogHeader>
           <div className="space-y-4 py-2">
             <div>
               <Label className="text-slate-300">Deck name</Label>

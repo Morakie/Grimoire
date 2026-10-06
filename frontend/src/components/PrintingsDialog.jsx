@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import api from "@/lib/api";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Loader2, Check } from "lucide-react";
 
 export default function PrintingsDialog({ open, onOpenChange, card, onSelect }) {
@@ -22,6 +22,7 @@ export default function PrintingsDialog({ open, onOpenChange, card, onSelect }) 
       <DialogContent className="bg-slate-900/95 backdrop-blur-xl border-slate-700 text-slate-100 max-w-3xl max-h-[85vh] overflow-hidden flex flex-col" data-testid="printings-dialog">
         <DialogHeader>
           <DialogTitle className="font-display">Choose printing — {card?.name}</DialogTitle>
+          <DialogDescription className="text-slate-400">Select an alternate printing to change this card's displayed art.</DialogDescription>
         </DialogHeader>
         <div className="overflow-y-auto flex-1 -mx-2 px-2">
           {loading && <div className="h-40 flex items-center justify-center"><Loader2 className="w-7 h-7 text-amber-400 animate-spin" /></div>}

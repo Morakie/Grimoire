@@ -20,6 +20,7 @@ function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+            <Route path="/build" element={<DeckBuilder />} />
             <Route path="/deck/:id" element={<ProtectedRoute><DeckBuilder /></ProtectedRoute>} />
             <Route path="/d/:shareId" element={<PublicDeck />} />
           </Routes>

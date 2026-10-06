@@ -16,7 +16,7 @@ const features = [
 export default function Landing() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const cta = user ? "/dashboard" : "/register";
+  const cta = "/build";
 
   return (
     <div className="min-h-screen bg-[#060a14] text-slate-100 grim-grain">
