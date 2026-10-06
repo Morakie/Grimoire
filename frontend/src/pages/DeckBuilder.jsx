@@ -1,17 +1,18 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import api from "@/lib/api";
-import CardSearchPanel from "@/components/CardSearchPanel";
+import CardSearchBar from "@/components/CardSearchBar";
 import DeckBoard from "@/components/DeckBoard";
 import DeckStats from "@/components/DeckStats";
 import PrintingsDialog from "@/components/PrintingsDialog";
 import ImportDialog from "@/components/ImportDialog";
+import ExportDialog from "@/components/ExportDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { ArrowLeft, Share2, Save, Loader2, Check, Copy, BarChart3, Upload } from "lucide-react";
+import { ArrowLeft, Share2, Save, Loader2, Check, Copy, BarChart3, Upload, Download } from "lucide-react";
 import { FORMATS, maxCopies, isBasicLand } from "@/lib/mtg";
 import { useAuth } from "@/context/AuthContext";
 import AuthDialog from "@/components/AuthDialog";
@@ -37,8 +38,8 @@ export default function DeckBuilder() {
   const [shareOpen, setShareOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [printingCtx, setPrintingCtx] = useState(null);
-  const [mobileTab, setMobileTab] = useState("deck");
   const skipSave = useRef(true);
   const saveTimer = useRef(null);
 
@@ -221,6 +222,9 @@ export default function DeckBuilder() {
             <Button data-testid="import-btn" variant="outline" size="sm" onClick={() => setImportOpen(true)} className="bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
               <Upload className="w-4 h-4 sm:mr-1" /> <span className="hidden sm:inline">Import</span>
             </Button>
+            <Button data-testid="export-btn" variant="outline" size="sm" onClick={() => setExportOpen(true)} className="bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
+              <Download className="w-4 h-4 sm:mr-1" /> <span className="hidden sm:inline">Export</span>
+            </Button>
             <Sheet>
               <SheetTrigger asChild>
                 <Button data-testid="mobile-stats-btn" variant="outline" size="sm" className="xl:hidden bg-slate-900 border-slate-700 text-slate-200"><BarChart3 className="w-4 h-4" /></Button>
@@ -238,40 +242,21 @@ export default function DeckBuilder() {
             </Button>
           </div>
         </div>
-        {/* Add target + mobile tabs */}
-        <div className="px-4 pb-3 flex items-center gap-3 flex-wrap">
-          <span className="text-xs text-slate-500">Add to:</span>
-          <div className="flex rounded-lg border border-slate-700 overflow-hidden">
-            {targets.map((t) => (
-              <button key={t.key} data-testid={`target-${t.key}`} onClick={() => setTarget(t.key)}
-                className={`px-3 py-1.5 text-xs font-medium transition-colors ${target === t.key ? "bg-amber-400 text-stone-900" : "bg-slate-900 text-slate-300 hover:bg-slate-800"}`}>
-                {t.label}
-              </button>
-            ))}
-          </div>
-          <div className="flex rounded-lg border border-slate-700 overflow-hidden lg:hidden ml-auto">
-            {["search", "deck"].map((t) => (
-              <button key={t} data-testid={`mobile-tab-${t}`} onClick={() => setMobileTab(t)}
-                className={`px-3 py-1.5 text-xs font-medium capitalize transition-colors ${mobileTab === t ? "bg-slate-700 text-white" : "bg-slate-900 text-slate-300"}`}>{t}</button>
-            ))}
-          </div>
+        {/* Find & add cards */}
+        <div className="px-4 pb-3">
+          <CardSearchBar onAdd={addCard} target={target} setTarget={setTarget} targets={targets} />
         </div>
       </header>
 
       {/* Body */}
       <div className="flex-1 flex overflow-hidden">
-        <div className={`${mobileTab === "search" ? "flex" : "hidden"} lg:flex w-full lg:w-[38%] shrink-0 h-full`}>
-          <CardSearchPanel onAdd={addCard} targetLabel={targets.find((t) => t.key === target)?.label || "Mainboard"} />
+        <div className="flex-1 flex flex-col min-w-0 bg-[#0a1120]">
+          <DeckBoard deck={deck} format={deck.format} showCommander={showCommander}
+            onQty={changeQty} onRemove={removeCard} onPrintings={openPrintings} onCardsChange={onCardsChange} />
         </div>
-        <div className={`${mobileTab === "deck" ? "flex" : "hidden"} lg:flex flex-1 min-w-0`}>
-          <div className="flex-1 flex flex-col min-w-0 bg-[#0a1120]">
-            <DeckBoard deck={deck} format={deck.format} showCommander={showCommander}
-              onQty={changeQty} onRemove={removeCard} onPrintings={openPrintings} onCardsChange={onCardsChange} />
-          </div>
-          <aside className="w-80 border-l border-slate-800 bg-[#070c17] overflow-y-auto p-4 hidden xl:block" data-testid="stats-sidebar">
-            <DeckStats cards={analyticsCards} />
-          </aside>
-        </div>
+        <aside className="w-80 border-l border-slate-800 bg-[#070c17] overflow-y-auto p-4 hidden xl:block" data-testid="stats-sidebar">
+          <DeckStats cards={analyticsCards} />
+        </aside>
       </div>
 
       {/* Share dialog */}
@@ -291,6 +276,7 @@ export default function DeckBuilder() {
       <PrintingsDialog open={!!printingCtx} onOpenChange={(o) => !o && setPrintingCtx(null)} card={printingCtx?.card} onSelect={selectPrinting} />
       <AuthDialog open={authOpen} onOpenChange={setAuthOpen} onSuccess={onAuthSuccess} />
       <ImportDialog open={importOpen} onOpenChange={setImportOpen} onImport={applyImport} />
+      <ExportDialog open={exportOpen} onOpenChange={setExportOpen} deck={deck} />
     </div>
   );
 }

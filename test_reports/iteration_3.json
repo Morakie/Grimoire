@@ -1,0 +1,33 @@
+{
+  "summary": "Iteration 3: Full regression + new DeckBoard feature testing on Grimoire (view/group/sort toolbar, grouped columns, drag-and-drop reorder/cross-group/cross-section, group_overrides persistence). Backend: 23/23 pytest pass including new test_group_overrides_roundtrip (PUT a DeckCard with group_overrides={cmc:'0', type:'Lands'} and GET returns the dict unchanged). Frontend (guest /build at 1920x1080): import of the specified decklist populates section-mainboard (38 cards) grouped into Creatures/Instants/Sorceries/Artifacts/Lands and section-sideboard (2 Pyroblast). All three toolbar dropdowns present and functional: view-select switches between Text rows and Visual Grid stacked card images (9 unique images rendered); group-select switches between Type / Mana Value (columns 0,1,2,4,5) / Color (White/Blue/Red/Green/Colorless) / Custom (single 'all' column); sort-select Name produces alphabetical within column (Goblin Guide, Llanowar Elves, Serra Angel) and Mana Value produces CMC-ordered. inc/dec/remove/printings controls work on board cards (Counterspell 2->3 via inc-<id>); basic land Mountain correctly shows 20 copies (above the 4 cap). DRAG verified: cross-group with Group=Mana Value — Serra Angel (CMC 5) dragged into column-mainboard-0 lands and persists there (group_overrides.cmc override works). DRAG cross-section — Sol Ring dragged from mainboard section to sideboard column, moved category successfully. Guest Save opens auth-dialog as expected. Public /d/<shareId> renders DeckBoard read-only: 0 inc-/0 remove-/0 drag- testids on the page, deck-board visible, view/group/sort selects still present and usable; group_overrides persisted through save (Lightning Bolt with override type='Lands' renders under the Lands column on the public page). Responsive: at 768px toolbar wrapper fits (718px wide, right=743); at 400px documentElement.scrollWidth == 400 (no horizontal overflow). Analytics sidebar shows Total 38, Avg Mana Value 1.94, mana curve + color distribution + card types all populate correctly. Pre-existing harmless Recharts width(-1) warning on empty-deck first-mount is NOT regressed. Everything in the request works as specified.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "DeckStats (empty-deck first mount)", "issues": ["Pre-existing Recharts width(-1)/height(-1) console warning when sidebar renders before cards are loaded. Harmless, not regressed."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_grimoire_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "DeckBoard.handleDragEnd correctly detects cross-group drops and sets card.group_overrides[group] = destGroup — enabling the user-override behavior described in the request.",
+    "DeckCard model in server.py exposes group_overrides: Dict[str,str] = {} and round-trips through PUT/GET (verified).",
+    "DeckBoard reads initial view/group/sort from localStorage keys grim_view/grim_group/grim_sort — matches spec.",
+    "DndContext uses PointerSensor with activationConstraint distance:5 — Playwright drag needs multiple intermediate mouse.move steps >5px, which was handled in the test harness.",
+    "DeckWorkspace.jsx is still present on disk but unused; safe to delete in a follow-up to reduce dead code.",
+    "DeckBoard.jsx is ~250 lines and remains focused — within guideline limits.",
+    "readOnly path correctly suppresses listeners/attributes and the edit buttons, while leaving the toolbar selects functional (verified on PublicDeck)."
+  ],
+  "updated_files": ["/app/backend/tests/test_grimoire_api.py"],
+  "success_rate": { "backend": "100% (23/23)", "frontend": "100% (all requested flows pass incl. UI drag)" },
+  "test_credentials": "admin@grimoire.gg / grimoire123",
+  "seed_data_creation": "Transient TEST_* registrations + TEST_Deck/TEST_Public created and cleaned up during tests.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "@dnd-kit PointerSensor requires intermediate mouse.move steps (>=5px activation distance). To drag reliably in Playwright: locate source via [data-testid=\"drag-<id>\"] (Text view) or [data-testid=\"deck-card-<id>\"] (Grid view), target via [data-testid=\"column-<cat>-<groupKey>\"], then mouse.move -> mouse.down -> ~10-15 interpolated mouse.move steps with ~40ms waits -> mouse.up. Group override keys match GROUP_ORDER (e.g. 'Lands' for type, '0'..'7+' for cmc, color labels White/Blue/.../Multicolor/Colorless). Guest board preferences persist in localStorage keys grim_view/grim_group/grim_sort — clear them if a test needs a known starting state.",
+  "rca of the issue": "No bugs found."
+}

@@ -156,6 +156,21 @@ class TestDecks:
         assert d["name"] == "TEST_Deck_Updated"
         assert len(d["mainboard"]) == 1 and d["mainboard"][0]["quantity"] == 2
 
+    def test_group_overrides_roundtrip(self, session, auth_headers):
+        """Verify DeckCard.group_overrides persists through PUT/GET."""
+        card = {"id": "ovr1", "name": "Serra Angel", "mana_cost": "{3}{W}{W}", "cmc": 5,
+                "type_line": "Creature — Angel", "colors": ["W"], "color_identity": ["W"],
+                "quantity": 1, "group_overrides": {"cmc": "0", "type": "Lands"}}
+        payload = {"name": "TEST_Deck_Updated", "format": "standard", "description": "d",
+                   "mainboard": [card], "sideboard": [], "commander": []}
+        r = session.put(f"{API}/decks/{TestDecks.deck_id}", json=payload, headers=auth_headers)
+        assert r.status_code == 200, r.text
+        r2 = session.get(f"{API}/decks/{TestDecks.deck_id}", headers=auth_headers)
+        assert r2.status_code == 200
+        mb = r2.json()["mainboard"]
+        assert len(mb) == 1
+        assert mb[0].get("group_overrides") == {"cmc": "0", "type": "Lands"}
+
     def test_public_share(self, session):
         r = session.get(f"{API}/decks/public/{TestDecks.share_id}")
         assert r.status_code == 200
