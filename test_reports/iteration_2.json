@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 2 regression + new-feature testing on Grimoire. Backend: 22/22 pytest pass including new endpoints POST /api/cards/collection (resolves Lightning Bolt/Counterspell/Mountain + reports FakeCardNameXyz as not_found) and GET /api/cards/autocomplete?q= (returns suggestion list; empty for <2 chars). Frontend: Guest /build flow verified end-to-end at 1920, 768 and 400 widths. Reported responsive bug is FIXED: header buttons do NOT overflow at any width (maxBtnRight <= headerRight at all three breakpoints) and the search panel renders FULL viewport width when the mobile-tab-search tab is active (768->768px, 400->400px). Import dialog successfully parses plain decklists, MTGA-style '(SET) NUMBER' suffixes, and emits a 'N not found: FakeCardNameXyz' toast while still importing valid cards. After import, inc-/dec-/remove- controls work; imported cards behave like normal deck cards. Autocomplete dropdown appears after 2 chars with 12 suggestions and clicking one runs a search. Full Scryfall search still returns results and Add adds cards. Guest Save opens auth-dialog as expected. Mobile stats sheet renders curve/color/types charts without layout breakage.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "DeckStats (empty-deck first mount)", "issues": ["Pre-existing Recharts width(-1)/height(-1) warning when sidebar renders before cards are present. Harmless console noise; not regressed by this iteration."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_grimoire_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "DeckBuilder.jsx body wrappers correctly use 'w-full lg:w-[38%] shrink-0' for the search column and 'flex-1 min-w-0' for the deck column, which resolves the previously reported ~120px collapsed search panel.",
+    "CardSearchPanel root is 'w-full h-full' (width controlled by parent) - good decoupling.",
+    "ImportDialog cleanName() strips (SET) NUM / *F* / [tags] / # comments and splits '//' DFC names - robust parsing.",
+    "server.py /api/cards/collection chunks names at 75 (Scryfall limit) and caps input at 400 - safe.",
+    "server.py /api/cards/autocomplete returns empty for len(q)<2 instead of 400 - matches frontend contract."
+  ],
+  "updated_files": ["/app/backend/tests/test_grimoire_api.py"],
+  "success_rate": { "backend": "100% (22/22)", "frontend": "100% (all critical paths pass)" },
+  "test_credentials": "admin@grimoire.gg / grimoire123",
+  "seed_data_creation": "Transient TEST_* registrations and TEST_Deck created/cleaned by backend tests.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Reproducing the search-panel-collapse bug requires using the mobile-tab-search tab at <1024px; current implementation gives the wrapper explicit 'w-full lg:w-[38%] shrink-0' so bounding boxes equal viewport width in mobile tab. Autocomplete suggestion buttons use onMouseDown instead of onClick - use dispatch_event('mousedown') or hover-first in Playwright. Standard-format max-4 cap disables inc- button once reached (expected). Scryfall is live external API; keep tolerant assertions.",
+  "rca of the issue": "Previous bug: parent flex gave CardSearchPanel ambiguous width causing it to collapse to ~120px on <1024. Fix: wrapper now 'w-full lg:w-[38%] shrink-0' and panel root 'w-full h-full'. Verified: at 768 and 400 widths the panel bounding box equals the viewport width."
+}

@@ -37,7 +37,7 @@ class TestAuth:
         r = session.post(f"{API}/auth/register", json={"email": email, "password": "secret123", "name": "Tester"})
         assert r.status_code == 200, r.text
         d = r.json()
-        assert "token" in d and d["user"]["email"] == email
+        assert "token" in d and d["user"]["email"].lower() == email.lower()
 
     def test_register_duplicate(self, session):
         r = session.post(f"{API}/auth/register", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD, "name": "x"})
@@ -86,6 +86,36 @@ class TestCards:
         r = session.get(f"{API}/cards/printings", params={"name": "Lightning Bolt"})
         assert r.status_code == 200
         assert len(r.json()["printings"]) >= 1
+
+    def test_autocomplete(self, session):
+        r = session.get(f"{API}/cards/autocomplete", params={"q": "light"})
+        assert r.status_code == 200
+        d = r.json()
+        assert "suggestions" in d
+        assert isinstance(d["suggestions"], list)
+        assert len(d["suggestions"]) > 0
+
+    def test_autocomplete_short_query(self, session):
+        r = session.get(f"{API}/cards/autocomplete", params={"q": "a"})
+        assert r.status_code == 200
+        assert r.json()["suggestions"] == []
+
+    def test_collection_resolve(self, session):
+        r = session.post(f"{API}/cards/collection",
+                         json={"names": ["Lightning Bolt", "Counterspell", "Mountain", "FakeCardNameXyz"]})
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert "cards" in d and "not_found" in d
+        names = {c["name"] for c in d["cards"]}
+        assert "Lightning Bolt" in names
+        assert "Counterspell" in names
+        assert "Mountain" in names
+        assert any("FakeCardNameXyz".lower() in nf.lower() for nf in d["not_found"])
+
+    def test_collection_empty(self, session):
+        r = session.post(f"{API}/cards/collection", json={"names": []})
+        assert r.status_code == 200
+        assert r.json()["cards"] == []
 
 
 # ----------------- Decks CRUD -----------------
