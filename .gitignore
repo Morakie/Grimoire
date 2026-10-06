@@ -85,3 +85,5 @@ android-sdk/
 **/.emergent/recordings/
 frontend/node_modules/.cache/default-development/8.pack
 frontend/node_modules/.cache/default-development/6.pack
+frontend/node_modules/.cache/default-development/11.pack
+frontend/node_modules/.cache/default-development/0.pack

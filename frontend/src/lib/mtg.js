@@ -112,3 +112,52 @@ export const FORMATS = [
 export function formatLabel(value) {
   return (FORMATS.find((f) => f.value === value) || {}).label || value;
 }
+
+// ---------- Board view: grouping / sorting ----------
+
+export function colorGroup(card) {
+  const ci = card.color_identity && card.color_identity.length ? card.color_identity : [];
+  if (ci.length === 0) return "Colorless";
+  if (ci.length > 1) return "Multicolor";
+  return (MANA_COLORS[ci[0]] || {}).label || "Colorless";
+}
+
+export function groupKeyFor(card, mode) {
+  if (card.group_overrides && card.group_overrides[mode]) return card.group_overrides[mode];
+  if (mode === "type") return primaryType(card.type_line);
+  if (mode === "cmc") {
+    const b = Math.min(7, Math.floor(card.cmc || 0));
+    return b === 7 ? "7+" : String(b);
+  }
+  if (mode === "color") return colorGroup(card);
+  return "all";
+}
+
+export const GROUP_ORDER = {
+  type: ["Creatures", "Planeswalkers", "Instants", "Sorceries", "Artifacts", "Enchantments", "Battles", "Lands", "Other"],
+  cmc: ["0", "1", "2", "3", "4", "5", "6", "7+"],
+  color: ["White", "Blue", "Black", "Red", "Green", "Multicolor", "Colorless"],
+  custom: ["all"],
+};
+
+export function sortCards(cards, sortMode) {
+  if (sortMode === "name") return [...cards].sort((a, b) => a.name.localeCompare(b.name));
+  if (sortMode === "cmc") return [...cards].sort((a, b) => (a.cmc - b.cmc) || a.name.localeCompare(b.name));
+  return cards; // manual = stored array order
+}
+
+export const VIEW_OPTIONS = [
+  { value: "text", label: "Text" },
+  { value: "grid", label: "Visual Grid" },
+];
+export const GROUP_OPTIONS = [
+  { value: "type", label: "Type" },
+  { value: "cmc", label: "Mana Value" },
+  { value: "color", label: "Color" },
+  { value: "custom", label: "Custom" },
+];
+export const SORT_OPTIONS = [
+  { value: "manual", label: "Manual" },
+  { value: "name", label: "Name" },
+  { value: "cmc", label: "Mana Value" },
+];

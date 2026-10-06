@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import axios from "axios";
 import { API } from "@/lib/api";
-import DeckWorkspace from "@/components/DeckWorkspace";
+import DeckBoard from "@/components/DeckBoard";
 import DeckStats from "@/components/DeckStats";
 import { Sparkles, Loader2 } from "lucide-react";
 import { formatLabel, totalCount } from "@/lib/mtg";
@@ -53,8 +53,8 @@ export default function PublicDeck() {
         </div>
         <div className="grid lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 rounded-2xl border border-slate-800 bg-[#0a1120] overflow-hidden">
-            <DeckWorkspace deck={deck} format={deck.format} readOnly showCommander={showCommander}
-              onQty={() => {}} onRemove={() => {}} onPrintings={() => {}} onReorder={() => {}} />
+            <DeckBoard deck={deck} format={deck.format} readOnly showCommander={showCommander}
+              onQty={() => {}} onRemove={() => {}} onPrintings={() => {}} onCardsChange={() => {}} />
           </div>
           <div className="rounded-2xl border border-slate-800 bg-[#070c17] p-4">
             <DeckStats cards={analyticsCards} />

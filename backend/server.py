@@ -93,6 +93,7 @@ class DeckCard(BaseModel):
     image: Optional[str] = None
     art_crop: Optional[str] = None
     quantity: int = 1
+    group_overrides: Dict[str, str] = {}
 
 class DeckInput(BaseModel):
     name: str = Field(min_length=1, max_length=120)

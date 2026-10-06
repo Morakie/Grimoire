@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import api from "@/lib/api";
 import CardSearchPanel from "@/components/CardSearchPanel";
-import DeckWorkspace from "@/components/DeckWorkspace";
+import DeckBoard from "@/components/DeckBoard";
 import DeckStats from "@/components/DeckStats";
 import PrintingsDialog from "@/components/PrintingsDialog";
 import ImportDialog from "@/components/ImportDialog";
@@ -150,6 +150,8 @@ export default function DeckBuilder() {
     setDeck((prev) => ({ ...prev, [category]: newList }));
   };
 
+  const onCardsChange = (cats) => setDeck((prev) => ({ ...prev, ...cats }));
+
   const applyImport = (imported) => {
     setDeck((prev) => {
       const merge = (existing, incoming) => {
@@ -263,8 +265,8 @@ export default function DeckBuilder() {
         </div>
         <div className={`${mobileTab === "deck" ? "flex" : "hidden"} lg:flex flex-1 min-w-0`}>
           <div className="flex-1 flex flex-col min-w-0 bg-[#0a1120]">
-            <DeckWorkspace deck={deck} format={deck.format} showCommander={showCommander}
-              onQty={changeQty} onRemove={removeCard} onPrintings={openPrintings} onReorder={reorder} />
+            <DeckBoard deck={deck} format={deck.format} showCommander={showCommander}
+              onQty={changeQty} onRemove={removeCard} onPrintings={openPrintings} onCardsChange={onCardsChange} />
           </div>
           <aside className="w-80 border-l border-slate-800 bg-[#070c17] overflow-y-auto p-4 hidden xl:block" data-testid="stats-sidebar">
             <DeckStats cards={analyticsCards} />
