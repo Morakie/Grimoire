@@ -215,6 +215,39 @@ async def card_printings(name: str):
         data = r.json()
     return {"printings": [map_card(c) for c in data.get("data", [])]}
 
+class CollectionInput(BaseModel):
+    names: List[str] = []
+
+@api_router.post("/cards/collection")
+async def card_collection(data: CollectionInput):
+    names = [n for n in data.names if n and n.strip()][:400]
+    found = []
+    not_found = []
+    async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
+        for i in range(0, len(names), 75):
+            chunk = names[i:i + 75]
+            identifiers = [{"name": n} for n in chunk]
+            r = await hc.post(f"{SCRYFALL}/cards/collection", json={"identifiers": identifiers})
+            if r.status_code != 200:
+                continue
+            payload = r.json()
+            for c in payload.get("data", []):
+                found.append(map_card(c))
+            for nf in payload.get("not_found", []):
+                if nf.get("name"):
+                    not_found.append(nf["name"])
+    return {"cards": found, "not_found": not_found}
+
+@api_router.get("/cards/autocomplete")
+async def card_autocomplete(q: str = ""):
+    if len(q.strip()) < 2:
+        return {"suggestions": []}
+    async with httpx.AsyncClient(timeout=10.0, headers=HEADERS) as hc:
+        r = await hc.get(f"{SCRYFALL}/cards/autocomplete", params={"q": q.strip()})
+        if r.status_code != 200:
+            return {"suggestions": []}
+        return {"suggestions": r.json().get("data", [])[:12]}
+
 # ----------------------- Deck helpers -----------------------
 
 def deck_to_public(d: dict, owner_name: str = "") -> dict:

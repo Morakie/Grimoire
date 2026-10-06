@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import api from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -18,24 +18,41 @@ export default function CardSearchPanel({ onAdd, targetLabel }) {
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [suggestions, setSuggestions] = useState([]);
+  const [showSug, setShowSug] = useState(false);
+  const sugTimer = useRef(null);
+  const skipSug = useRef(false);
 
   const toggleColor = (c) => setColors((p) => (p.includes(c) ? p.filter((x) => x !== c) : [...p, c]));
 
-  const doSearch = async (e) => {
-    e && e.preventDefault();
-    if (!query.trim() && !colors.length && !type) {
+  useEffect(() => {
+    if (skipSug.current) { skipSug.current = false; return; }
+    if (sugTimer.current) clearTimeout(sugTimer.current);
+    if (query.trim().length < 2) { setSuggestions([]); setShowSug(false); return; }
+    sugTimer.current = setTimeout(async () => {
+      try {
+        const { data } = await api.get("/cards/autocomplete", { params: { q: query } });
+        setSuggestions(data.suggestions || []);
+        setShowSug((data.suggestions || []).length > 0);
+      } catch { setSuggestions([]); }
+    }, 220);
+    return () => sugTimer.current && clearTimeout(sugTimer.current);
+  }, [query]);
+
+  const runSearch = async (term) => {
+    const q = term !== undefined ? term : query;
+    if (!q.trim() && !colors.length && !type) {
       toast.error("Enter a search term or pick a filter");
       return;
     }
+    setShowSug(false);
     setLoading(true);
     setSearched(true);
     try {
-      const { data } = await api.get("/cards/search", {
-        params: { q: query, colors: colors.join(""), type },
-      });
+      const { data } = await api.get("/cards/search", { params: { q, colors: colors.join(""), type } });
       setResults(data.cards);
       if (!data.cards.length) toast("No cards found");
-    } catch (err) {
+    } catch {
       toast.error("Search failed. Try a different query.");
       setResults([]);
     } finally {
@@ -43,21 +60,45 @@ export default function CardSearchPanel({ onAdd, targetLabel }) {
     }
   };
 
+  const pickSuggestion = (name) => {
+    skipSug.current = true;
+    setQuery(name);
+    setShowSug(false);
+    runSearch(name);
+  };
+
   return (
-    <div className="w-full lg:w-[38%] h-full border-r border-slate-800 bg-[#070c17] flex flex-col" data-testid="card-search-panel">
+    <div className="w-full h-full border-r border-slate-800 bg-[#070c17] flex flex-col" data-testid="card-search-panel">
       <div className="p-4 border-b border-slate-800 space-y-3">
-        <form onSubmit={doSearch} className="flex gap-2">
+        <form onSubmit={(e) => { e.preventDefault(); runSearch(); }} className="flex gap-2">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 z-10" />
             <Input
               data-testid="card-search-input"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search cards by name..."
+              onFocus={() => suggestions.length && setShowSug(true)}
+              onBlur={() => setTimeout(() => setShowSug(false), 150)}
+              placeholder="Search any card..."
               className="pl-9 bg-slate-900 border-slate-700 focus-visible:ring-amber-400 text-slate-100"
             />
+            {showSug && (
+              <div className="absolute z-30 left-0 right-0 mt-1 rounded-lg border border-slate-700 bg-slate-900/95 backdrop-blur-xl shadow-2xl overflow-hidden" data-testid="search-suggestions">
+                {suggestions.map((s) => (
+                  <button
+                    type="button"
+                    key={s}
+                    data-testid={`suggestion-${s}`}
+                    onMouseDown={(e) => { e.preventDefault(); pickSuggestion(s); }}
+                    className="w-full text-left px-3 py-2 text-sm text-slate-200 hover:bg-slate-800 transition-colors truncate"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-          <Button type="submit" data-testid="card-search-submit" className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">
+          <Button type="submit" data-testid="card-search-submit" className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold shrink-0">
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Search"}
           </Button>
         </form>
@@ -114,7 +155,7 @@ export default function CardSearchPanel({ onAdd, targetLabel }) {
                     <div className="w-full h-full flex items-center justify-center p-2 text-center text-xs text-slate-400">{card.name}</div>
                   )}
                 </div>
-                <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-2">
+                <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-2">
                   <div className="w-full">
                     <div className="flex items-center justify-between gap-1 mb-1">
                       <span className="text-[11px] font-medium text-white truncate">{card.name}</span>

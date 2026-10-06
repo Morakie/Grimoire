@@ -5,12 +5,13 @@ import CardSearchPanel from "@/components/CardSearchPanel";
 import DeckWorkspace from "@/components/DeckWorkspace";
 import DeckStats from "@/components/DeckStats";
 import PrintingsDialog from "@/components/PrintingsDialog";
+import ImportDialog from "@/components/ImportDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { ArrowLeft, Share2, Save, Loader2, Check, Copy, BarChart3 } from "lucide-react";
+import { ArrowLeft, Share2, Save, Loader2, Check, Copy, BarChart3, Upload } from "lucide-react";
 import { FORMATS, maxCopies, isBasicLand } from "@/lib/mtg";
 import { useAuth } from "@/context/AuthContext";
 import AuthDialog from "@/components/AuthDialog";
@@ -35,6 +36,7 @@ export default function DeckBuilder() {
   const [savedAt, setSavedAt] = useState(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [printingCtx, setPrintingCtx] = useState(null);
   const [mobileTab, setMobileTab] = useState("deck");
   const skipSave = useRef(true);
@@ -148,6 +150,26 @@ export default function DeckBuilder() {
     setDeck((prev) => ({ ...prev, [category]: newList }));
   };
 
+  const applyImport = (imported) => {
+    setDeck((prev) => {
+      const merge = (existing, incoming) => {
+        const list = [...existing];
+        incoming.forEach((card) => {
+          const idx = list.findIndex((c) => c.name.toLowerCase() === card.name.toLowerCase());
+          if (idx >= 0) list[idx] = { ...list[idx], quantity: list[idx].quantity + card.quantity };
+          else list.push(card);
+        });
+        return list;
+      };
+      return {
+        ...prev,
+        mainboard: merge(prev.mainboard, imported.mainboard),
+        sideboard: merge(prev.sideboard, imported.sideboard),
+        commander: merge(prev.commander, imported.commander),
+      };
+    });
+  };
+
   const selectPrinting = (newCard) => {
     if (!printingCtx) return;
     const { category, card } = printingCtx;
@@ -183,17 +205,20 @@ export default function DeckBuilder() {
             <ArrowLeft className="w-5 h-5" />
           </Button>
           <Input data-testid="deck-name-input" value={deck.name} onChange={(e) => setDeck({ ...deck, name: e.target.value })}
-            className="w-48 sm:w-64 bg-transparent border-transparent hover:border-slate-700 focus-visible:border-slate-700 focus-visible:ring-0 text-lg font-display font-semibold px-2" />
+            className="flex-1 min-w-[120px] max-w-[200px] sm:max-w-xs bg-transparent border-transparent hover:border-slate-700 focus-visible:border-slate-700 focus-visible:ring-0 text-base sm:text-lg font-display font-semibold px-2" />
           <Select value={deck.format} onValueChange={(v) => setDeck({ ...deck, format: v })}>
-            <SelectTrigger data-testid="deck-format-select" className="w-44 h-9 bg-slate-900 border-slate-700 text-slate-200 text-sm"><SelectValue /></SelectTrigger>
+            <SelectTrigger data-testid="deck-format-select" className="w-36 sm:w-44 h-9 bg-slate-900 border-slate-700 text-slate-200 text-sm shrink-0"><SelectValue /></SelectTrigger>
             <SelectContent className="bg-slate-900 border-slate-700 text-slate-200">
               {FORMATS.map((f) => <SelectItem key={f.value} value={f.value}>{f.label}</SelectItem>)}
             </SelectContent>
           </Select>
-          <div className="flex items-center gap-2 ml-auto">
-            <span className="text-xs text-slate-500 hidden sm:flex items-center gap-1">
+          <div className="flex items-center gap-2 ml-auto flex-wrap justify-end">
+            <span className="text-xs text-slate-500 hidden md:flex items-center gap-1">
               {saving ? <><Loader2 className="w-3 h-3 animate-spin" /> Saving</> : savedAt ? <><Check className="w-3 h-3 text-green-400" /> {guest ? "Saved locally" : "Saved"}</> : (guest ? <span className="text-amber-400/80">Draft · not saved</span> : null)}
             </span>
+            <Button data-testid="import-btn" variant="outline" size="sm" onClick={() => setImportOpen(true)} className="bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
+              <Upload className="w-4 h-4 sm:mr-1" /> <span className="hidden sm:inline">Import</span>
+            </Button>
             <Sheet>
               <SheetTrigger asChild>
                 <Button data-testid="mobile-stats-btn" variant="outline" size="sm" className="xl:hidden bg-slate-900 border-slate-700 text-slate-200"><BarChart3 className="w-4 h-4" /></Button>
@@ -233,7 +258,7 @@ export default function DeckBuilder() {
 
       {/* Body */}
       <div className="flex-1 flex overflow-hidden">
-        <div className={`${mobileTab === "search" ? "flex" : "hidden"} lg:flex`}>
+        <div className={`${mobileTab === "search" ? "flex" : "hidden"} lg:flex w-full lg:w-[38%] shrink-0 h-full`}>
           <CardSearchPanel onAdd={addCard} targetLabel={targets.find((t) => t.key === target)?.label || "Mainboard"} />
         </div>
         <div className={`${mobileTab === "deck" ? "flex" : "hidden"} lg:flex flex-1 min-w-0`}>
@@ -263,6 +288,7 @@ export default function DeckBuilder() {
 
       <PrintingsDialog open={!!printingCtx} onOpenChange={(o) => !o && setPrintingCtx(null)} card={printingCtx?.card} onSelect={selectPrinting} />
       <AuthDialog open={authOpen} onOpenChange={setAuthOpen} onSuccess={onAuthSuccess} />
+      <ImportDialog open={importOpen} onOpenChange={setImportOpen} onImport={applyImport} />
     </div>
   );
 }
