@@ -1,0 +1,104 @@
+{
+  "theme": "dark",
+  "typography": {
+    "headings": "Outfit, sans-serif",
+    "body": "Inter, sans-serif",
+    "notes": "Outfit provides a sleek, modern, slightly technical feel suitable for a modern gaming tool. Inter ensures high legibility for dense card data."
+  },
+  "colors": {
+    "background": {
+      "main": "#0f172a",
+      "surface": "#1e293b",
+      "panel": "#020617"
+    },
+    "primary": {
+      "default": "#fbbf24",
+      "hover": "#f59e0b",
+      "text": "#1c1917"
+    },
+    "mana_accents": {
+      "white": "#fdf6e3",
+      "blue": "#3b82f6",
+      "black": "#a855f7",
+      "red": "#ef4444",
+      "green": "#22c55e",
+      "colorless": "#94a3b8"
+    },
+    "text": {
+      "primary": "#f8fafc",
+      "secondary": "#94a3b8",
+      "muted": "#64748b"
+    },
+    "borders": "#334155"
+  },
+  "visual_enhancers": {
+    "shadows": {
+      "ambient": "shadow-[0_0_15px_rgba(251,191,36,0.1)]",
+      "glow": "shadow-[0_0_20px_rgba(59,130,246,0.2)]"
+    },
+    "borders": "1px solid rgba(51, 65, 85, 0.5)",
+    "surfaces": "Use crisp, cardless designs for lists. For floating panels, use backdrop-blur-xl with bg-slate-900/80 and a 1px border-slate-700/50."
+  },
+  "layouts": {
+    "app_container": "h-screen flex flex-col overflow-hidden",
+    "deck_builder": "flex-1 flex flex-col lg:flex-row overflow-hidden",
+    "search_panel": "w-full lg:w-2/5 h-full border-r border-slate-800 bg-slate-950 flex flex-col",
+    "workspace_panel": "w-full lg:w-3/5 h-full bg-slate-900 flex flex-col"
+  },
+  "components": {
+    "card_list_item": "H-12 flex items-center justify-between px-3 border-b border-slate-800/50 hover:bg-slate-800 cursor-pointer transition-colors. Use absolute positioning for mana cost symbols.",
+    "mana_curve_chart": "Use Recharts BarChart. X-axis: 0, 1, 2, 3, 4, 5, 6, 7+. Y-axis: count. Bar color: primary gold or dynamic based on deck colors. Transparent background.",
+    "color_distribution": "Use Recharts PieChart/Donut. Colors must exactly match the mana_accents colors.",
+    "stat_widget": "bg-slate-950 border border-slate-800 rounded-lg p-4 flex flex-col items-center justify-center"
+  },
+  "motion": {
+    "hover": "transition-all duration-200 ease-out",
+    "card_preview": "Scale up slightly and add ambient shadow on hover",
+    "list_reorder": "Use framer-motion layout animations for smooth drag-and-drop visual feedback"
+  },
+  "accessibility": {
+    "contrast": "Ensure all text against slate-900/950 meets WCAG AA.",
+    "focus": "focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:outline-none",
+    "test_ids": "Add data-testid attributes to all interactive elements (e.g., data-testid='card-search-input', data-testid='add-to-mainboard-button')."
+  },
+  "image_urls": {
+    "hero_background": {
+      "url": "https://images.unsplash.com/photo-1578662996442-48f60103fc96?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwzfHxkYXJrJTIwZmFudGFzeSUyMHRleHR1cmUlMjBhYnN0cmFjdHxlbnwwfHx8fDE3OTEzMjU0NjB8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Subtle dark abstract texture for landing page background or empty states."
+    },
+    "marketing_feature_1": {
+      "url": "https://images.unsplash.com/photo-1644007824843-37e9069834bd?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MDV8MHwxfHNlYXJjaHw0fHxmYW50YXN5JTIwY2FyZCUyMGdhbWV8ZW58MHx8fHwxNzkxMzI1NDU2fDA&ixlib=rb-4.1.0&q=85",
+      "description": "Cards on table for the 'Build Your Ultimate Deck' feature section."
+    },
+    "marketing_feature_2": {
+      "url": "https://images.unsplash.com/photo-1551288049-bebda4e38f71?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAxODF8MHwxfHNlYXJjaHwxfHxuZW9uJTIwZGF0YSUyMGFuYWx5dGljcyUyMGRhc2hib2FyZCUyMGRhcmt8ZW58MHx8fHwxNzkxMzI1NDY0fDA&ixlib=rb-4.1.0&q=85",
+      "description": "Dark mode analytics dashboard for the 'Analyze Your Mana Curve' feature section."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Install and use 'lucide-react' for icons.",
+    "Install 'recharts' for the Mana Curve Bar Chart and Color Distribution Pie Chart.",
+    "Install '@hello-pangea/dnd' or '@dnd-kit/core' for drag-to-reorder cards functionality.",
+    "Use Scryfall API (https://api.scryfall.com/cards/search) for card searching and fetching high-res images.",
+    "Implement a responsive layout: on desktop, use the split-screen view. On mobile, use tabs to switch between 'Search' and 'Deck' views.",
+    "For the decklist, use a highly condensed row design. Show the mana cost using colored circles or SVGs.",
+    "Implement a hover state on decklist items that displays the full card image in a floating tooltip (use Radix HoverCard or similar).",
+    "Use Shadcn UI components for Dropdowns (filtering), Tabs (Mainboard/Sideboard/Commander), and Dialogs (share link, settings).",
+    "Ensure 'My Decks' dashboard uses a masonry or CSS grid layout to display saved decks as sleek cards with their color identity prominently featured.",
+    "Do not use generic centered text alignment. Always left-align data and lists.",
+    "Avoid using complete transparent backgrounds for dropdowns or modals; always use slate-900 with borders and high blur."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "You tend to converge toward generic, 'on distribution' outputs. Make creative, distinctive frontends that surprise and delight.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+    "Create depth through layered design elements with z-index hierarchy and 1px borders.",
+    "You MUST NOT apply universal transition (e.g., transition: all). Add transitions for specific interactive elements.",
+    "You MUST NOT center align the app container. No '.App { text-align: center; }'.",
+    "NEVER use AI assistant Emoji characters like 🤖🧠💭💡🔮🎯 for icons.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "Prioritize using pre-existing components from src/components/ui when applicable.",
+    "Use sonner for toasts.",
+    "All interactive elements MUST include a data-testid attribute.",
+    "Always add GENERAL UI UX DESIGN GUIDELINES."
+  ]
+}
