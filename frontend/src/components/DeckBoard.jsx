@@ -178,14 +178,14 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
   return (
     <div className="flex-1 overflow-y-auto flex flex-col" data-testid="deck-board">
       {/* Toolbar */}
-      <div className="sticky top-0 z-20 bg-[#0a1120]/95 backdrop-blur border-b border-slate-800 px-4 py-2 flex items-center gap-3 flex-wrap">
+      <div className="sticky top-0 z-20 bg-[#0a1120]/95 backdrop-blur border-b border-slate-800 px-6 lg:px-10 py-2.5 flex items-center gap-3 flex-wrap">
         <Control label="View" value={view} onChange={setView} options={VIEW_OPTIONS} testid="view-select" />
         <Control label="Group" value={group} onChange={setGroup} options={GROUP_OPTIONS} testid="group-select" />
         <Control label="Sort" value={sort} onChange={setSort} options={SORT_OPTIONS} testid="sort-select" />
         {!readOnly && <span className="text-[11px] text-slate-500 ml-auto hidden md:block">Drag cards to reorder or move between sections</span>}
       </div>
 
-      <div className="flex-1 p-4">
+      <div className="flex-1 px-6 lg:px-10 py-6">
         {isEmpty && (
           <div className="h-full min-h-[280px] flex flex-col items-center justify-center text-center gap-2 text-slate-500">
             <Layers className="w-10 h-10 text-slate-700" />
@@ -194,7 +194,7 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
           </div>
         )}
         <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-          <div className="space-y-7">
+          <div className="space-y-7 max-w-[1500px] mx-auto">
             {visibleCats.map((c) => {
               if (c.key === "commander" && !showCommander) return null;
               if (deck[c.key].length === 0 && (readOnly || c.key === "commander")) return null;

@@ -1,0 +1,47 @@
+{
+  "name": "Mono-Red Aggro (Sample)",
+  "format": "standard",
+  "description": "A tiny sample deck used by scripts/seed.py to demonstrate the data model.",
+  "mainboard": [
+    {
+      "id": "e3285e6b-3e79-4d7c-818f-d801fa0f8c89",
+      "oracle_id": "4457ed35-7c10-48c8-9994-dc0af8dd13d6",
+      "name": "Lightning Bolt",
+      "mana_cost": "{R}",
+      "cmc": 1,
+      "type_line": "Instant",
+      "oracle_text": "Lightning Bolt deals 3 damage to any target.",
+      "colors": ["R"],
+      "color_identity": ["R"],
+      "rarity": "common",
+      "set": "2x2",
+      "set_name": "Double Masters 2022",
+      "collector_number": "117",
+      "image": "https://cards.scryfall.io/normal/front/4/4/4457ed35-7c10-48c8-9994-dc0af8dd13d6.jpg",
+      "art_crop": null,
+      "quantity": 4,
+      "group_overrides": {}
+    },
+    {
+      "id": "a3fb7228-8f2f-4bd9-a3c6-7f3f8b0e8b1a",
+      "oracle_id": "00000000-0000-0000-0000-000000000000",
+      "name": "Mountain",
+      "mana_cost": "",
+      "cmc": 0,
+      "type_line": "Basic Land — Mountain",
+      "oracle_text": "({T}: Add {R}.)",
+      "colors": [],
+      "color_identity": ["R"],
+      "rarity": "common",
+      "set": "2x2",
+      "set_name": "Double Masters 2022",
+      "collector_number": "462",
+      "image": null,
+      "art_crop": null,
+      "quantity": 20,
+      "group_overrides": {}
+    }
+  ],
+  "sideboard": [],
+  "commander": []
+}

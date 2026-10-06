@@ -1,0 +1,16 @@
+# Runs a local MongoDB for Grimoire development.
+#   docker compose up -d      # start
+#   docker compose down       # stop (keeps data)
+#   docker compose down -v    # stop and delete data
+services:
+  mongo:
+    image: mongo:7
+    container_name: grimoire-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - grimoire_mongo_data:/data/db
+
+volumes:
+  grimoire_mongo_data:
