@@ -22,6 +22,11 @@ Full-stack web app "Grimoire": a fast, modern Magic: The Gathering deck-builder 
 3. Analytics: mana curve bar chart, color distribution donut, stats (total cards, avg CMC, type breakdown).
 4. JWT auth, My Decks dashboard (create/edit/clone/delete), public share at `/d/:shareId`, printing/art switcher.
 
+## Deployment (2026-06-09)
+- Render deploy prepared: `render.yaml` (Blueprint) + `docs/RENDER_DEPLOYMENT.md` guide.
+- Slimmed `backend/requirements.txt` from ~100 base-env packages to 14 essentials (kept `dnspython`+`certifi` for Atlas `mongodb+srv://`). Backend verified healthy post-change.
+- Actual deploy is user-run (needs their GitHub/Render/Atlas accounts); handed over full step-by-step playbook via "Save to Github" → Render Blueprint → Atlas env vars.
+
 ## Implemented (2026-06-06)
 - JWT auth: register/login/me; admin seeding; MongoDB indexes.
 - Scryfall proxy: `/api/cards/search`, `/api/cards/printings`.
