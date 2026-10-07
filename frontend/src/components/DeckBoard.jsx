@@ -218,11 +218,19 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
     cards.forEach((c) => { const k = groupKeyFor(c, group); (map[k] = map[k] || []).push(c); });
     const order = GROUP_ORDER[group];
     const extra = Object.keys(map).filter((k) => !order.includes(k));
-    // Empty groups (e.g. Battles) are hidden, except while a card is being dragged so they
-    // can still be used as drop targets for moving a card into a new group.
-    return [...order, ...extra]
-      .filter((k) => (map[k] && map[k].length) || activeCard)
-      .map((k) => ({ key: k, cards: sortCards(map[k] || [], sort, group) }));
+    const has = (k) => map[k] && map[k].length;
+    let shown = [...order, ...extra].filter(has);
+    // Mana Value: keep the curve continuous from 0 up to the highest cost, so a deck with no
+    // 3-drops still shows an empty "3" column instead of the columns jumping around.
+    if (group === "cmc") {
+      const costs = GROUP_ORDER.cmc.filter((k) => k !== "Lands");
+      const top = Math.max(-1, ...costs.map((k, i) => (has(k) ? i : -1)));
+      shown = [...costs.slice(0, top + 1), ...shown.filter((k) => !costs.includes(k))];
+    }
+    // While dragging, offer the remaining empty groups as drop targets at the END of the row,
+    // so the columns already on screen don't shift under the cursor.
+    if (activeCard) shown = [...shown, ...order.filter((k) => !shown.includes(k))];
+    return shown.map((k) => ({ key: k, cards: sortCards(map[k] || [], sort, group) }));
   };
 
   const findCard = (cat, cid) => deck[cat].find((c) => c.id === cid);
