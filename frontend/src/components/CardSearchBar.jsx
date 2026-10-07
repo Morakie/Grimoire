@@ -43,7 +43,9 @@ export default function CardSearchBar({ onAdd, target, setTarget, targets }) {
   }, [query, open]);
 
   useEffect(() => {
-    const onClick = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) { setOpen(false); setShowSug(false); } };
+    // composedPath() is captured when the click happens, so it still sees the search box even if
+    // React has already removed the clicked suggestion from the page (contains() would miss it).
+    const onClick = (e) => { if (wrapRef.current && !e.composedPath().includes(wrapRef.current)) { setOpen(false); setShowSug(false); } };
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
@@ -62,7 +64,28 @@ export default function CardSearchBar({ onAdd, target, setTarget, targets }) {
     finally { setLoading(false); }
   };
 
-  const pickSuggestion = (name) => { skipSug.current = true; setQuery(name); setShowSug(false); runSearch(name); };
+  const addCard = (card) => {
+    onAdd(card);
+    toast.success(`Added ${card.name}`, { duration: 1000 });
+  };
+
+  // A suggestion is an exact card name, so add it straight away and clear the box for the next card.
+  // If the exact lookup fails for any reason, fall back to showing normal search results.
+  const pickSuggestion = async (name) => {
+    skipSug.current = true;
+    setShowSug(false);
+    try {
+      const { data } = await api.get("/cards/search", { params: { q: `!"${name}"` } });
+      if (data.cards && data.cards.length) {
+        addCard(data.cards[0]);
+        skipSug.current = true;
+        setQuery("");
+        return;
+      }
+    } catch { /* fall through to a normal search */ }
+    setQuery(name);
+    runSearch(name);
+  };
 
   return (
     <div ref={wrapRef} className="relative flex-1 min-w-0">
@@ -150,7 +173,10 @@ export default function CardSearchBar({ onAdd, target, setTarget, targets }) {
             ) : (
               <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3" data-testid="search-results">
                 {results.map((card) => (
-                  <div key={card.id} className="group relative rounded-lg overflow-hidden border border-slate-800 bg-slate-800 hover:border-amber-400/50 transition-colors" data-testid={`search-card-${card.id}`}>
+                  <div key={card.id} role="button" tabIndex={0} title={`Add ${card.name}`}
+                    onClick={() => addCard(card)}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); addCard(card); } }}
+                    className="group relative rounded-lg overflow-hidden border border-slate-800 bg-slate-800 hover:border-amber-400/50 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400" data-testid={`search-card-${card.id}`}>
                     <div className="aspect-[0.716]">
                       {card.image ? <img src={card.image} alt={card.name} loading="lazy" className="w-full h-full object-cover" />
                         : <div className="w-full h-full flex items-center justify-center p-2 text-center text-xs text-slate-300">{card.name}</div>}
@@ -161,7 +187,7 @@ export default function CardSearchBar({ onAdd, target, setTarget, targets }) {
                           <span className="text-[10px] font-medium text-white truncate">{card.name}</span>
                           <ManaCost cost={card.mana_cost} size={12} />
                         </div>
-                        <Button size="sm" data-testid={`add-card-${card.id}`} onClick={() => { onAdd(card); toast.success(`Added ${card.name}`, { duration: 1000 }); }}
+                        <Button size="sm" data-testid={`add-card-${card.id}`} onClick={(e) => { e.stopPropagation(); addCard(card); }}
                           className="w-full h-6 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold text-xs"><Plus className="w-3 h-3 mr-0.5" /> Add</Button>
                       </div>
                     </div>

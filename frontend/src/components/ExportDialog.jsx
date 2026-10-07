@@ -18,6 +18,8 @@ export function buildExport(deck) {
     deck.commander.forEach((c) => out.push(cardLine(c)));
     out.push("");
   }
+  // Arena-style "Deck" header so re-importing keeps the mainboard out of the command zone.
+  if (out.length) out.push("Deck");
   (deck.mainboard || []).forEach((c) => out.push(cardLine(c)));
   if (deck.sideboard && deck.sideboard.length) {
     out.push("");

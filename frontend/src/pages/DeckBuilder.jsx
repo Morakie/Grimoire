@@ -6,13 +6,13 @@ import DeckBoard from "@/components/DeckBoard";
 import DeckStats from "@/components/DeckStats";
 import PrintingsDialog from "@/components/PrintingsDialog";
 import ImportDialog from "@/components/ImportDialog";
-import ExportDialog from "@/components/ExportDialog";
+import ExportDialog, { buildExport } from "@/components/ExportDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { ArrowLeft, Share2, Save, Loader2, Check, Copy, BarChart3, Upload, Download } from "lucide-react";
+import { ArrowLeft, Share2, Save, Loader2, Check, Copy, BarChart3, Upload, Download, ListChecks } from "lucide-react";
 import { FORMATS, maxCopies, isBasicLand } from "@/lib/mtg";
 import { useAuth } from "@/context/AuthContext";
 import AuthDialog from "@/components/AuthDialog";
@@ -38,6 +38,7 @@ export default function DeckBuilder() {
   const [shareOpen, setShareOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [printingCtx, setPrintingCtx] = useState(null);
   const skipSave = useRef(true);
@@ -153,8 +154,15 @@ export default function DeckBuilder() {
 
   const onCardsChange = (cats) => setDeck((prev) => ({ ...prev, ...cats }));
 
-  const applyImport = (imported) => {
+  const applyImport = (imported, { replace = false } = {}) => {
     setDeck((prev) => {
+      if (replace) {
+        // Keep per-card extras (e.g. custom group placement) for cards that survived the edit.
+        const old = {};
+        [...prev.mainboard, ...prev.sideboard, ...prev.commander].forEach((c) => { old[c.id] = c; });
+        const keep = (list) => list.map((c) => (old[c.id] ? { ...old[c.id], ...c } : c));
+        return { ...prev, mainboard: keep(imported.mainboard), sideboard: keep(imported.sideboard), commander: keep(imported.commander) };
+      }
       const merge = (existing, incoming) => {
         const list = [...existing];
         incoming.forEach((card) => {
@@ -222,6 +230,9 @@ export default function DeckBuilder() {
             <Button data-testid="import-btn" variant="outline" size="sm" onClick={() => setImportOpen(true)} className="bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
               <Upload className="w-4 h-4 sm:mr-1" /> <span className="hidden sm:inline">Import</span>
             </Button>
+            <Button data-testid="bulk-edit-btn" variant="outline" size="sm" onClick={() => setBulkOpen(true)} className="bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
+              <ListChecks className="w-4 h-4 sm:mr-1" /> <span className="hidden sm:inline">Bulk edit</span>
+            </Button>
             <Button data-testid="export-btn" variant="outline" size="sm" onClick={() => setExportOpen(true)} className="bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
               <Download className="w-4 h-4 sm:mr-1" /> <span className="hidden sm:inline">Export</span>
             </Button>
@@ -276,6 +287,8 @@ export default function DeckBuilder() {
       <PrintingsDialog open={!!printingCtx} onOpenChange={(o) => !o && setPrintingCtx(null)} card={printingCtx?.card} onSelect={selectPrinting} />
       <AuthDialog open={authOpen} onOpenChange={setAuthOpen} onSuccess={onAuthSuccess} />
       <ImportDialog open={importOpen} onOpenChange={setImportOpen} onImport={applyImport} />
+      <ImportDialog open={bulkOpen} onOpenChange={setBulkOpen} onImport={applyImport} mode="replace"
+        initialText={bulkOpen ? buildExport(deck) : ""} />
       <ExportDialog open={exportOpen} onOpenChange={setExportOpen} deck={deck} />
     </div>
   );

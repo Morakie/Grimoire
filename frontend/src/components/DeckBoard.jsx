@@ -5,7 +5,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ManaCost } from "@/components/ManaCost";
-import { GripVertical, Minus, Plus, X, Images, Layers } from "lucide-react";
+import { GripVertical, Minus, Plus, X, Images, Layers, Crown, ArrowDownToLine } from "lucide-react";
 import {
   groupKeyFor, GROUP_ORDER, sortCards, isBasicLand, maxCopies, totalCount,
   VIEW_OPTIONS, GROUP_OPTIONS, SORT_OPTIONS,
@@ -20,13 +20,19 @@ const CATS = [
 const parseCardId = (id) => { const p = id.split("|"); return { cat: p[1], cid: p[2] }; };
 const parseContId = (id) => { const p = id.split("|"); return { cat: p[1], grp: p[2] }; };
 
-function BoardCard({ card, category, view, format, index, readOnly, onQty, onRemove, onPrintings }) {
+function BoardCard({ card, category, view, format, index, readOnly, onQty, onRemove, onPrintings, onMove, commanderMode }) {
   const sortId = `card|${category}|${card.id}`;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: sortId, disabled: readOnly });
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1, zIndex: isDragging ? 60 : undefined };
   const max = maxCopies(card, format);
   const atMax = card.quantity >= max && !isBasicLand(card);
   const dragProps = readOnly ? {} : { ...attributes, ...listeners };
+  // In Commander decks, any card can be promoted to (or demoted from) the command zone.
+  const isCommander = category === "commander";
+  const canToggleCommander = commanderMode && category !== "sideboard";
+  const toggleCommander = () => onMove(category, card.id, isCommander ? "mainboard" : "commander");
+  const CommanderIcon = isCommander ? ArrowDownToLine : Crown;
+  const commanderTitle = isCommander ? "Move to mainboard" : "Set as commander";
 
   if (view === "grid") {
     return (
@@ -41,6 +47,9 @@ function BoardCard({ card, category, view, format, index, readOnly, onQty, onRem
         </div>
         {!readOnly && (
           <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            {canToggleCommander && (
+              <button data-testid={`commander-toggle-${card.id}`} onClick={toggleCommander} title={commanderTitle} className="w-6 h-6 rounded bg-black/80 text-white hover:bg-amber-500 hover:text-stone-900 flex items-center justify-center"><CommanderIcon className="w-3.5 h-3.5" /></button>
+            )}
             <button data-testid={`inc-${card.id}`} onClick={() => onQty(category, card.id, 1)} disabled={atMax} className="w-6 h-6 rounded bg-black/80 text-white hover:bg-amber-500 hover:text-stone-900 flex items-center justify-center disabled:opacity-30"><Plus className="w-3.5 h-3.5" /></button>
             <button data-testid={`dec-${card.id}`} onClick={() => onQty(category, card.id, -1)} className="w-6 h-6 rounded bg-black/80 text-white hover:bg-slate-600 flex items-center justify-center"><Minus className="w-3.5 h-3.5" /></button>
             <button data-testid={`printings-${card.id}`} onClick={() => onPrintings(card)} className="w-6 h-6 rounded bg-black/80 text-white hover:bg-amber-500 hover:text-stone-900 flex items-center justify-center"><Images className="w-3.5 h-3.5" /></button>
@@ -75,6 +84,9 @@ function BoardCard({ card, category, view, format, index, readOnly, onQty, onRem
       {!readOnly && (
         <div onPointerDown={(e) => e.stopPropagation()}
           className="absolute right-0 inset-y-0 flex items-center gap-0.5 pl-6 pr-1 rounded-r bg-gradient-to-l from-slate-800 from-60% to-transparent opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+          {canToggleCommander && (
+            <button data-testid={`commander-toggle-${card.id}`} onClick={toggleCommander} title={commanderTitle} className="p-1 text-slate-400 hover:text-amber-400"><CommanderIcon className="w-3.5 h-3.5" /></button>
+          )}
           <button data-testid={`printings-${card.id}`} onClick={() => onPrintings(card)} title="Change art/printing" className="p-1 text-slate-400 hover:text-amber-400"><Images className="w-3.5 h-3.5" /></button>
           <button data-testid={`dec-${card.id}`} onClick={() => onQty(category, card.id, -1)} title="Remove one" className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-700"><Minus className="w-3.5 h-3.5" /></button>
           <button data-testid={`inc-${card.id}`} onClick={() => onQty(category, card.id, 1)} disabled={atMax} title="Add one" className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-700 disabled:opacity-30"><Plus className="w-3.5 h-3.5" /></button>
@@ -100,9 +112,14 @@ function Column({ cat, groupKey, label, count, cards, view, format, readOnly, gr
         <div ref={setNodeRef} className={`${view === "grid" ? "pt-0 min-h-[60px]" : "space-y-0 min-h-[40px]"} rounded-lg transition-colors ${isOver ? "bg-amber-400/5 ring-1 ring-amber-400/30" : ""}`}>
           {cards.map((c, i) => (
             <BoardCard key={c.id} card={c} category={cat} view={view} index={i} format={format} readOnly={readOnly}
-              onQty={handlers.onQty} onRemove={handlers.onRemove} onPrintings={handlers.onPrintings} />
+              onQty={handlers.onQty} onRemove={handlers.onRemove} onPrintings={handlers.onPrintings}
+              onMove={handlers.onMove} commanderMode={handlers.commanderMode} />
           ))}
-          {cards.length === 0 && <div className="h-10 flex items-center justify-center text-[11px] text-slate-600">Drop here</div>}
+          {cards.length === 0 && (
+            <div className={`flex items-center justify-center text-center text-[11px] text-slate-600 ${cat === "commander" ? "h-16 px-3 border border-dashed border-slate-700 rounded-lg" : "h-10"}`}>
+              {cat === "commander" ? "Drop your commander here, or use the crown on any card" : "Drop here"}
+            </div>
+          )}
         </div>
       </SortableContext>
     </div>
@@ -181,7 +198,19 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
     onCardsChange(next);
   };
 
-  const handlers = { onQty, onRemove, onPrintings };
+  // Move a card between sections (e.g. mainboard ⇄ commander), merging quantities if it's already there.
+  const moveCard = (fromCat, cid, toCat) => {
+    const card = findCard(fromCat, cid);
+    if (!card) return;
+    const next = { mainboard: [...deck.mainboard], sideboard: [...deck.sideboard], commander: [...deck.commander] };
+    next[fromCat] = next[fromCat].filter((c) => c.id !== cid);
+    const existing = next[toCat].findIndex((c) => c.id === cid);
+    if (existing >= 0) next[toCat][existing] = { ...next[toCat][existing], quantity: next[toCat][existing].quantity + card.quantity };
+    else next[toCat].push(card);
+    onCardsChange(next);
+  };
+
+  const handlers = { onQty, onRemove, onPrintings, onMove: moveCard, commanderMode: showCommander && !readOnly };
   const isEmpty = !deck.mainboard.length && !deck.sideboard.length && !deck.commander.length;
 
   return (
@@ -199,14 +228,14 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
           <div className="h-full min-h-[280px] flex flex-col items-center justify-center text-center gap-2 text-slate-500">
             <Layers className="w-10 h-10 text-slate-700" />
             <p className="text-sm">Your deck is empty.</p>
-            {!readOnly && <p className="text-xs text-slate-600">Search for cards and hit + to add them.</p>}
+            {!readOnly && <p className="text-xs text-slate-600">Search above and click a card to add it.</p>}
           </div>
         )}
         <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
           <div className="space-y-7 max-w-[1500px] mx-auto">
             {visibleCats.map((c) => {
               if (c.key === "commander" && !showCommander) return null;
-              if (deck[c.key].length === 0 && (readOnly || c.key === "commander")) return null;
+              if (deck[c.key].length === 0 && readOnly) return null;
               const sectionEmpty = deck[c.key].length === 0;
               const cols = buildColumns(deck[c.key]);
               return (

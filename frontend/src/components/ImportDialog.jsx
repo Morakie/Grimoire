@@ -1,9 +1,9 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import api from "@/lib/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { Upload, Loader2, FileUp } from "lucide-react";
+import { Upload, Loader2, FileUp, ListChecks } from "lucide-react";
 import { toast } from "sonner";
 
 const SECTION_RE = {
@@ -82,9 +82,16 @@ function parseJson(obj) {
   return out;
 }
 
-export default function ImportDialog({ open, onOpenChange, onImport }) {
+// mode="merge": add the pasted cards to the deck (Import).
+// mode="replace": the textarea starts as the current decklist and saving replaces the deck (Bulk edit).
+export default function ImportDialog({ open, onOpenChange, onImport, mode = "merge", initialText = "" }) {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
+  const replace = mode === "replace";
+
+  useEffect(() => {
+    if (open) setText(replace ? initialText : "");
+  }, [open, replace, initialText]);
 
   const onFile = (e) => {
     const file = e.target.files?.[0];
@@ -96,7 +103,11 @@ export default function ImportDialog({ open, onOpenChange, onImport }) {
 
   const doImport = async () => {
     const trimmed = text.trim();
-    if (!trimmed) { toast.error("Paste a decklist or upload a file"); return; }
+    if (!trimmed) {
+      if (replace) { onImport({ mainboard: [], sideboard: [], commander: [] }, { replace: true }); toast.success("Deck cleared"); onOpenChange(false); }
+      else toast.error("Paste a decklist or upload a file");
+      return;
+    }
     let parsed;
     try {
       parsed = (trimmed.startsWith("{") || trimmed.startsWith("[")) ? parseJson(JSON.parse(trimmed)) : parseText(trimmed);
@@ -129,9 +140,14 @@ export default function ImportDialog({ open, onOpenChange, onImport }) {
       const sb = resolve(parsed.sideboard);
       const cmd = resolve(parsed.commander);
       const missing = [...mb.missing, ...sb.missing, ...cmd.missing];
-      onImport({ mainboard: mb.resolved, sideboard: sb.resolved, commander: cmd.resolved });
+      // Never silently drop cards when replacing the whole deck: fix the list first.
+      if (replace && missing.length) {
+        toast.error(`Couldn't find ${missing.length} card${missing.length === 1 ? "" : "s"}: ${missing.slice(0, 4).join(", ")}${missing.length > 4 ? "…" : ""}. Fix ${missing.length === 1 ? "it" : "them"} and save again.`, { duration: 7000 });
+        return;
+      }
+      onImport({ mainboard: mb.resolved, sideboard: sb.resolved, commander: cmd.resolved }, { replace });
       const total = mb.resolved.length + sb.resolved.length + cmd.resolved.length;
-      toast.success(`Imported ${total} card${total === 1 ? "" : "s"}`);
+      toast.success(replace ? "Decklist updated" : `Imported ${total} card${total === 1 ? "" : "s"}`);
       if (missing.length) toast.error(`${missing.length} not found: ${missing.slice(0, 4).join(", ")}${missing.length > 4 ? "…" : ""}`, { duration: 5000 });
       setText("");
       onOpenChange(false);
@@ -144,11 +160,17 @@ export default function ImportDialog({ open, onOpenChange, onImport }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="bg-slate-900 border-slate-700 text-slate-100 max-w-lg" data-testid="import-dialog">
+      <DialogContent className={`bg-slate-900 border-slate-700 text-slate-100 ${replace ? "max-w-2xl" : "max-w-lg"}`} data-testid={replace ? "bulk-edit-dialog" : "import-dialog"}>
         <DialogHeader>
-          <DialogTitle className="font-display flex items-center gap-2"><Upload className="w-5 h-5 text-amber-400" /> Import decklist</DialogTitle>
+          <DialogTitle className="font-display flex items-center gap-2">
+            {replace ? <><ListChecks className="w-5 h-5 text-amber-400" /> Bulk edit decklist</> : <><Upload className="w-5 h-5 text-amber-400" /> Import decklist</>}
+          </DialogTitle>
           <DialogDescription className="text-slate-400">
+            {replace ? (
+              <>Edit the whole list at once: change quantities, delete lines, or paste a new list over it. Saving replaces the deck. Clear the box to empty the deck.</>
+            ) : (<>
             Paste a decklist or upload a .txt / .json file. Use lines like <span className="text-slate-300">4 Lightning Bolt</span>. Add a <span className="text-slate-300">Sideboard</span> or <span className="text-slate-300">Commander</span> heading to split sections.
+            </>)}
           </DialogDescription>
         </DialogHeader>
         <Textarea
@@ -156,7 +178,7 @@ export default function ImportDialog({ open, onOpenChange, onImport }) {
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder={"4 Lightning Bolt\n2 Counterspell\n20 Mountain\n\nSideboard\n2 Pyroblast"}
-          className="min-h-[220px] bg-slate-950 border-slate-700 text-slate-100 font-mono text-sm focus-visible:ring-amber-400"
+          className={`${replace ? "min-h-[360px]" : "min-h-[220px]"} bg-slate-950 border-slate-700 text-slate-100 font-mono text-sm focus-visible:ring-amber-400`}
         />
         <DialogFooter className="flex sm:justify-between items-center gap-2">
           <label className="inline-flex items-center gap-2 text-sm text-slate-300 cursor-pointer hover:text-white" data-testid="import-file-label">
@@ -164,7 +186,7 @@ export default function ImportDialog({ open, onOpenChange, onImport }) {
             <input type="file" accept=".txt,.json,.dec" onChange={onFile} className="hidden" data-testid="import-file-input" />
           </label>
           <Button data-testid="import-submit" onClick={doImport} disabled={loading} className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Import deck"}
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : replace ? "Save changes" : "Import deck"}
           </Button>
         </DialogFooter>
       </DialogContent>
