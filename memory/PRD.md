@@ -46,6 +46,13 @@ Full-stack web app "Grimoire": a fast, modern Magic: The Gathering deck-builder 
 - Render deploy: render.yaml + docs/RENDER_DEPLOYMENT.md (MongoDB Atlas); GET /api/health.
 - Tested: backend pytest 36/36; frontend iter6–10 all green (incl. multi-round auto-pick).
 
+## Implemented (2026-06-16b) — Queue polish, draft-table peek, host admin tools
+- Pick queue: left-hand column (non-expanding, grows with list) + per-card bookmark; auto-pick now a continuous effect (fixes multi-round/wheel-back), skips taken cards.
+- Draft-pool Color sort now sub-sorts by card type → mana value within each color.
+- "Table peek": large popout overlay of the full Draft Table that covers the pick screen (closeable via button or backdrop) for quick glances while picking.
+- Host-only ADMIN tools (gated by host_token): `POST /drafts/{id}/undo` (removes last pick, returns card to pool, status→drafting, repeatable) with header "Undo pick" button; `POST /drafts/{id}/reassign` (swap any pick to a still-available card) via click-a-cell reassign dialog in the Draft Table. Non-hosts cannot see/use them. 403/404/400/409 validation.
+- Tested: backend pytest 68/68; frontend iter11–12 all green.
+
 ## Backlog / Remaining
 - P2: Draft pool card-image fallback polish (DONE — now uses art_crop/name); cosmetic pytest return-not-None warning.
 - P2: Additional draft formats (standard cube, booster pack).
