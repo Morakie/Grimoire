@@ -2,17 +2,17 @@ services:
   # ---------------------------------------------------------------------------
   # Backend — FastAPI (Python)
   # ---------------------------------------------------------------------------
+  # Docker pins Python 3.11.9 in the image. Native Render Python defaults to
+  # 3.14.3 and the pinned pymongo/motor/bcrypt wheels then fail at import
+  # with "Exited with status 3" before uvicorn logs anything.
   - type: web
     name: grimoire-api
-    runtime: python
-    rootDir: backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.9
       - key: MONGO_URL
         sync: false            # set in the Render dashboard (MongoDB Atlas SRV string)
       - key: DB_NAME

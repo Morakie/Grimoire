@@ -1,8 +1,9 @@
 # Deploying Grimoire to Render
 
 Grimoire is a React (frontend) + FastAPI (backend) + MongoDB app. This guide
-deploys the backend as a **Render Web Service**, the frontend as a **Render
-Static Site**, and uses **MongoDB Atlas** for the database.
+deploys the backend as a **Render Docker Web Service** (Python 3.11.9 image),
+the frontend as a **Render Static Site**, and uses **MongoDB Atlas** for the
+database.
 
 A ready-to-use [`render.yaml`](../render.yaml) Blueprint is included at the repo
 root so you can deploy both services in one step.
@@ -69,13 +70,21 @@ Render does not host MongoDB directly, so use the free **MongoDB Atlas** tier.
 
 ## 3. Deploy manually (without the Blueprint)
 
-### Backend — Web Service
-- **Root Directory:** `backend`
-- **Runtime:** Python 3
-- **Build Command:** `pip install -r requirements.txt`
-- **Start Command:** `uvicorn server:app --host 0.0.0.0 --port $PORT`
+### Backend — Web Service (Docker)
+The API image is built from the repo-root `Dockerfile` (`python:3.11.9-slim`).
+Do **not** use Render's native Python runtime — it currently defaults to
+**3.14.3**, and the pinned `pymongo` / `motor` / `bcrypt` wheels then fail at
+import with **Exited with status 3** (no uvicorn logs).
+
+- **Runtime:** Docker
+- **Dockerfile path:** `./Dockerfile`
+- **Docker build context:** repo root
 - **Health Check Path:** `/api/health`
 - Add the backend env vars from the table above.
+
+If this service already exists as native Python, change **Language** to Docker
+(or apply the Blueprint again) and trigger a **new deploy**, not a restart.
+Confirm the deploy log prints `grimoire python 3.11.9` before uvicorn starts.
 
 ### Frontend — Static Site
 - **Root Directory:** `frontend`
@@ -100,3 +109,7 @@ Render does not host MongoDB directly, so use the free **MongoDB Atlas** tier.
   active session warm.
 - Never commit real secrets. `render.yaml` uses `sync: false` so secret values
   live only in the Render dashboard.
+- If the API still exits before uvicorn logs, the runtime is not the Docker
+  image. The first log line must be `grimoire python 3.11.9 ...`.
+- Atlas `MONGO_URL` must be `mongodb+srv://...` with the password URL-encoded
+  if it contains `@`, `:`, `/`, `#`, or `%`. Network Access must allow `0.0.0.0/0`.

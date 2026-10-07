@@ -62,7 +62,7 @@ A full-stack **Magic: The Gathering (MTG) deck-builder, analyzer, and live cube-
 | `CORS_ORIGINS` | ⬜ (defaults `*`) | Comma-separated. Set to the frontend URL in prod. |
 | `ADMIN_EMAIL` | ⬜ | Seed admin, default `admin@grimoire.gg` |
 | `ADMIN_PASSWORD` | ⬜ | Seed admin, default `grimoire123` |
-| `PYTHON_VERSION` | (set in render.yaml) | `3.11.9` |
+| (Docker image) | — | `grimoire-api` is `runtime: docker` from `Dockerfile` (`python:3.11.9-slim`). Do not rely on Render native `PYTHON_VERSION`. |
 
 **Frontend (`grimoire-web`)**:
 | Key | Required | Notes |
@@ -81,7 +81,7 @@ A full-stack **Magic: The Gathering (MTG) deck-builder, analyzer, and live cube-
 Manual (non-Blueprint) settings are in `docs/RENDER_DEPLOYMENT.md` §3.
 
 ## 6. CRITICAL GOTCHAS (these already bit us once)
-1. **Python version** — Render defaults to **3.14**, which has no wheels for the pinned `pymongo==4.6.3` / `pydantic==2.13.5` → backend exits with **status 3** on start. Fixed by pinning **3.11.9** in `.python-version` + `runtime.txt` + `render.yaml` `PYTHON_VERSION`. **Do not remove these.** If you bump deps, either keep 3.11 or move to versions with 3.13/3.14 wheels and test.
+1. **Python version** — Render native Python defaults to **3.14.3**, which has no wheels for the pinned `pymongo==4.6.3` / `motor==3.3.1` / `bcrypt==4.1.3` → backend exits with **status 3** at import, before uvicorn logs. `.python-version` / `PYTHON_VERSION` did **not** stop that on the live service. The API now deploys as **Docker** from the repo-root `Dockerfile` (`python:3.11.9-slim`). Do not switch `grimoire-api` back to native Python unless you also bump those deps to cp314 wheels and re-test.
 2. **`mongodb+srv://` needs `dnspython` + `certifi`** — both are in `requirements.txt`. Removing them breaks Atlas connections.
 3. **requirements.txt is intentionally slim (14 pkgs).** It was trimmed from ~100 sandbox packages to speed up Render builds. Only `server.py` imports: fastapi, uvicorn, starlette, motor/pymongo, bcrypt, PyJWT, httpx, pydantic, email-validator, python-dotenv, python-multipart (+ dnspython, certifi). Don't re-add unused heavy deps (litellm/openai/pandas/etc.).
 4. **All routes are prefixed `/api`** (via `APIRouter(prefix="/api")`). The frontend always calls `${REACT_APP_BACKEND_URL}/api/...`. Keep this contract.
@@ -136,8 +136,8 @@ Test admin: `admin@grimoire.gg` / `grimoire123` (override via ADMIN_EMAIL/ADMIN_
 - **Tech-debt** `server.py` is ~733 lines; consider splitting into `routers/` (auth, cards, decks, drafts) — optional, not blocking.
 
 ## 11. First tasks for you (Cursor), in order
-1. Confirm the repo has: `backend/.python-version`, `backend/runtime.txt`, root `.python-version`, root `runtime.txt`, `render.yaml` with `PYTHON_VERSION=3.11.9`, slim `backend/requirements.txt`. (All committed by the previous agent.)
-2. Deploy via Render Blueprint, set env vars (§4), fix CORS ordering (§5.4).
-3. Hit `/api/health`, log in as admin, create a deck, open a draft lobby — smoke test.
-4. If the backend still exits status 3, read the start log for the `_require_env` message (missing var) vs a wheel/build error (Python version) and act per §6.
+1. Confirm the repo has: repo-root `Dockerfile` (`python:3.11.9-slim`), `render.yaml` `grimoire-api` `runtime: docker`, slim `backend/requirements.txt`.
+2. Push, then on Render apply the Blueprint (or set `grimoire-api` Language to Docker) and **deploy** — a restart of the old Python runtime is not enough.
+3. Runtime logs must show `grimoire python 3.11.9` then uvicorn. Hit `/api/health`, log in as admin, create a deck, open a draft lobby.
+4. If status 3 remains, the service is still native Python 3.14 or `MONGO_URL`/`JWT_SECRET`/`DB_NAME` is missing (`_require_env` RuntimeError).
 5. Then pick up the P1 backlog item (format legality).

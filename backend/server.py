@@ -1,3 +1,7 @@
+import sys
+
+print(f"grimoire python {sys.version}", file=sys.stderr, flush=True)
+
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -10,6 +14,7 @@ import bcrypt
 import jwt
 import httpx
 import csv
+import certifi
 from pathlib import Path
 from pydantic import BaseModel, EmailStr, Field
 from typing import List, Optional, Dict, Any
@@ -32,7 +37,10 @@ def _require_env(key: str) -> str:
 
 
 mongo_url = _require_env('MONGO_URL')
-client = AsyncIOMotorClient(mongo_url)
+mongo_kwargs = {}
+if mongo_url.startswith("mongodb+srv://"):
+    mongo_kwargs["tlsCAFile"] = certifi.where()
+client = AsyncIOMotorClient(mongo_url, **mongo_kwargs)
 db = client[_require_env('DB_NAME')]
 
 JWT_ALGORITHM = "HS256"
@@ -719,10 +727,11 @@ async def startup():
 
 app.include_router(api_router)
 
+_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_credentials="*" not in _cors_origins,
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
