@@ -25,7 +25,10 @@ Full-stack web app "Grimoire": a fast, modern Magic: The Gathering deck-builder 
 ## Deployment (2026-06-09)
 - Render deploy prepared: `render.yaml` (Blueprint) + `docs/RENDER_DEPLOYMENT.md` guide.
 - Slimmed `backend/requirements.txt` from ~100 base-env packages to 14 essentials (kept `dnspython`+`certifi` for Atlas `mongodb+srv://`). Backend verified healthy post-change.
-- Actual deploy is user-run (needs their GitHub/Render/Atlas accounts); handed over full step-by-step playbook via "Save to Github" → Render Blueprint → Atlas env vars.
+- Fixed Render status-3 start crash: pinned Python 3.11.9 via `.python-version` + `runtime.txt` (root + backend) + `PYTHON_VERSION` env in render.yaml (Render was defaulting to 3.14 → no wheels for pinned pymongo/pydantic).
+- Hardened `server.py` startup: bare `os.environ[...]` replaced with `_require_env()` → human-readable RuntimeError listing required keys (MONGO_URL, DB_NAME, JWT_SECRET) instead of silent KeyError.
+- Emergent-reference audit: `.env` files are git-ignored (NOT shipped) so the Emergent preview URL never reaches GitHub; frontend reads `process.env.REACT_APP_BACKEND_URL`; `.env.example` files are Render-ready; cleaned the lone test fallback URL. Only `docs/MIGRATION.md` mentions Emergent (intentional migration notes).
+- Regression: 76/76 backend tests pass (iteration_13). Python pinning + env fail-fast can only be validated on Render itself.
 
 ## Implemented (2026-06-06)
 - JWT auth: register/login/me; admin seeding; MongoDB indexes.
