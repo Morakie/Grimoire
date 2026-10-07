@@ -11,6 +11,8 @@ services:
     startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
       - key: MONGO_URL
         sync: false            # set in the Render dashboard (MongoDB Atlas SRV string)
       - key: DB_NAME

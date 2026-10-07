@@ -18,12 +18,25 @@ from datetime import datetime, timezone, timedelta
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-mongo_url = os.environ['MONGO_URL']
+
+def _require_env(key: str) -> str:
+    value = os.environ.get(key)
+    if not value:
+        raise RuntimeError(
+            f"Missing required environment variable '{key}'. "
+            f"Set it in your Render service (or local backend/.env). "
+            f"Required keys: MONGO_URL, DB_NAME, JWT_SECRET. "
+            f"Optional: CORS_ORIGINS, ADMIN_EMAIL, ADMIN_PASSWORD."
+        )
+    return value
+
+
+mongo_url = _require_env('MONGO_URL')
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[_require_env('DB_NAME')]
 
 JWT_ALGORITHM = "HS256"
-JWT_SECRET = os.environ["JWT_SECRET"]
+JWT_SECRET = _require_env("JWT_SECRET")
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
