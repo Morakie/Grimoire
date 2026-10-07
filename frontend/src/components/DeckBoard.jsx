@@ -218,8 +218,11 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
     cards.forEach((c) => { const k = groupKeyFor(c, group); (map[k] = map[k] || []).push(c); });
     const order = GROUP_ORDER[group];
     const extra = Object.keys(map).filter((k) => !order.includes(k));
-    // Always render every group in order (even empty) so columns stay as drop targets.
-    return [...order, ...extra].map((k) => ({ key: k, cards: sortCards(map[k] || [], sort, group) }));
+    // Empty groups (e.g. Battles) are hidden, except while a card is being dragged so they
+    // can still be used as drop targets for moving a card into a new group.
+    return [...order, ...extra]
+      .filter((k) => (map[k] && map[k].length) || activeCard)
+      .map((k) => ({ key: k, cards: sortCards(map[k] || [], sort, group) }));
   };
 
   const findCard = (cat, cid) => deck[cat].find((c) => c.id === cid);
