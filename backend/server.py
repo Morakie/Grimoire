@@ -412,6 +412,11 @@ class ChatInput(BaseModel):
 class CancelInput(BaseModel):
     host_token: str
 
+class AdminPickInput(BaseModel):
+    host_token: str
+    order: int
+    card_id: str
+
 def compute_pick_order(num_seats: int, double_after: int, pick_cap: int, pool_size: int) -> List[int]:
     """Snake order over seats with optional double-draft phase. Endpoints repeat
     naturally in a snake, so during the double phase boundary seats get 4 picks in a row."""
@@ -616,6 +621,41 @@ async def make_pick(share_id: str, data: PickInput):
     d["picks"].append({"order": pick_index, "seat_index": data.seat_index, "card_id": data.card_id, "ts": datetime.now(timezone.utc).isoformat()})
     new_status = "complete" if len(d["picks"]) >= len(d["order"]) else "drafting"
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"picks": d["picks"], "status": new_status, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    d = await db.drafts.find_one({"share_id": share_id})
+    return draft_state(d, light=True)
+
+
+@api_router.post("/drafts/{share_id}/undo")
+async def undo_pick(share_id: str, data: CancelInput):
+    d = await db.drafts.find_one({"share_id": share_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("host_token") != data.host_token:
+        raise HTTPException(status_code=403, detail="Only the host can undo picks")
+    if not d.get("picks"):
+        raise HTTPException(status_code=400, detail="No picks to undo")
+    picks = d["picks"][:-1]
+    await db.drafts.update_one({"share_id": share_id}, {"$set": {"picks": picks, "status": "drafting", "updated_at": datetime.now(timezone.utc).isoformat()}})
+    d = await db.drafts.find_one({"share_id": share_id})
+    return draft_state(d, light=True)
+
+
+@api_router.post("/drafts/{share_id}/reassign")
+async def reassign_pick(share_id: str, data: AdminPickInput):
+    d = await db.drafts.find_one({"share_id": share_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("host_token") != data.host_token:
+        raise HTTPException(status_code=403, detail="Only the host can reassign picks")
+    pk = next((p for p in d.get("picks", []) if p["order"] == data.order), None)
+    if not pk:
+        raise HTTPException(status_code=404, detail="Pick not found")
+    if not any(c["id"] == data.card_id for c in d["cube"]):
+        raise HTTPException(status_code=400, detail="Card not in cube")
+    if any(p["card_id"] == data.card_id for p in d["picks"] if p["order"] != data.order):
+        raise HTTPException(status_code=409, detail="Card already drafted")
+    pk["card_id"] = data.card_id
+    await db.drafts.update_one({"share_id": share_id}, {"$set": {"picks": d["picks"], "updated_at": datetime.now(timezone.utc).isoformat()}})
     d = await db.drafts.find_one({"share_id": share_id})
     return draft_state(d, light=True)
 

@@ -4,7 +4,7 @@ import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { buildExport } from "@/components/ExportDialog";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2 } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -56,6 +56,8 @@ export default function DraftRoom() {
   const [hidePicked, setHidePicked] = useState(false);
   const [confirmCard, setConfirmCard] = useState(null);
   const [hoverCard, setHoverCard] = useState(null);
+  const [reassignPick, setReassignPick] = useState(null);
+  const [reassignQuery, setReassignQuery] = useState("");
   const [view, setView] = useState("pick");
   const [deckSeat, setDeckSeat] = useState(null);
   const [showMiniTable, setShowMiniTable] = useState(false);
@@ -162,6 +164,15 @@ export default function DraftRoom() {
   const removeFromQueue = (id) => setQueue((q) => q.filter((x) => x !== id));
   const moveQueue = (id, dir) => setQueue((q) => { const i = q.indexOf(id); const j = i + dir; if (i < 0 || j < 0 || j >= q.length) return q; const n = [...q]; [n[i], n[j]] = [n[j], n[i]]; return n; });
   const toggleMute = () => setMuted((m) => { localStorage.setItem("grim_draft_muted", (!m).toString()); return !m; });
+
+  const undoPick = async () => {
+    try { const { data } = await api.post(`/drafts/${shareId}/undo`, { host_token: hostToken }); setState(data); toast.success("Last pick undone"); }
+    catch (e) { toast.error(e.response?.data?.detail || "Could not undo"); }
+  };
+  const doReassign = async (cardId) => {
+    try { const { data } = await api.post(`/drafts/${shareId}/reassign`, { host_token: hostToken, order: reassignPick.order, card_id: cardId }); setState(data); setReassignPick(null); setReassignQuery(""); toast.success("Pick reassigned"); }
+    catch (e) { toast.error(e.response?.data?.detail || "Could not reassign"); }
+  };
 
   const seatsSorted = [...state.seats].sort((a, b) => a.index - b.index);
   const seatLabel = (seatIdx) => { const s = state.seats.find((x) => x.index === seatIdx); return `${s?.player_name || "Seat"} (Seat ${seatIdx + 1})`; };
@@ -307,7 +318,8 @@ export default function DraftRoom() {
                     <td key={s.index} className="p-0.5 border-l border-slate-800/60">
                       {card ? (
                         <div data-testid={compact ? undefined : `table-cell-${s.index}-${r}`} onMouseEnter={hoverIn(card)} onMouseLeave={hoverOut(card)}
-                          className={`rounded truncate cursor-default ${cell} ${colorClass(card)}`}>{card.name}</div>
+                          onClick={hostToken ? () => setReassignPick({ order: pk.order, seat_index: s.index, card }) : undefined}
+                          className={`rounded truncate ${cell} ${colorClass(card)} ${hostToken ? "cursor-pointer hover:ring-2 hover:ring-amber-300" : "cursor-default"}`}>{card.name}</div>
                       ) : <div className={`${cell} text-slate-700`}>·</div>}
                     </td>
                   );
@@ -394,6 +406,9 @@ export default function DraftRoom() {
             )}
             <Input readOnly value={shareUrl} className="w-56 h-8 bg-slate-950 border-slate-700 text-slate-300 text-xs hidden sm:block" data-testid="draft-share-url" />
             <Button size="sm" variant="outline" data-testid="draft-copy-link" onClick={() => { navigator.clipboard.writeText(shareUrl); toast.success("Invite link copied"); }} className="bg-slate-900 border-slate-700 text-slate-200"><Copy className="w-4 h-4 sm:mr-1.5" /><span className="hidden sm:inline">Copy invite</span></Button>
+            {hostToken && (state.status === "drafting" || state.status === "complete") && (state.picks?.length > 0) && (
+              <Button size="sm" variant="outline" data-testid="undo-pick" onClick={undoPick} title="Undo last pick (host)" className="bg-slate-900 border-amber-400/40 text-amber-300 hover:bg-amber-400/10"><Undo2 className="w-4 h-4 sm:mr-1.5" /><span className="hidden sm:inline">Undo pick</span></Button>
+            )}
             {hostToken && state.status !== "complete" && (
               <Button size="sm" variant="outline" data-testid="close-table" onClick={cancelTable} className="bg-slate-900 border-red-500/40 text-red-300 hover:bg-red-500/10"><X className="w-4 h-4 sm:mr-1.5" /><span className="hidden sm:inline">Close table</span></Button>
             )}
@@ -567,6 +582,27 @@ export default function DraftRoom() {
               <button data-testid="mini-table-close" onClick={() => setShowMiniTable(false)} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
             </div>
             <div className="overflow-auto p-3">{renderDraftTable(false)}</div>
+          </div>
+        </div>
+      )}
+
+      {reassignPick && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" data-testid="reassign-dialog" onClick={() => setReassignPick(null)}>
+          <div className="bg-[#0b111e] border border-slate-700 rounded-2xl p-4 w-full max-w-md max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="font-display font-bold text-sm">Reassign pick #{reassignPick.order + 1} · {seatLabel(reassignPick.seat_index)}</h3>
+              <button onClick={() => setReassignPick(null)} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
+            </div>
+            <p className="text-xs text-slate-500 mb-2">Currently <span className="text-slate-300">{reassignPick.card?.name}</span>. Pick a still-available card to swap it to.</p>
+            <Input data-testid="reassign-filter" value={reassignQuery} onChange={(e) => setReassignQuery(e.target.value)} placeholder="Filter cards..." className="h-9 bg-slate-950 border-slate-700 text-slate-100 mb-2" />
+            <div className="overflow-y-auto space-y-0.5">
+              {(draft.cube || []).filter((c) => (!pickedIds.has(c.id) || c.id === reassignPick.card?.id) && (!reassignQuery.trim() || c.name.toLowerCase().includes(reassignQuery.toLowerCase()))).slice(0, 200).map((c) => (
+                <button key={c.id} data-testid={`reassign-option-${c.id}`} onClick={() => doReassign(c.id)} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
+                  className={`w-full flex items-center gap-2 text-left text-sm px-2 py-1.5 rounded hover:bg-amber-400/10 ${c.id === reassignPick.card?.id ? "text-amber-300" : "text-slate-200"}`}>
+                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${colorClass(c)}`} /><span className="truncate">{c.name}</span>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       )}
