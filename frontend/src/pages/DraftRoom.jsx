@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ManaCost } from "@/components/ManaCost";
 import { buildExport } from "@/components/ExportDialog";
-import { Sparkles, Loader2, Copy, Check } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -21,6 +21,7 @@ export default function DraftRoom() {
   const [claimName, setClaimName] = useState("");
   const [query, setQuery] = useState("");
   const [picking, setPicking] = useState(false);
+  const [chatText, setChatText] = useState("");
 
   // initial full load (includes cube)
   useEffect(() => {
@@ -70,6 +71,17 @@ export default function DraftRoom() {
     finally { setPicking(false); }
   };
 
+  const sendChat = async () => {
+    if (!me) { toast.error("Claim a seat to chat"); return; }
+    const text = chatText.trim();
+    if (!text) return;
+    setChatText("");
+    try {
+      const { data } = await api.post(`/drafts/${shareId}/chat`, { player_token: me.player_token, text });
+      setState(data);
+    } catch (e) { toast.error(e.response?.data?.detail || "Could not send"); }
+  };
+
   const seatPicks = (seatIdx) => (state.picks || []).filter((p) => p.seat_index === seatIdx).map((p) => cubeById[p.card_id]).filter(Boolean);
   const deckForSeat = (seatIdx) => {
     const cards = seatPicks(seatIdx);
@@ -93,6 +105,10 @@ export default function DraftRoom() {
   const myTurn = me && state.current_seat_index != null && me.seats.includes(state.current_seat_index);
   const available = (draft.cube || []).filter((c) => !pickedIds.has(c.id) && (!query.trim() || c.name.toLowerCase().includes(query.toLowerCase())));
   const currentSeatName = state.current_seat_index != null ? state.seats.find((s) => s.index === state.current_seat_index)?.player_name : null;
+  const pickFeed = (state.picks || []).map((p) => {
+    const seat = state.seats.find((s) => s.index === p.seat_index);
+    return { ...p, player_name: seat?.player_name, card: cubeById[p.card_id] };
+  }).reverse();
 
   return (
     <div className="min-h-screen bg-[#060a14] text-slate-100 grim-grain">
@@ -104,7 +120,7 @@ export default function DraftRoom() {
           <span className="text-xs px-2 py-0.5 rounded-full border border-slate-700 text-slate-300 capitalize">{state.status}</span>
           <div className="ml-auto flex items-center gap-2">
             <Input readOnly value={shareUrl} className="w-56 h-8 bg-slate-950 border-slate-700 text-slate-300 text-xs hidden sm:block" data-testid="draft-share-url" />
-            <Button size="sm" variant="outline" data-testid="draft-copy-link" onClick={() => { navigator.clipboard.writeText(shareUrl); toast.success("Link copied"); }} className="bg-slate-900 border-slate-700 text-slate-200"><Copy className="w-4 h-4" /></Button>
+            <Button size="sm" variant="outline" data-testid="draft-copy-link" onClick={() => { navigator.clipboard.writeText(shareUrl); toast.success("Invite link copied"); }} className="bg-slate-900 border-slate-700 text-slate-200"><Copy className="w-4 h-4 sm:mr-1.5" /><span className="hidden sm:inline">Copy invite</span></Button>
           </div>
         </div>
       </header>
@@ -128,6 +144,8 @@ export default function DraftRoom() {
           })}
         </div>
 
+        <div className="grid lg:grid-cols-[1fr_340px] gap-6">
+          <div className="min-w-0 space-y-6">
         {state.status === "lobby" && (
           <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 max-w-md" data-testid="lobby-panel">
             <h2 className="font-display text-xl font-bold mb-2">Join the draft</h2>
@@ -155,7 +173,7 @@ export default function DraftRoom() {
               <Input data-testid="cube-filter" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter available cards..." className="w-64 h-9 bg-slate-950 border-slate-700 text-slate-100" />
               <span className="text-xs text-slate-500">{available.length} available</span>
             </div>
-            <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-8 gap-3" data-testid="available-cards">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3" data-testid="available-cards">
               {available.slice(0, 160).map((c) => (
                 <button key={c.id} data-testid={`pool-card-${c.id}`} disabled={!myTurn || picking} onClick={() => pick(c)}
                   className="group relative rounded-lg overflow-hidden border border-slate-800 hover:border-amber-400/60 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
@@ -187,6 +205,47 @@ export default function DraftRoom() {
             <p className="text-xs text-slate-500 mt-4">Editing opens the deck in the builder. Sign in there to save your changes.</p>
           </div>
         )}
+          </div>
+
+          <aside className="space-y-4" data-testid="draft-sidebar">
+            {pickFeed.length > 0 && (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4" data-testid="pick-feed">
+                <h3 className="font-display font-semibold text-sm mb-3 flex items-center gap-2"><ListChecks className="w-4 h-4 text-amber-400" /> Pick feed</h3>
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  {pickFeed.map((p) => (
+                    <div key={p.order} data-testid={`pick-feed-item-${p.order}`} className="flex items-center gap-1.5 text-xs">
+                      <span className="text-amber-400 font-semibold shrink-0 truncate max-w-[90px]">{p.player_name || `Seat ${p.seat_index + 1}`}</span>
+                      <span className="text-slate-500 shrink-0">took</span>
+                      <span className="text-slate-200 truncate">{p.card?.name || "a card"}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4 flex flex-col" data-testid="chat-panel">
+              <h3 className="font-display font-semibold text-sm mb-3 flex items-center gap-2"><MessageSquare className="w-4 h-4 text-amber-400" /> Table chat</h3>
+              <div className="space-y-2 max-h-64 overflow-y-auto pr-1 mb-3" data-testid="chat-messages">
+                {(state.messages || []).length === 0 ? (
+                  <p className="text-xs text-slate-600">No messages yet. Say hello!</p>
+                ) : (state.messages || []).map((m, i) => (
+                  <div key={m.id || i} data-testid={`chat-message-${i}`} className="text-xs leading-relaxed">
+                    <span className="text-amber-400 font-semibold">{m.name}</span>
+                    <span className="text-slate-300 ml-1.5 break-words">{m.text}</span>
+                  </div>
+                ))}
+              </div>
+              {me ? (
+                <div className="flex gap-2">
+                  <Input data-testid="chat-input" value={chatText} onChange={(e) => setChatText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") sendChat(); }} placeholder="Message the table..." className="h-9 bg-slate-950 border-slate-700 text-slate-100 text-sm focus-visible:ring-amber-400" />
+                  <Button data-testid="chat-send" onClick={sendChat} size="sm" className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold shrink-0">Send</Button>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-600">Claim a seat to join the chat.</p>
+              )}
+            </div>
+          </aside>
+        </div>
       </main>
     </div>
   );

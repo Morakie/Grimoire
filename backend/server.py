@@ -386,6 +386,10 @@ class PickInput(BaseModel):
     seat_index: int
     card_id: str
 
+class ChatInput(BaseModel):
+    player_token: str
+    text: str = Field(min_length=1, max_length=500)
+
 def compute_pick_order(num_seats: int, double_after: int, pick_cap: int, pool_size: int) -> List[int]:
     """Snake order over seats with optional double-draft phase. Endpoints repeat
     naturally in a snake, so during the double phase boundary seats get 4 picks in a row."""
@@ -431,6 +435,7 @@ def draft_state(d: dict, light: bool = False) -> dict:
         "pick_index": len(d.get("picks", [])),
         "order_len": len(d.get("order", [])),
         "current_seat_index": (d["order"][len(d.get("picks", []))] if d["status"] == "drafting" and len(d.get("picks", [])) < len(d.get("order", [])) else None),
+        "messages": d.get("messages", [])[-50:],
     }
     if not light:
         base["cube"] = d.get("cube", [])
@@ -473,6 +478,7 @@ async def create_draft(data: DraftCreate):
         "players": [],
         "order": [],
         "picks": [],
+        "messages": [],
         "created_at": now,
         "updated_at": now,
     }
@@ -576,6 +582,23 @@ async def make_pick(share_id: str, data: PickInput):
     d["picks"].append({"order": pick_index, "seat_index": data.seat_index, "card_id": data.card_id, "ts": datetime.now(timezone.utc).isoformat()})
     new_status = "complete" if len(d["picks"]) >= len(d["order"]) else "drafting"
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"picks": d["picks"], "status": new_status, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    d = await db.drafts.find_one({"share_id": share_id})
+    return draft_state(d, light=True)
+
+
+@api_router.post("/drafts/{share_id}/chat")
+async def post_chat(share_id: str, data: ChatInput):
+    d = await db.drafts.find_one({"share_id": share_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    player = next((p for p in d.get("players", []) if p["token"] == data.player_token), None)
+    if not player:
+        raise HTTPException(status_code=403, detail="Claim a seat to chat")
+    msg = {"id": str(uuid.uuid4()), "name": player["name"], "text": data.text.strip(), "ts": datetime.now(timezone.utc).isoformat()}
+    messages = d.get("messages", [])
+    messages.append(msg)
+    messages = messages[-200:]
+    await db.drafts.update_one({"share_id": share_id}, {"$set": {"messages": messages, "updated_at": datetime.now(timezone.utc).isoformat()}})
     d = await db.drafts.find_one({"share_id": share_id})
     return draft_state(d, light=True)
 
