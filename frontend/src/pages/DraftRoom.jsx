@@ -4,7 +4,7 @@ import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { buildExport } from "@/components/ExportDialog";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Maximize2, Minimize2 } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -62,8 +62,10 @@ export default function DraftRoom() {
   const [muted, setMuted] = useState(() => localStorage.getItem("grim_draft_muted") === "true");
   const [queue, setQueue] = useState(() => { try { return JSON.parse(localStorage.getItem(`grim_draft_queue_${shareId}`)) || []; } catch { return []; } });
   const hostToken = useMemo(() => { try { return localStorage.getItem(`grim_draft_host_${shareId}`); } catch { return null; } }, [shareId]);
+  const [queueExpanded, setQueueExpanded] = useState(false);
   const prevTurnRef = useRef(false);
-  const onMyTurnRef = useRef(() => {});
+  const autoPickRef = useRef(() => {});
+  const inFlightRef = useRef(false);
 
   useEffect(() => {
     api.get(`/drafts/${shareId}`).then(({ data }) => setDraft(data)).catch(() => { toast.error("Draft not found"); navigate("/draft"); });
@@ -90,9 +92,13 @@ export default function DraftRoom() {
   // Beep + auto-pick when it becomes your turn.
   useEffect(() => {
     const now = !!(state && me && state.status === "drafting" && state.current_seat_index != null && me.seats.includes(state.current_seat_index));
-    if (now && !prevTurnRef.current) onMyTurnRef.current();
+    if (now && !prevTurnRef.current && !muted) playBeep();
     prevTurnRef.current = now;
-  }, [state, me]);
+  }, [state, me, muted]);
+
+  // Auto-pick from the queue whenever it's our turn — re-runs on every state/queue change so
+  // it keeps picking across consecutive turns, wheel-backs and multi-seat players.
+  useEffect(() => { if (state && me) autoPickRef.current(); }, [state, me, queue]);
 
   if (!draft || !state) return <div className="h-screen flex items-center justify-center bg-[#060a14]"><Loader2 className="w-8 h-8 text-amber-400 animate-spin" /></div>;
 
@@ -133,12 +139,13 @@ export default function DraftRoom() {
     if (!me) { toast.error("Claim a seat first"); return; }
     const seat = state.current_seat_index;
     if (!me.seats.includes(seat)) { toast.error("Not your turn"); return; }
+    inFlightRef.current = true;
     setPicking(true);
     try {
       const { data } = await api.post(`/drafts/${shareId}/pick`, { player_token: me.player_token, seat_index: seat, card_id: card.id });
       setState(data);
     } catch (e) { toast.error(e.response?.data?.detail || "Pick failed"); }
-    finally { setPicking(false); }
+    finally { setPicking(false); inFlightRef.current = false; }
   };
 
   const sendChat = async () => {
@@ -181,10 +188,10 @@ export default function DraftRoom() {
   const myTurn = me && state.current_seat_index != null && me.seats.includes(state.current_seat_index);
   const currentSeatName = state.current_seat_index != null ? state.seats.find((s) => s.index === state.current_seat_index)?.player_name : null;
 
-  // Auto-pick the top available queued card when it's our turn (updated each render, fired by the turn effect).
-  onMyTurnRef.current = () => {
-    if (!muted) playBeep();
-    if (picking) return;
+  // Auto-pick the top still-available queued card whenever it's our turn.
+  autoPickRef.current = () => {
+    if (inFlightRef.current) return;
+    if (!(state.status === "drafting" && me && state.current_seat_index != null && me.seats.includes(state.current_seat_index))) return;
     const next = queue.map((id) => cubeById[id]).find((c) => c && !pickedIds.has(c.id));
     if (next) { toast.success(`Auto-picked ${next.name} from your queue`); pick(next); }
   };
@@ -469,33 +476,6 @@ export default function DraftRoom() {
           </div>
 
           <aside className="space-y-4 lg:sticky lg:top-20 self-start" data-testid="draft-sidebar">
-            {state.status === "drafting" && (
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4" data-testid="queue-panel">
-                <h3 className="font-display font-semibold text-sm mb-1 flex items-center gap-2"><Bookmark className="w-4 h-4 text-amber-400" /> Pick queue</h3>
-                <p className="text-[11px] text-slate-500 mb-3">Auto-picks your top available card the moment it's your turn.</p>
-                {queue.length === 0 ? (
-                  <p className="text-xs text-slate-600">Hit the bookmark on any card to queue it.</p>
-                ) : (
-                  <div className="space-y-1.5">
-                    {queue.map((id, i) => {
-                      const c = cubeById[id]; if (!c) return null;
-                      const taken = pickedIds.has(id);
-                      return (
-                        <div key={id} data-testid={`queue-item-${id}`} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
-                          className={`flex items-center gap-1 text-xs rounded-md p-1 hover:bg-slate-800/60 ${taken ? "opacity-40" : ""}`}>
-                          <span className="text-slate-500 w-4 tabular-nums">{i + 1}</span>
-                          <span className="flex-1 truncate text-slate-200">{c.name}{taken && <span className="text-red-400 ml-1">(taken)</span>}</span>
-                          <button data-testid={`queue-up-${id}`} onClick={() => moveQueue(id, -1)} disabled={i === 0} className="p-0.5 text-slate-500 hover:text-amber-300 disabled:opacity-20"><ArrowUp className="w-3.5 h-3.5" /></button>
-                          <button data-testid={`queue-down-${id}`} onClick={() => moveQueue(id, 1)} disabled={i === queue.length - 1} className="p-0.5 text-slate-500 hover:text-amber-300 disabled:opacity-20"><ArrowDown className="w-3.5 h-3.5" /></button>
-                          <button data-testid={`queue-remove-${id}`} onClick={() => removeFromQueue(id)} className="p-0.5 text-slate-500 hover:text-red-400"><X className="w-3.5 h-3.5" /></button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-
             {state.status !== "lobby" && (
               <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-2 h-[300px] flex items-center justify-center overflow-hidden" data-testid="card-preview">
                 {hoverCard ? (
@@ -551,6 +531,65 @@ export default function DraftRoom() {
           </aside>
         </div>
       </main>
+
+      {state.status === "drafting" && (
+        queueExpanded ? (
+          <div className="fixed inset-4 sm:inset-10 z-50 bg-[#0b111e] border border-amber-400/40 rounded-2xl shadow-2xl flex flex-col" data-testid="queue-panel">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+              <span className="font-display font-semibold flex items-center gap-2"><Bookmark className="w-4 h-4 text-amber-400" /> Pick queue <span className="text-xs text-slate-500">({queue.length})</span></span>
+              <button data-testid="queue-collapse" onClick={() => setQueueExpanded(false)} className="text-slate-400 hover:text-white"><Minimize2 className="w-4 h-4" /></button>
+            </div>
+            <p className="px-4 pt-3 text-[11px] text-slate-500">Auto-picks your top still-available card the moment it's your turn. Reorder priority with the arrows.</p>
+            <div className="flex-1 overflow-y-auto p-4">
+              {queue.length === 0 ? <p className="text-sm text-slate-600">Bookmark cards in the pool to queue them.</p> : (
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                  {queue.map((id, i) => { const c = cubeById[id]; if (!c) return null; const taken = pickedIds.has(id);
+                    return (
+                      <div key={id} data-testid={`queue-item-${id}`} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)} className={`flex gap-2 rounded-lg border border-slate-800 bg-slate-900/60 p-2 ${taken ? "opacity-40" : ""}`}>
+                        <div className="w-12 h-16 rounded bg-slate-800 overflow-hidden shrink-0 flex items-center justify-center">
+                          {(c.image || c.art_crop) ? <img src={c.image || c.art_crop} alt={c.name} className="w-full h-full object-cover" /> : <span className="text-[8px] text-slate-500 text-center px-0.5">{c.name.slice(0, 12)}</span>}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs text-slate-200 truncate">{i + 1}. {c.name}{taken && <span className="text-red-400 ml-1">(taken)</span>}</div>
+                          <div className="flex gap-1 mt-1">
+                            <button data-testid={`queue-up-${id}`} onClick={() => moveQueue(id, -1)} disabled={i === 0} className="p-1 text-slate-500 hover:text-amber-300 disabled:opacity-20"><ArrowUp className="w-3.5 h-3.5" /></button>
+                            <button data-testid={`queue-down-${id}`} onClick={() => moveQueue(id, 1)} disabled={i === queue.length - 1} className="p-1 text-slate-500 hover:text-amber-300 disabled:opacity-20"><ArrowDown className="w-3.5 h-3.5" /></button>
+                            <button data-testid={`queue-remove-${id}`} onClick={() => removeFromQueue(id)} className="p-1 text-slate-500 hover:text-red-400"><X className="w-3.5 h-3.5" /></button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="fixed bottom-4 left-4 z-40 w-[300px] bg-[#0b111e] border border-slate-700 rounded-xl shadow-2xl flex flex-col" data-testid="queue-panel">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-slate-800">
+              <span className="text-xs font-display font-semibold flex items-center gap-1.5"><Bookmark className="w-3.5 h-3.5 text-amber-400" /> Pick queue <span className="text-slate-500">({queue.length})</span></span>
+              <button data-testid="queue-expand" onClick={() => setQueueExpanded(true)} title="Expand queue" className="text-slate-400 hover:text-amber-300"><Maximize2 className="w-3.5 h-3.5" /></button>
+            </div>
+            <div className="max-h-[230px] overflow-y-auto p-2">
+              {queue.length === 0 ? <p className="text-[11px] text-slate-600 px-1 py-2">Bookmark cards in the pool to queue them. Auto-picks on your turn.</p> : (
+                <div className="space-y-1">
+                  {queue.map((id, i) => { const c = cubeById[id]; if (!c) return null; const taken = pickedIds.has(id);
+                    return (
+                      <div key={id} data-testid={`queue-item-${id}`} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)} className={`flex items-center gap-1 text-xs rounded-md p-1 hover:bg-slate-800/60 ${taken ? "opacity-40" : ""}`}>
+                        <span className="text-slate-500 w-4 tabular-nums">{i + 1}</span>
+                        <span className="flex-1 truncate text-slate-200">{c.name}{taken && <span className="text-red-400 ml-1">(taken)</span>}</span>
+                        <button data-testid={`queue-up-${id}`} onClick={() => moveQueue(id, -1)} disabled={i === 0} className="p-0.5 text-slate-500 hover:text-amber-300 disabled:opacity-20"><ArrowUp className="w-3.5 h-3.5" /></button>
+                        <button data-testid={`queue-down-${id}`} onClick={() => moveQueue(id, 1)} disabled={i === queue.length - 1} className="p-0.5 text-slate-500 hover:text-amber-300 disabled:opacity-20"><ArrowDown className="w-3.5 h-3.5" /></button>
+                        <button data-testid={`queue-remove-${id}`} onClick={() => removeFromQueue(id)} className="p-0.5 text-slate-500 hover:text-red-400"><X className="w-3.5 h-3.5" /></button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      )}
 
       {showMiniTable && state.status !== "lobby" && (
         <div className="fixed bottom-4 right-4 z-40 w-[min(92vw,640px)] bg-[#0b111e] border border-amber-400/40 rounded-xl shadow-2xl overflow-hidden flex flex-col" data-testid="mini-table">
