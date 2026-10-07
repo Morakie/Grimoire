@@ -159,8 +159,8 @@ export default function DraftRoom() {
               {available.slice(0, 160).map((c) => (
                 <button key={c.id} data-testid={`pool-card-${c.id}`} disabled={!myTurn || picking} onClick={() => pick(c)}
                   className="group relative rounded-lg overflow-hidden border border-slate-800 hover:border-amber-400/60 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
-                  <div className="aspect-[0.716] bg-slate-800">
-                    {c.image ? <img src={c.image} alt={c.name} loading="lazy" className="w-full h-full object-cover" /> : <div className="p-2 text-xs text-slate-300">{c.name}</div>}
+                  <div className="aspect-[0.716] bg-slate-800 flex items-center justify-center">
+                    {(c.image || c.art_crop) ? <img src={c.image || c.art_crop} alt={c.name} loading="lazy" className="w-full h-full object-cover" /> : <div className="p-2 text-center text-xs font-medium text-slate-200 leading-tight">{c.name}</div>}
                   </div>
                   {myTurn && <div className="absolute inset-0 bg-amber-400/0 group-hover:bg-amber-400/15 transition-colors" />}
                 </button>
