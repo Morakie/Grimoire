@@ -38,6 +38,14 @@ Full-stack web app "Grimoire": a fast, modern Magic: The Gathering deck-builder 
 - `GET /api/health` → {status:ok}. Render deploy: `/app/render.yaml` (Blueprint: Python web service + static site) + `/app/docs/RENDER_DEPLOYMENT.md` (MongoDB Atlas setup, env vars, CORS).
 - Tested: 38/38 backend pytest; frontend P0 live-sync + landing draft flows 100%.
 
+## Implemented (2026-06-16) — Draft UX deepening + deck-builder fixes
+- Landing: open-lobby browser removed; "Start drafting" CTA kept. Lobby browser + "Host your own" now live on /draft (DraftSetup); host close/cancel table (`host_token`); stale lobbies (>12h) & started/cancelled drafts excluded from `/drafts/open`.
+- Draft room: sticky header + visible lobby invite link/table-code; seat spread fix (join-index modulo → no player holds both snake-end seats); seat tiles show each seat's last pick; turn notification beep (WebAudio) + mute toggle; default pool sort = CubeCobra ELO ("Rank", from backend `data/card_elo.csv`); Pick/Draft Table/Decks view switcher; hover card preview; confirm-pick dialog; sort (Rank/Name/Color/Type/CMC) + hide-picked (picked stays greyed); visual pick feed w/ seat labels; multi-seat "Name (Seat N)"; Draft Table grid (color-coded, snake arrows) + mini-table popout; per-seat Decks viewer w/ selector.
+- Pick QUEUE: bookmark cards → bottom-left collapsible/expandable widget; reorder/remove; auto-picks top still-available queued card on every turn (continuous effect — fixes multi-round/wheel-back), skips cards taken by others.
+- Deck builder: Back button → navigate(-1); Mana Value grouping separates Lands + always renders 0..7+ columns as drop targets; Custom/Manual = 8 header-less columns; Color grouping sub-sorts by type→CMC; card search & printings use earliest-print ordering (printings), search reverted to relevance.
+- Render deploy: render.yaml + docs/RENDER_DEPLOYMENT.md (MongoDB Atlas); GET /api/health.
+- Tested: backend pytest 36/36; frontend iter6–10 all green (incl. multi-round auto-pick).
+
 ## Backlog / Remaining
 - P2: Draft pool card-image fallback polish (DONE — now uses art_crop/name); cosmetic pytest return-not-None warning.
 - P2: Additional draft formats (standard cube, booster pack).
