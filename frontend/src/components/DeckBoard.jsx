@@ -117,11 +117,13 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
   const visibleCats = categories.filter((c) => c.key !== "commander" || (showCommander && true));
 
   const buildColumns = (cards) => {
-    const order = GROUP_ORDER[group];
     const map = {};
     cards.forEach((c) => { const k = groupKeyFor(c, group); (map[k] = map[k] || []).push(c); });
-    const keys = [...order.filter((k) => map[k]), ...Object.keys(map).filter((k) => !order.includes(k))];
-    return keys.map((k) => ({ key: k, cards: sortCards(map[k], sort) }));
+    if (group === "custom") return [{ key: "all", cards: sortCards(map["all"] || [], sort) }];
+    const order = GROUP_ORDER[group];
+    const extra = Object.keys(map).filter((k) => !order.includes(k));
+    // Always render every group in order (even empty) so columns stay as drop targets.
+    return [...order, ...extra].map((k) => ({ key: k, cards: sortCards(map[k] || [], sort) }));
   };
 
   const findCard = (cat, cid) => deck[cat].find((c) => c.id === cid);
@@ -144,6 +146,7 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
       const oc = findCard(o.cat, o.cid);
       destGroup = oc ? groupKeyFor(oc, group) : null;
     }
+    if (destGroup === "__auto__") destGroup = null;
     const card = findCard(a.cat, a.cid);
     if (!card) return;
 
@@ -198,6 +201,7 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
             {visibleCats.map((c) => {
               if (c.key === "commander" && !showCommander) return null;
               if (deck[c.key].length === 0 && (readOnly || c.key === "commander")) return null;
+              const sectionEmpty = deck[c.key].length === 0;
               const cols = buildColumns(deck[c.key]);
               return (
                 <section key={c.key} data-testid={`section-${c.key}`}>
@@ -206,8 +210,8 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
                     <span className="text-xs text-slate-500 tabular-nums" data-testid={`count-${c.key}`}>{totalCount(deck[c.key])}</span>
                   </div>
                   <div className="flex flex-wrap gap-x-5 gap-y-6 items-start">
-                    {cols.length === 0 ? (
-                      <Column cat={c.key} groupKey={group === "custom" ? "all" : (GROUP_ORDER[group][0] || "all")} label="" count={0} cards={[]} view={view} format={format} readOnly={readOnly} group={group} handlers={handlers} />
+                    {sectionEmpty ? (
+                      <Column cat={c.key} groupKey="__auto__" label="" count={0} cards={[]} view={view} format={format} readOnly={readOnly} group={group} handlers={handlers} />
                     ) : cols.map((col) => (
                       <Column key={col.key} cat={c.key} groupKey={col.key} label={col.key === "all" ? c.label : col.key}
                         count={totalCount(col.cards)} cards={col.cards} view={view} format={format} readOnly={readOnly} group={group} handlers={handlers} />

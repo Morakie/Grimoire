@@ -1,9 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/context/AuthContext";
-import api from "@/lib/api";
-import { Sparkles, Layers, BarChart3, Share2, ArrowRight, Zap, Shuffle, Users, RefreshCw } from "lucide-react";
+import { Sparkles, Layers, BarChart3, Share2, ArrowRight, Zap, Shuffle } from "lucide-react";
 
 const HERO_BG = "https://images.unsplash.com/photo-1578662996442-48f60103fc96?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwzfHxkYXJrJTIwZmFudGFzeSUyMHRleHR1cmUlMjBhYnN0cmFjdHxlbnwwfHx8fDE3OTEzMjU0NjB8MA&ixlib=rb-4.1.0&q=85";
 
@@ -11,28 +10,12 @@ const features = [
   { icon: Zap, title: "Real-time Scryfall search", desc: "Search every card ever printed with instant high-res art, oracle text and mana symbols." },
   { icon: Layers, title: "Arena-style deck builder", desc: "Split-screen workspace. Quick-add, drag to reorder, mainboard, sideboard & commander." },
   { icon: BarChart3, title: "Deep deck analytics", desc: "Live mana curve, color distribution and card-type breakdowns as you build." },
-  { icon: Share2, title: "Share any decklist", desc: "Generate a public link and switch card art to any printing, Moxfield-style." },
+  { icon: Shuffle, title: "Live Rotisserie drafts", desc: "Host a cube table, share a link, and draft together in real time with pick feed & chat." },
 ];
 
 export default function Landing() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [lobbies, setLobbies] = useState([]);
-  const [loadingLobbies, setLoadingLobbies] = useState(true);
-
-  const loadLobbies = async () => {
-    try {
-      const { data } = await api.get("/drafts/open");
-      setLobbies(data.drafts || []);
-    } catch { /* silent */ }
-    finally { setLoadingLobbies(false); }
-  };
-
-  useEffect(() => {
-    loadLobbies();
-    const iv = setInterval(loadLobbies, 5000);
-    return () => clearInterval(iv);
-  }, []);
 
   return (
     <div className="min-h-screen bg-[#060a14] text-slate-100 grim-grain">
@@ -77,48 +60,6 @@ export default function Landing() {
             </Button>
           </div>
         </div>
-      </section>
-
-      {/* Open draft lobbies */}
-      <section className="max-w-7xl mx-auto px-6 lg:px-10 pb-16">
-        <div className="flex items-center justify-between mb-5">
-          <div className="flex items-center gap-2">
-            <Users className="w-5 h-5 text-amber-400" />
-            <h2 className="font-display text-lg md:text-lg font-bold">Open draft lobbies</h2>
-          </div>
-          <button data-testid="refresh-lobbies" onClick={loadLobbies} className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-amber-300 transition-colors">
-            <RefreshCw className={`w-3.5 h-3.5 ${loadingLobbies ? "animate-spin" : ""}`} /> Refresh
-          </button>
-        </div>
-
-        {loadingLobbies ? (
-          <div className="text-sm text-slate-500" data-testid="lobbies-loading">Loading lobbies…</div>
-        ) : lobbies.length === 0 ? (
-          <div data-testid="lobbies-empty" className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/30 p-8 text-center">
-            <p className="text-sm text-slate-400">No open lobbies right now.</p>
-            <Button data-testid="empty-host-draft" onClick={() => navigate("/draft")} className="mt-4 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">
-              <Shuffle className="w-4 h-4 mr-2" /> Host a draft
-            </Button>
-          </div>
-        ) : (
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4" data-testid="lobby-list">
-            {lobbies.map((l) => (
-              <div key={l.share_id} data-testid={`lobby-${l.share_id}`} className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 hover:border-amber-400/40 transition-colors flex flex-col">
-                <div className="flex items-start justify-between gap-2">
-                  <h3 className="font-display font-semibold truncate">{l.name}</h3>
-                  <span className="text-[11px] px-2 py-0.5 rounded-full border border-amber-400/30 text-amber-300 shrink-0">lobby</span>
-                </div>
-                <div className="mt-2 text-xs text-slate-400 space-y-0.5">
-                  <div>{l.players_joined}/{l.num_players} players joined</div>
-                  <div>{l.seats_claimed}/{l.num_seats} seats claimed · {l.cube_size} cards</div>
-                </div>
-                <Button data-testid={`join-lobby-${l.share_id}`} onClick={() => navigate(`/draft/${l.share_id}`)} className="mt-4 w-full bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">
-                  Join draft <ArrowRight className="w-4 h-4 ml-1.5" />
-                </Button>
-              </div>
-            ))}
-          </div>
-        )}
       </section>
 
       <section className="max-w-7xl mx-auto px-6 lg:px-10 pb-28">

@@ -126,6 +126,7 @@ export function groupKeyFor(card, mode) {
   if (card.group_overrides && card.group_overrides[mode]) return card.group_overrides[mode];
   if (mode === "type") return primaryType(card.type_line);
   if (mode === "cmc") {
+    if ((card.type_line || "").toLowerCase().includes("land")) return "Lands";
     const b = Math.min(7, Math.floor(card.cmc || 0));
     return b === 7 ? "7+" : String(b);
   }
@@ -135,7 +136,7 @@ export function groupKeyFor(card, mode) {
 
 export const GROUP_ORDER = {
   type: ["Creatures", "Planeswalkers", "Instants", "Sorceries", "Artifacts", "Enchantments", "Battles", "Lands", "Other"],
-  cmc: ["0", "1", "2", "3", "4", "5", "6", "7+"],
+  cmc: ["0", "1", "2", "3", "4", "5", "6", "7+", "Lands"],
   color: ["White", "Blue", "Black", "Red", "Green", "Multicolor", "Colorless"],
   custom: ["all"],
 };

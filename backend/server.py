@@ -390,6 +390,9 @@ class ChatInput(BaseModel):
     player_token: str
     text: str = Field(min_length=1, max_length=500)
 
+class CancelInput(BaseModel):
+    host_token: str
+
 def compute_pick_order(num_seats: int, double_after: int, pick_cap: int, pool_size: int) -> List[int]:
     """Snake order over seats with optional double-draft phase. Endpoints repeat
     naturally in a snake, so during the double phase boundary seats get 4 picks in a row."""
@@ -479,15 +482,17 @@ async def create_draft(data: DraftCreate):
         "order": [],
         "picks": [],
         "messages": [],
+        "host_token": str(uuid.uuid4()),
         "created_at": now,
         "updated_at": now,
     }
     await db.drafts.insert_one(draft)
-    return draft_state(draft)
+    return {**draft_state(draft), "host_token": draft["host_token"]}
 
 @api_router.get("/drafts/open")
 async def list_open_drafts():
-    cursor = db.drafts.find({"status": "lobby"}).sort("created_at", -1).limit(30)
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
+    cursor = db.drafts.find({"status": "lobby", "created_at": {"$gte": cutoff}}).sort("created_at", -1).limit(30)
     out = []
     async for d in cursor:
         out.append({
@@ -558,6 +563,16 @@ async def start_draft(share_id: str):
     d = await db.drafts.find_one({"share_id": share_id})
     return draft_state(d)
 
+@api_router.post("/drafts/{share_id}/cancel")
+async def cancel_draft(share_id: str, data: CancelInput):
+    d = await db.drafts.find_one({"share_id": share_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("host_token") != data.host_token:
+        raise HTTPException(status_code=403, detail="Only the host can close this table")
+    await db.drafts.update_one({"share_id": share_id}, {"$set": {"status": "cancelled", "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"status": "cancelled"}
+
 @api_router.post("/drafts/{share_id}/pick")
 async def make_pick(share_id: str, data: PickInput):
     d = await db.drafts.find_one({"share_id": share_id})
@@ -594,7 +609,10 @@ async def post_chat(share_id: str, data: ChatInput):
     player = next((p for p in d.get("players", []) if p["token"] == data.player_token), None)
     if not player:
         raise HTTPException(status_code=403, detail="Claim a seat to chat")
-    msg = {"id": str(uuid.uuid4()), "name": player["name"], "text": data.text.strip(), "ts": datetime.now(timezone.utc).isoformat()}
+    text = data.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message is empty")
+    msg = {"id": str(uuid.uuid4()), "name": player["name"], "text": text, "ts": datetime.now(timezone.utc).isoformat()}
     messages = d.get("messages", [])
     messages.append(msg)
     messages = messages[-200:]
