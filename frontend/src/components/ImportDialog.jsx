@@ -21,8 +21,16 @@ function cleanName(name) {
     .replace(/\s*\[[^\]]*\]/g, "")         // [tags]
     .replace(/\s+#.*$/, "")                // trailing #comment
     .trim();
-  if (n.includes("//")) n = n.split("//")[0].trim();
+  // Double-faced cards: "Front // Back" (Scryfall) or "Front / Back" (Moxfield export).
+  n = n.split(/\s\/\/?\s/)[0].trim();
   return n;
+}
+
+// "(SLD) 2199" or "(PLST) EMA-78" → pin the exact printing.
+const PRINTING_RE = /\(([A-Za-z0-9]{2,6})\)\s+([^\s*]+)/;
+function parsePrinting(name) {
+  const m = name.match(PRINTING_RE);
+  return m ? { set: m[1].toLowerCase(), collector_number: m[2] } : {};
 }
 
 function parseText(text) {
@@ -46,9 +54,10 @@ function parseText(text) {
       m = line.match(/^(.+?)\s+[xX](\d+)$/);
       if (m) { name = m[1]; qty = parseInt(m[2], 10); }
     }
+    const printing = parsePrinting(name);
     name = cleanName(name);
     if (!name) continue;
-    out[section].push({ name, quantity: Math.max(1, qty) });
+    out[section].push({ name, quantity: Math.max(1, qty), ...printing });
   }
   return out;
 }
@@ -96,21 +105,21 @@ export default function ImportDialog({ open, onOpenChange, onImport }) {
     }
     const all = [...parsed.mainboard, ...parsed.sideboard, ...parsed.commander];
     if (!all.length) { toast.error("Could not find any cards in that list"); return; }
-    const uniqueNames = Array.from(new Set(all.map((c) => c.name)));
+    // One lookup per distinct name+printing; each line keeps a key back to its result.
+    const keyOf = (c) => [c.name.toLowerCase(), c.set || "", c.collector_number || ""].join("|");
+    const entries = Array.from(new Map(all.map((c) => [keyOf(c), {
+      key: keyOf(c), name: c.name, set: c.set || null, collector_number: c.collector_number || null,
+    }])).values());
 
     setLoading(true);
     try {
-      const { data } = await api.post("/cards/collection", { names: uniqueNames });
-      const lookup = {};
-      (data.cards || []).forEach((c) => {
-        lookup[c.name.toLowerCase()] = c;
-        if (c.name.includes("//")) lookup[c.name.split("//")[0].trim().toLowerCase()] = c;
-      });
+      const { data } = await api.post("/cards/collection", { entries });
+      const found = data.resolved || {};
       const resolve = (list) => {
         const resolved = [];
         const missing = [];
         list.forEach((item) => {
-          const card = lookup[item.name.toLowerCase()];
+          const card = found[keyOf(item)];
           if (card) resolved.push({ ...card, quantity: item.quantity });
           else missing.push(item.name);
         });

@@ -9,6 +9,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 import uuid
+import asyncio
 import random
 import bcrypt
 import jwt
@@ -257,11 +258,78 @@ async def card_printings(name: str):
         data = r.json()
     return {"printings": [map_card(c) for c in data.get("data", [])]}
 
+class CollectionEntry(BaseModel):
+    key: str
+    name: str
+    set: Optional[str] = None
+    collector_number: Optional[str] = None
+
 class CollectionInput(BaseModel):
     names: List[str] = []
+    # Richer import path: each entry may pin an exact printing (set + collector number).
+    entries: List[CollectionEntry] = []
+
+def _name_keys(c: Dict[str, Any]) -> List[str]:
+    """Every name a card can be looked up by: full name plus each face name."""
+    keys = [c.get("name", "")]
+    keys += [f.get("name", "") for f in c.get("card_faces") or []]
+    return [k.strip().lower() for k in keys if k]
+
+async def _collection_lookup(hc: httpx.AsyncClient, identifiers: List[dict]) -> List[dict]:
+    out = []
+    for i in range(0, len(identifiers), 75):
+        if i:
+            await asyncio.sleep(0.1)
+        r = await hc.post(f"{SCRYFALL}/cards/collection", json={"identifiers": identifiers[i:i + 75]})
+        if r.status_code == 200:
+            out.extend(r.json().get("data", []))
+    return out
+
+async def _resolve_entries(entries: List[CollectionEntry]) -> Dict[str, Any]:
+    """Resolve import entries in three passes: exact printing, exact name, fuzzy name."""
+    entries = entries[:400]
+    resolved: Dict[str, dict] = {}
+    async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
+        # Pass 1: exact printing for entries that specify set + collector number.
+        pinned = [e for e in entries if e.set and e.collector_number]
+        if pinned:
+            ids = [{"set": e.set.lower(), "collector_number": e.collector_number} for e in pinned]
+            by_print = {(c["set"].lower(), c["collector_number"]): c for c in await _collection_lookup(hc, ids)}
+            for e in pinned:
+                c = by_print.get((e.set.lower(), e.collector_number))
+                if c:
+                    resolved[e.key] = c
+
+        # Pass 2: exact name (front face is enough for double-faced cards).
+        pending = [e for e in entries if e.key not in resolved]
+        if pending:
+            names = list(dict.fromkeys(e.name for e in pending))
+            by_name: Dict[str, dict] = {}
+            for c in await _collection_lookup(hc, [{"name": n} for n in names]):
+                for k in _name_keys(c):
+                    by_name.setdefault(k, c)
+            for e in pending:
+                c = by_name.get(e.name.strip().lower())
+                if c:
+                    resolved[e.key] = c
+
+        # Pass 3: fuzzy name for anything still missing (typos, odd punctuation).
+        pending = [e for e in entries if e.key not in resolved][:25]
+        for e in pending:
+            await asyncio.sleep(0.1)
+            r = await hc.get(f"{SCRYFALL}/cards/named", params={"fuzzy": e.name})
+            if r.status_code == 200:
+                resolved[e.key] = r.json()
+
+    return {
+        "resolved": {k: map_card(c) for k, c in resolved.items()},
+        "not_found": [e.name for e in entries if e.key not in resolved],
+    }
 
 @api_router.post("/cards/collection")
 async def card_collection(data: CollectionInput):
+    if data.entries:
+        return await _resolve_entries(data.entries)
     names = [n for n in data.names if n and n.strip()][:400]
     found = []
     not_found = []

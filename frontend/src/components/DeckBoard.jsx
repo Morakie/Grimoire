@@ -51,27 +51,34 @@ function BoardCard({ card, category, view, format, index, readOnly, onQty, onRem
     );
   }
 
-  // text row
+  // text row — the whole row is the drag handle; hover actions overlay the right edge
+  // so they never steal width from the card name.
   return (
-    <div ref={setNodeRef} style={style} data-testid={`deck-card-${card.id}`}
-      className="group flex items-center gap-2 h-9 px-2 rounded hover:bg-slate-800/70 transition-colors">
+    <div ref={setNodeRef} style={style} {...dragProps} data-testid={`deck-card-${card.id}`}
+      className={`group relative flex items-center gap-1.5 h-8 pl-1 pr-1.5 rounded hover:bg-slate-800/70 transition-colors ${readOnly ? "" : "cursor-grab active:cursor-grabbing"}`}>
       {!readOnly && (
-        <button {...dragProps} data-testid={`drag-${card.id}`} className="cursor-grab active:cursor-grabbing text-slate-600 hover:text-slate-400 touch-none"><GripVertical className="w-4 h-4" /></button>
+        <span data-testid={`drag-${card.id}`} aria-hidden="true"
+          className="absolute -left-4 top-1/2 -translate-y-1/2 text-slate-600 opacity-0 group-hover:opacity-100 transition-opacity">
+          <GripVertical className="w-3.5 h-3.5" />
+        </span>
       )}
-      <span className="w-6 text-center text-sm font-bold text-amber-400 tabular-nums">{card.quantity}</span>
+      <span className="w-5 shrink-0 text-center text-[13px] font-bold text-amber-400 tabular-nums">{card.quantity}</span>
       <HoverCard openDelay={120} closeDelay={60}>
-        <HoverCardTrigger asChild><span className="flex-1 min-w-0 truncate text-sm text-slate-100 cursor-default">{card.name}</span></HoverCardTrigger>
+        <HoverCardTrigger asChild>
+          <span title={card.name} className="flex-1 min-w-0 truncate text-[13px] text-slate-100">{card.name}</span>
+        </HoverCardTrigger>
         <HoverCardContent side="right" className="w-56 p-0 bg-transparent border-none shadow-2xl">
           {card.image && <img src={card.image} alt={card.name} className="w-full rounded-xl" />}
         </HoverCardContent>
       </HoverCard>
-      <ManaCost cost={card.mana_cost} size={14} className="shrink-0" />
+      <ManaCost cost={card.mana_cost} size={13} className="shrink-0" />
       {!readOnly && (
-        <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button data-testid={`printings-${card.id}`} onClick={() => onPrintings(card)} className="p-1 text-slate-400 hover:text-amber-400"><Images className="w-3.5 h-3.5" /></button>
-          <button data-testid={`dec-${card.id}`} onClick={() => onQty(category, card.id, -1)} className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-700"><Minus className="w-3.5 h-3.5" /></button>
-          <button data-testid={`inc-${card.id}`} onClick={() => onQty(category, card.id, 1)} disabled={atMax} className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-700 disabled:opacity-30"><Plus className="w-3.5 h-3.5" /></button>
-          <button data-testid={`remove-${card.id}`} onClick={() => onRemove(category, card.id)} className="p-1 text-slate-500 hover:text-red-400"><X className="w-3.5 h-3.5" /></button>
+        <div onPointerDown={(e) => e.stopPropagation()}
+          className="absolute right-0 inset-y-0 flex items-center gap-0.5 pl-6 pr-1 rounded-r bg-gradient-to-l from-slate-800 from-60% to-transparent opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+          <button data-testid={`printings-${card.id}`} onClick={() => onPrintings(card)} title="Change art/printing" className="p-1 text-slate-400 hover:text-amber-400"><Images className="w-3.5 h-3.5" /></button>
+          <button data-testid={`dec-${card.id}`} onClick={() => onQty(category, card.id, -1)} title="Remove one" className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-700"><Minus className="w-3.5 h-3.5" /></button>
+          <button data-testid={`inc-${card.id}`} onClick={() => onQty(category, card.id, 1)} disabled={atMax} title="Add one" className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-700 disabled:opacity-30"><Plus className="w-3.5 h-3.5" /></button>
+          <button data-testid={`remove-${card.id}`} onClick={() => onRemove(category, card.id)} title="Remove card" className="p-1 text-slate-500 hover:text-red-400"><X className="w-3.5 h-3.5" /></button>
         </div>
       )}
     </div>
@@ -82,7 +89,7 @@ function Column({ cat, groupKey, label, count, cards, view, format, readOnly, gr
   const { setNodeRef, isOver } = useDroppable({ id: `cont|${cat}|${groupKey}` });
   const items = cards.map((c) => `card|${cat}|${c.id}`);
   return (
-    <div className={`${view === "grid" ? "w-[168px]" : "w-full sm:w-60"} shrink-0`} data-testid={`column-${cat}-${groupKey}`}>
+    <div className={`${view === "grid" ? "w-[168px]" : "w-full sm:w-64"} shrink-0`} data-testid={`column-${cat}-${groupKey}`}>
       {group !== "custom" && (
         <div className="flex items-center justify-between mb-2 px-1">
           <h4 className="text-xs font-display font-semibold uppercase tracking-wide text-slate-300 truncate">{label}</h4>
@@ -103,13 +110,13 @@ function Column({ cat, groupKey, label, count, cards, view, format, readOnly, gr
 }
 
 export default function DeckBoard({ deck, format, showCommander, readOnly = false, onQty, onRemove, onPrintings, onCardsChange }) {
-  const [view, setView] = useState(() => localStorage.getItem("grim_view") || "text");
+  const [view, setView] = useState(() => localStorage.getItem("grim_view_v2") || "grid");
   const [group, setGroup] = useState(() => localStorage.getItem("grim_group") || "type");
   const [sort, setSort] = useState(() => localStorage.getItem("grim_sort") || "manual");
   const [activeCard, setActiveCard] = useState(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
-  useEffect(() => { localStorage.setItem("grim_view", view); }, [view]);
+  useEffect(() => { localStorage.setItem("grim_view_v2", view); }, [view]);
   useEffect(() => { localStorage.setItem("grim_group", group); }, [group]);
   useEffect(() => { localStorage.setItem("grim_sort", sort); }, [sort]);
 
