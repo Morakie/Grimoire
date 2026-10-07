@@ -97,6 +97,74 @@ function BoardCard({ card, category, view, format, index, readOnly, onQty, onRem
   );
 }
 
+// ---------- Command zone (Commander decks) ----------
+
+// Label for each command-zone card: the first is the Commander; extras are its pair.
+function commandRole(card, index) {
+  if (index === 0) return "Commander";
+  if ((card.type_line || "").includes("Background")) return "Background";
+  return "Partner";
+}
+
+function CommandZoneCard({ card, index, readOnly, handlers }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: `card|commander|${card.id}`, disabled: readOnly });
+  const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 };
+  const dragProps = readOnly ? {} : { ...attributes, ...listeners };
+  return (
+    <div ref={setNodeRef} style={style} data-testid={`deck-card-${card.id}`} className="group relative w-[150px] sm:w-[200px] shrink-0">
+      <div {...dragProps} className={`relative rounded-xl overflow-hidden border border-slate-700 shadow-[0_8px_30px_rgba(0,0,0,0.5)] ${readOnly ? "" : "cursor-grab active:cursor-grabbing"}`}>
+        <div className="aspect-[0.716] bg-slate-800">
+          {card.image ? <img src={card.image} alt={card.name} className="w-full h-full object-cover pointer-events-none" />
+            : <div className="w-full h-full flex items-center justify-center p-3 text-center text-sm text-slate-300">{card.name}</div>}
+        </div>
+        <span data-testid={`command-role-${card.id}`}
+          className="absolute left-2 top-[24%] flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900/80 backdrop-blur-sm border border-amber-400/40 text-amber-300 text-[10px] sm:text-xs font-display font-bold uppercase tracking-[0.18em] pointer-events-none">
+          <Crown className="w-3.5 h-3.5" /> {commandRole(card, index)}
+        </span>
+      </div>
+      {!readOnly && (
+        <div className="absolute top-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+          <button data-testid={`commander-toggle-${card.id}`} onClick={() => handlers.onMove("commander", card.id, "mainboard")} title="Move to mainboard"
+            className="w-7 h-7 rounded bg-black/80 text-white hover:bg-amber-500 hover:text-stone-900 flex items-center justify-center"><ArrowDownToLine className="w-4 h-4" /></button>
+          <button data-testid={`printings-${card.id}`} onClick={() => handlers.onPrintings(card)} title="Change art/printing"
+            className="w-7 h-7 rounded bg-black/80 text-white hover:bg-amber-500 hover:text-stone-900 flex items-center justify-center"><Images className="w-4 h-4" /></button>
+          <button data-testid={`remove-${card.id}`} onClick={() => handlers.onRemove("commander", card.id)} title="Remove card"
+            className="w-7 h-7 rounded bg-black/80 text-white hover:bg-red-500 flex items-center justify-center"><X className="w-4 h-4" /></button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CommandZone({ cards, readOnly, handlers }) {
+  const { setNodeRef, isOver } = useDroppable({ id: "cont|commander|__auto__" });
+  const corner = "absolute w-4 h-4 border-amber-400/70";
+  return (
+    <section data-testid="section-commander">
+      <div className="flex items-center gap-4 mb-4">
+        <h3 className="text-sm font-display font-bold uppercase tracking-[0.3em] text-amber-400/90 shrink-0">Command Zone</h3>
+        <div className="flex-1 h-px bg-gradient-to-r from-amber-400/40 to-transparent" />
+      </div>
+      <SortableContext items={cards.map((c) => `card|commander|${c.id}`)} strategy={verticalListSortingStrategy}>
+        <div ref={setNodeRef}
+          className={`relative inline-flex min-w-[260px] max-w-full flex-wrap gap-4 sm:gap-5 p-4 sm:p-5 rounded-lg bg-slate-900/40 border border-slate-800 transition-colors ${isOver ? "bg-amber-400/5 border-amber-400/30" : ""}`}>
+          <span className={`${corner} -top-px -left-px border-t-2 border-l-2 rounded-tl-lg`} />
+          <span className={`${corner} -top-px -right-px border-t-2 border-r-2 rounded-tr-lg`} />
+          <span className={`${corner} -bottom-px -left-px border-b-2 border-l-2 rounded-bl-lg`} />
+          <span className={`${corner} -bottom-px -right-px border-b-2 border-r-2 rounded-br-lg`} />
+          {cards.map((c, i) => <CommandZoneCard key={c.id} card={c} index={i} readOnly={readOnly} handlers={handlers} />)}
+          {cards.length === 0 && (
+            <div className="w-full sm:w-[420px] h-24 flex flex-col items-center justify-center gap-1 text-center text-xs text-slate-500">
+              <Crown className="w-5 h-5 text-amber-400/50" />
+              Drop your commander here, or hover any card in your deck and click its crown.
+            </div>
+          )}
+        </div>
+      </SortableContext>
+    </section>
+  );
+}
+
 function Column({ cat, groupKey, label, count, cards, view, format, readOnly, group, handlers }) {
   const { setNodeRef, isOver } = useDroppable({ id: `cont|${cat}|${groupKey}` });
   const items = cards.map((c) => `card|${cat}|${c.id}`);
@@ -116,9 +184,7 @@ function Column({ cat, groupKey, label, count, cards, view, format, readOnly, gr
               onMove={handlers.onMove} commanderMode={handlers.commanderMode} />
           ))}
           {cards.length === 0 && (
-            <div className={`flex items-center justify-center text-center text-[11px] text-slate-600 ${cat === "commander" ? "h-16 px-3 border border-dashed border-slate-700 rounded-lg" : "h-10"}`}>
-              {cat === "commander" ? "Drop your commander here, or use the crown on any card" : "Drop here"}
-            </div>
+            <div className="h-10 flex items-center justify-center text-[11px] text-slate-600">Drop here</div>
           )}
         </div>
       </SortableContext>
@@ -174,7 +240,7 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
     if (!card) return;
 
     let newCard = card;
-    if (group !== "custom" && destGroup) {
+    if (group !== "custom" && destGroup && destCat !== "commander") {
       const cur = groupKeyFor(card, group);
       if (destGroup !== cur) newCard = { ...card, group_overrides: { ...(card.group_overrides || {}), [group]: destGroup } };
     }
@@ -236,6 +302,9 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
             {visibleCats.map((c) => {
               if (c.key === "commander" && !showCommander) return null;
               if (deck[c.key].length === 0 && readOnly) return null;
+              if (c.key === "commander") {
+                return <CommandZone key="commander" cards={deck.commander} format={format} readOnly={readOnly} handlers={handlers} />;
+              }
               const sectionEmpty = deck[c.key].length === 0;
               const cols = buildColumns(deck[c.key]);
               return (
