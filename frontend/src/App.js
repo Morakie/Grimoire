@@ -9,6 +9,8 @@ import Register from "@/pages/Register";
 import Dashboard from "@/pages/Dashboard";
 import DeckBuilder from "@/pages/DeckBuilder";
 import PublicDeck from "@/pages/PublicDeck";
+import DraftSetup from "@/pages/DraftSetup";
+import DraftRoom from "@/pages/DraftRoom";
 
 function App() {
   return (
@@ -23,6 +25,8 @@ function App() {
             <Route path="/build" element={<DeckBuilder />} />
             <Route path="/deck/:id" element={<ProtectedRoute><DeckBuilder /></ProtectedRoute>} />
             <Route path="/d/:shareId" element={<PublicDeck />} />
+            <Route path="/draft" element={<DraftSetup />} />
+            <Route path="/draft/:shareId" element={<DraftRoom />} />
           </Routes>
         </BrowserRouter>
         <Toaster position="bottom-right" theme="dark" richColors />

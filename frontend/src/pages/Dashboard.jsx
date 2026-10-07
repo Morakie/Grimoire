@@ -92,9 +92,14 @@ export default function Dashboard() {
             <h1 className="font-display text-3xl font-bold">My Decks</h1>
             <p className="text-sm text-slate-400 mt-1">{decks ? `${decks.length} deck${decks.length === 1 ? "" : "s"}` : "Loading..."}</p>
           </div>
-          <Button data-testid="new-deck-btn" onClick={() => { setName(""); setFormat("standard"); setNewOpen(true); }} className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">
-            <Plus className="w-4 h-4 mr-1" /> New Deck
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button data-testid="draft-link" variant="outline" onClick={() => navigate("/draft")} className="bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
+              <Plus className="w-4 h-4 mr-1" /> Cube Draft
+            </Button>
+            <Button data-testid="new-deck-btn" onClick={() => { setName(""); setFormat("standard"); setNewOpen(true); }} className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">
+              <Plus className="w-4 h-4 mr-1" /> New Deck
+            </Button>
+          </div>
         </div>
 
         {decks === null ? (

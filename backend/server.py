@@ -5,6 +5,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 import uuid
+import random
 import bcrypt
 import jwt
 import httpx
@@ -362,6 +363,202 @@ async def public_deck(share_id: str):
 async def root():
     return {"message": "Grimoire API"}
 
+# ===================== Rotisserie Cube Draft =====================
+
+class DraftCreate(BaseModel):
+    name: str = "Cube Draft"
+    num_players: int = Field(ge=1, le=8)
+    num_seats: int = Field(ge=1, le=64)
+    double_draft_after: int = 0   # picks per seat made singly before turns grant 2; 0 = never
+    pick_cap: int = 45            # picks per seat
+    cube: List[dict] = []
+
+class ClaimInput(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    player_token: Optional[str] = None
+
+class PickInput(BaseModel):
+    player_token: str
+    seat_index: int
+    card_id: str
+
+def compute_pick_order(num_seats: int, double_after: int, pick_cap: int, pool_size: int) -> List[int]:
+    """Snake order over seats with optional double-draft phase. Endpoints repeat
+    naturally in a snake, so during the double phase boundary seats get 4 picks in a row."""
+    order: List[int] = []
+    counts = [0] * num_seats
+    max_total = min(num_seats * pick_cap, pool_size)
+
+    def slots():
+        while True:
+            for s in range(num_seats):
+                yield s
+            for s in range(num_seats - 1, -1, -1):
+                yield s
+
+    gen = slots()
+    guard = 0
+    while len(order) < max_total and guard < max_total * 4 + 100:
+        guard += 1
+        s = next(gen)
+        if counts[s] >= pick_cap:
+            continue
+        picks = 2 if (double_after > 0 and counts[s] >= double_after) else 1
+        picks = min(picks, pick_cap - counts[s], max_total - len(order))
+        for _ in range(picks):
+            order.append(s)
+            counts[s] += 1
+    return order
+
+def draft_state(d: dict, light: bool = False) -> dict:
+    picked_ids = [p["card_id"] for p in d.get("picks", [])]
+    base = {
+        "share_id": d["share_id"],
+        "name": d["name"],
+        "status": d["status"],
+        "num_players": d["num_players"],
+        "num_seats": d["num_seats"],
+        "seats_per_player": d["num_seats"] // d["num_players"],
+        "double_draft_after": d["double_draft_after"],
+        "pick_cap": d["pick_cap"],
+        "seats": d["seats"],
+        "players": [{"id": p["id"], "name": p["name"], "seats": p["seats"]} for p in d.get("players", [])],
+        "picks": d.get("picks", []),
+        "pick_index": len(d.get("picks", [])),
+        "order_len": len(d.get("order", [])),
+        "current_seat_index": (d["order"][len(d.get("picks", []))] if d["status"] == "drafting" and len(d.get("picks", [])) < len(d.get("order", [])) else None),
+    }
+    if not light:
+        base["cube"] = d.get("cube", [])
+    else:
+        base["picked_ids"] = picked_ids
+    return base
+
+@api_router.get("/cube/cubecobra")
+async def cubecobra_fetch(id: str):
+    cube_id = id.strip()
+    if "/cube/" in cube_id:
+        parts = [p for p in cube_id.split("/") if p]
+        cube_id = parts[-1]
+    cube_id = cube_id.split("?")[0]
+    async with httpx.AsyncClient(timeout=20.0, headers=HEADERS, follow_redirects=True) as hc:
+        r = await hc.get(f"https://cubecobra.com/cube/api/cubelist/{cube_id}")
+        if r.status_code != 200:
+            raise HTTPException(status_code=404, detail="Cube not found on CubeCobra")
+        names = [ln.strip() for ln in r.text.splitlines() if ln.strip()]
+    return {"names": names}
+
+@api_router.post("/drafts")
+async def create_draft(data: DraftCreate):
+    if data.num_seats % data.num_players != 0:
+        raise HTTPException(status_code=400, detail="Seats must divide evenly among players")
+    if not data.cube:
+        raise HTTPException(status_code=400, detail="Cube is empty")
+    now = datetime.now(timezone.utc).isoformat()
+    draft = {
+        "id": str(uuid.uuid4()),
+        "share_id": str(uuid.uuid4())[:8],
+        "name": data.name,
+        "status": "lobby",
+        "num_players": data.num_players,
+        "num_seats": data.num_seats,
+        "double_draft_after": data.double_draft_after,
+        "pick_cap": data.pick_cap,
+        "cube": data.cube,
+        "seats": [{"index": i, "player_id": None, "player_name": None} for i in range(data.num_seats)],
+        "players": [],
+        "order": [],
+        "picks": [],
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.drafts.insert_one(draft)
+    return draft_state(draft)
+
+@api_router.get("/drafts/{share_id}")
+async def get_draft(share_id: str):
+    d = await db.drafts.find_one({"share_id": share_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return draft_state(d)
+
+@api_router.get("/drafts/{share_id}/state")
+async def get_draft_state(share_id: str):
+    d = await db.drafts.find_one({"share_id": share_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return draft_state(d, light=True)
+
+@api_router.post("/drafts/{share_id}/claim")
+async def claim_seats(share_id: str, data: ClaimInput):
+    d = await db.drafts.find_one({"share_id": share_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d["status"] != "lobby":
+        raise HTTPException(status_code=400, detail="Draft already started")
+    name = data.name.strip()
+    # Reattach by token or by existing name
+    for p in d["players"]:
+        if (data.player_token and p["token"] == data.player_token) or p["name"].lower() == name.lower():
+            return {"player_token": p["token"], "player_id": p["id"], "name": p["name"], "seats": p["seats"]}
+    if len(d["players"]) >= d["num_players"]:
+        raise HTTPException(status_code=400, detail="All player slots are taken")
+    k = d["num_seats"] // d["num_players"]
+    free = [s["index"] for s in d["seats"] if s["player_id"] is None]
+    random.shuffle(free)
+    assigned = sorted(free[:k])
+    pid = str(uuid.uuid4())
+    token = str(uuid.uuid4())
+    for s in d["seats"]:
+        if s["index"] in assigned:
+            s["player_id"] = pid
+            s["player_name"] = name
+    d["players"].append({"id": pid, "token": token, "name": name, "seats": assigned})
+    await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": d["players"], "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"player_token": token, "player_id": pid, "name": name, "seats": assigned}
+
+@api_router.post("/drafts/{share_id}/start")
+async def start_draft(share_id: str):
+    d = await db.drafts.find_one({"share_id": share_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d["status"] != "lobby":
+        raise HTTPException(status_code=400, detail="Already started")
+    if any(s["player_id"] is None for s in d["seats"]):
+        raise HTTPException(status_code=400, detail="Not all seats are claimed yet")
+    order = compute_pick_order(d["num_seats"], d["double_draft_after"], d["pick_cap"], len(d["cube"]))
+    await db.drafts.update_one({"share_id": share_id}, {"$set": {"status": "drafting", "order": order, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    d = await db.drafts.find_one({"share_id": share_id})
+    return draft_state(d)
+
+@api_router.post("/drafts/{share_id}/pick")
+async def make_pick(share_id: str, data: PickInput):
+    d = await db.drafts.find_one({"share_id": share_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d["status"] != "drafting":
+        raise HTTPException(status_code=400, detail="Draft is not active")
+    pick_index = len(d["picks"])
+    if pick_index >= len(d["order"]):
+        raise HTTPException(status_code=400, detail="Draft is complete")
+    current_seat = d["order"][pick_index]
+    if data.seat_index != current_seat:
+        raise HTTPException(status_code=409, detail="It is not that seat's turn")
+    player = next((p for p in d["players"] if p["token"] == data.player_token), None)
+    if not player or data.seat_index not in player["seats"]:
+        raise HTTPException(status_code=403, detail="You do not control this seat")
+    picked_ids = {p["card_id"] for p in d["picks"]}
+    if data.card_id in picked_ids:
+        raise HTTPException(status_code=409, detail="Card already taken")
+    if not any(c["id"] == data.card_id for c in d["cube"]):
+        raise HTTPException(status_code=400, detail="Card not in cube")
+    d["picks"].append({"order": pick_index, "seat_index": data.seat_index, "card_id": data.card_id, "ts": datetime.now(timezone.utc).isoformat()})
+    new_status = "complete" if len(d["picks"]) >= len(d["order"]) else "drafting"
+    await db.drafts.update_one({"share_id": share_id}, {"$set": {"picks": d["picks"], "status": new_status, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    d = await db.drafts.find_one({"share_id": share_id})
+    return draft_state(d, light=True)
+
+
 # ----------------------- Startup -----------------------
 
 @app.on_event("startup")
@@ -371,6 +568,7 @@ async def startup():
     await db.decks.create_index("id", unique=True)
     await db.decks.create_index("share_id")
     await db.decks.create_index("user_id")
+    await db.drafts.create_index("share_id", unique=True)
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@grimoire.gg")
     admin_password = os.environ.get("ADMIN_PASSWORD", "grimoire123")
     existing = await db.users.find_one({"email": admin_email})
