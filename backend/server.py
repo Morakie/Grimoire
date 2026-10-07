@@ -9,6 +9,7 @@ import random
 import bcrypt
 import jwt
 import httpx
+import csv
 from pathlib import Path
 from pydantic import BaseModel, EmailStr, Field
 from typing import List, Optional, Dict, Any
@@ -93,6 +94,7 @@ class DeckCard(BaseModel):
     collector_number: Optional[str] = ""
     image: Optional[str] = None
     art_crop: Optional[str] = None
+    elo: Optional[int] = None
     quantity: int = 1
     group_overrides: Dict[str, str] = {}
 
@@ -140,6 +142,22 @@ async def me(user: dict = Depends(get_current_user)):
 SCRYFALL = "https://api.scryfall.com"
 HEADERS = {"User-Agent": "GrimoireDeckBuilder/1.0", "Accept": "application/json"}
 
+# CubeCobra ELO rankings (name -> elo) used as the default draft sort.
+ELO: Dict[str, int] = {}
+_elo_path = ROOT_DIR / "data" / "card_elo.csv"
+if _elo_path.exists():
+    with open(_elo_path, newline="", encoding="utf-8") as _f:
+        for _row in csv.DictReader(_f):
+            try:
+                ELO[_row["Name"].strip().lower()] = int(float(_row["Elo"]))
+            except (KeyError, ValueError, TypeError):
+                continue
+
+def elo_for(name: str):
+    if not name:
+        return None
+    return ELO.get(name.strip().lower()) or ELO.get(name.split("//")[0].strip().lower())
+
 def map_card(c: Dict[str, Any]) -> Dict[str, Any]:
     image = art = None
     if c.get("image_uris"):
@@ -169,6 +187,7 @@ def map_card(c: Dict[str, Any]) -> Dict[str, Any]:
         "collector_number": c.get("collector_number", ""),
         "image": image,
         "art_crop": art,
+        "elo": elo_for(c.get("name", "")),
         "prices": c.get("prices", {}),
     }
 
@@ -211,7 +230,7 @@ async def search_cards(
 @api_router.get("/cards/printings")
 async def card_printings(name: str):
     async with httpx.AsyncClient(timeout=15.0, headers=HEADERS) as hc:
-        r = await hc.get(f"{SCRYFALL}/cards/search", params={"q": f'!"{name}"', "unique": "prints", "order": "released"})
+        r = await hc.get(f"{SCRYFALL}/cards/search", params={"q": f'!"{name}"', "unique": "prints", "order": "released", "dir": "asc"})
         if r.status_code != 200:
             return {"printings": []}
         data = r.json()
@@ -535,10 +554,10 @@ async def claim_seats(share_id: str, data: ClaimInput):
             return {"player_token": p["token"], "player_id": p["id"], "name": p["name"], "seats": p["seats"]}
     if len(d["players"]) >= d["num_players"]:
         raise HTTPException(status_code=400, detail="All player slots are taken")
-    k = d["num_seats"] // d["num_players"]
-    free = [s["index"] for s in d["seats"] if s["player_id"] is None]
-    random.shuffle(free)
-    assigned = sorted(free[:k])
+    # Spread each player's seats evenly across the snake so no one holds both
+    # end seats (which would grant back-to-back picks at the wheel on both ends).
+    j = len(d["players"])  # join index -> seat class (index % num_players == j)
+    assigned = sorted(s["index"] for s in d["seats"] if s["index"] % d["num_players"] == j)
     pid = str(uuid.uuid4())
     token = str(uuid.uuid4())
     for s in d["seats"]:

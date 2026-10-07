@@ -119,11 +119,10 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
   const buildColumns = (cards) => {
     const map = {};
     cards.forEach((c) => { const k = groupKeyFor(c, group); (map[k] = map[k] || []).push(c); });
-    if (group === "custom") return [{ key: "all", cards: sortCards(map["all"] || [], sort) }];
     const order = GROUP_ORDER[group];
     const extra = Object.keys(map).filter((k) => !order.includes(k));
     // Always render every group in order (even empty) so columns stay as drop targets.
-    return [...order, ...extra].map((k) => ({ key: k, cards: sortCards(map[k] || [], sort) }));
+    return [...order, ...extra].map((k) => ({ key: k, cards: sortCards(map[k] || [], sort, group) }));
   };
 
   const findCard = (cat, cid) => deck[cat].find((c) => c.id === cid);

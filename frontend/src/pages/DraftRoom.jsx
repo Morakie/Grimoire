@@ -1,10 +1,10 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { buildExport } from "@/components/ExportDialog";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -13,7 +13,7 @@ function storeKey(sid) { return `grim_draft_${sid}`; }
 
 const COLOR_ORDER = { W: 0, U: 1, B: 2, R: 3, G: 4 };
 const TYPE_RANK = ["Creature", "Planeswalker", "Instant", "Sorcery", "Artifact", "Enchantment", "Battle", "Land"];
-const SORTS = [{ k: "name", label: "Name" }, { k: "color", label: "Color" }, { k: "type", label: "Type" }, { k: "cmc", label: "CMC" }];
+const SORTS = [{ k: "elo", label: "Rank" }, { k: "name", label: "Name" }, { k: "color", label: "Color" }, { k: "type", label: "Type" }, { k: "cmc", label: "CMC" }];
 const cardCols = (c) => (c?.colors?.length ? c.colors : (c?.color_identity || []));
 const colorKey = (c) => { const cols = cardCols(c); if (!cols.length) return 99; if (cols.length > 1) return 50 + cols.length; return COLOR_ORDER[cols[0]] ?? 90; };
 const typeKey = (c) => { const t = c?.type_line || ""; const i = TYPE_RANK.findIndex((x) => t.includes(x)); return i < 0 ? 99 : i; };
@@ -23,6 +23,24 @@ const colorClass = (c) => {
   if (cols.length > 1) return "bg-gradient-to-r from-amber-500 to-yellow-600 text-stone-900";
   return { W: "bg-amber-50 text-stone-900", U: "bg-blue-700 text-white", B: "bg-stone-900 text-slate-200", R: "bg-red-700 text-white", G: "bg-green-700 text-white" }[cols[0]] || "bg-slate-600 text-white";
 };
+
+function playBeep() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    const now = ctx.currentTime;
+    [880, 1320].forEach((freq, i) => {
+      const o = ctx.createOscillator(); const g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination); o.type = "sine"; o.frequency.value = freq;
+      const t = now + i * 0.18;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.28, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+      o.start(t); o.stop(t + 0.18);
+    });
+    setTimeout(() => ctx.close(), 600);
+  } catch { /* ignore */ }
+}
 
 export default function DraftRoom() {
   const { shareId } = useParams();
@@ -34,13 +52,18 @@ export default function DraftRoom() {
   const [query, setQuery] = useState("");
   const [picking, setPicking] = useState(false);
   const [chatText, setChatText] = useState("");
-  const [sortBy, setSortBy] = useState("name");
+  const [sortBy, setSortBy] = useState("elo");
   const [hidePicked, setHidePicked] = useState(false);
   const [confirmCard, setConfirmCard] = useState(null);
   const [hoverCard, setHoverCard] = useState(null);
   const [view, setView] = useState("pick");
   const [deckSeat, setDeckSeat] = useState(null);
+  const [showMiniTable, setShowMiniTable] = useState(false);
+  const [muted, setMuted] = useState(() => localStorage.getItem("grim_draft_muted") === "true");
+  const [queue, setQueue] = useState(() => { try { return JSON.parse(localStorage.getItem(`grim_draft_queue_${shareId}`)) || []; } catch { return []; } });
   const hostToken = useMemo(() => { try { return localStorage.getItem(`grim_draft_host_${shareId}`); } catch { return null; } }, [shareId]);
+  const prevTurnRef = useRef(false);
+  const onMyTurnRef = useRef(() => {});
 
   useEffect(() => {
     api.get(`/drafts/${shareId}`).then(({ data }) => setDraft(data)).catch(() => { toast.error("Draft not found"); navigate("/draft"); });
@@ -56,8 +79,20 @@ export default function DraftRoom() {
     return () => { active = false; clearInterval(iv); };
   }, [shareId]);
 
+  useEffect(() => { localStorage.setItem(`grim_draft_queue_${shareId}`, JSON.stringify(queue)); }, [queue, shareId]);
+
   const pickedIds = useMemo(() => new Set((state?.picked_ids) || (state?.picks || []).map((p) => p.card_id)), [state]);
   const cubeById = useMemo(() => { const m = {}; (draft?.cube || []).forEach((c) => (m[c.id] = c)); return m; }, [draft]);
+
+  // Drop any queued card that has been drafted (by anyone) so auto-pick falls through to the next one.
+  useEffect(() => { setQueue((q) => q.filter((id) => !pickedIds.has(id))); }, [pickedIds]);
+
+  // Beep + auto-pick when it becomes your turn.
+  useEffect(() => {
+    const now = !!(state && me && state.status === "drafting" && state.current_seat_index != null && me.seats.includes(state.current_seat_index));
+    if (now && !prevTurnRef.current) onMyTurnRef.current();
+    prevTurnRef.current = now;
+  }, [state, me]);
 
   if (!draft || !state) return <div className="h-screen flex items-center justify-center bg-[#060a14]"><Loader2 className="w-8 h-8 text-amber-400 animate-spin" /></div>;
 
@@ -117,6 +152,11 @@ export default function DraftRoom() {
     } catch (e) { toast.error(e.response?.data?.detail || "Could not send"); }
   };
 
+  const toggleQueue = (id) => setQueue((q) => (q.includes(id) ? q.filter((x) => x !== id) : [...q, id]));
+  const removeFromQueue = (id) => setQueue((q) => q.filter((x) => x !== id));
+  const moveQueue = (id, dir) => setQueue((q) => { const i = q.indexOf(id); const j = i + dir; if (i < 0 || j < 0 || j >= q.length) return q; const n = [...q]; [n[i], n[j]] = [n[j], n[i]]; return n; });
+  const toggleMute = () => setMuted((m) => { localStorage.setItem("grim_draft_muted", (!m).toString()); return !m; });
+
   const seatsSorted = [...state.seats].sort((a, b) => a.index - b.index);
   const seatLabel = (seatIdx) => { const s = state.seats.find((x) => x.index === seatIdx); return `${s?.player_name || "Seat"} (Seat ${seatIdx + 1})`; };
   const seatPicks = (seatIdx) => (state.picks || []).filter((p) => p.seat_index === seatIdx).sort((a, b) => a.order - b.order).map((p) => cubeById[p.card_id]).filter(Boolean);
@@ -141,7 +181,16 @@ export default function DraftRoom() {
   const myTurn = me && state.current_seat_index != null && me.seats.includes(state.current_seat_index);
   const currentSeatName = state.current_seat_index != null ? state.seats.find((s) => s.index === state.current_seat_index)?.player_name : null;
 
+  // Auto-pick the top available queued card when it's our turn (updated each render, fired by the turn effect).
+  onMyTurnRef.current = () => {
+    if (!muted) playBeep();
+    if (picking) return;
+    const next = queue.map((id) => cubeById[id]).find((c) => c && !pickedIds.has(c.id));
+    if (next) { toast.success(`Auto-picked ${next.name} from your queue`); pick(next); }
+  };
+
   const comparator = (a, b) => {
+    if (sortBy === "elo") return (b.elo || 0) - (a.elo || 0) || a.name.localeCompare(b.name);
     if (sortBy === "color") return colorKey(a) - colorKey(b) || a.name.localeCompare(b.name);
     if (sortBy === "type") return typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
     if (sortBy === "cmc") return (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
@@ -194,6 +243,7 @@ export default function DraftRoom() {
           {poolCards.map((c) => {
             const isPicked = pickedIds.has(c.id);
             const clickable = myTurn && !isPicked && !picking;
+            const queued = queue.includes(c.id);
             return (
               <div key={c.id} data-testid={`pool-card-${c.id}`} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
                 onClick={() => { if (clickable) setConfirmCard(c); }}
@@ -201,8 +251,16 @@ export default function DraftRoom() {
                 <div className="aspect-[0.716] bg-slate-800 flex items-center justify-center">
                   {(c.image || c.art_crop) ? <img src={c.image || c.art_crop} alt={c.name} loading="lazy" className="w-full h-full object-cover" /> : <div className="p-2 text-center text-xs font-medium text-slate-200 leading-tight">{c.name}</div>}
                 </div>
-                {isPicked && <div className="absolute inset-0 flex items-center justify-center"><span data-testid={`picked-badge-${c.id}`} className="px-2 py-0.5 rounded bg-slate-950/80 text-[10px] uppercase tracking-wide text-slate-300 border border-slate-700">Picked</span></div>}
-                {clickable && <div className="absolute inset-0 bg-amber-400/0 group-hover:bg-amber-400/15 transition-colors" />}
+                {isPicked ? (
+                  <div className="absolute inset-0 flex items-center justify-center"><span data-testid={`picked-badge-${c.id}`} className="px-2 py-0.5 rounded bg-slate-950/80 text-[10px] uppercase tracking-wide text-slate-300 border border-slate-700">Picked</span></div>
+                ) : (
+                  <button data-testid={`queue-${c.id}`} onClick={(e) => { e.stopPropagation(); toggleQueue(c.id); }}
+                    title={queued ? "Remove from queue" : "Queue for later"}
+                    className={`absolute top-1 right-1 w-6 h-6 rounded flex items-center justify-center transition-opacity ${queued ? "bg-amber-400 text-stone-900" : "bg-black/70 text-slate-200 opacity-0 group-hover:opacity-100 hover:bg-amber-400 hover:text-stone-900"}`}>
+                    {queued ? <BookmarkCheck className="w-3.5 h-3.5" /> : <BookmarkPlus className="w-3.5 h-3.5" />}
+                  </button>
+                )}
+                {clickable && <div className="absolute inset-0 bg-amber-400/0 group-hover:bg-amber-400/15 transition-colors pointer-events-none" />}
               </div>
             );
           })}
@@ -211,18 +269,19 @@ export default function DraftRoom() {
     </div>
   );
 
-  const renderDraftTable = () => {
+  const renderDraftTable = (compact = false) => {
     const perSeat = seatsSorted.map((s) => (state.picks || []).filter((p) => p.seat_index === s.index).sort((a, b) => a.order - b.order));
     const maxRows = perSeat.reduce((m, a) => Math.max(m, a.length), 0);
+    const cell = compact ? "px-1.5 py-0.5 text-[10px]" : "px-3 py-1.5 text-sm";
     return (
-      <div className="max-h-[calc(100vh-240px)] overflow-auto rounded-xl border border-slate-800" data-testid="draft-table">
-        <table className="w-full border-collapse text-sm">
+      <div className={`${compact ? "max-h-[44vh]" : "max-h-[calc(100vh-240px)]"} overflow-auto rounded-xl border border-slate-800`} data-testid={compact ? "mini-draft-table" : "draft-table"}>
+        <table className="w-full border-collapse">
           <thead className="sticky top-0 z-10">
             <tr className="bg-[#0b111e]">
-              <th className="px-2 py-2 text-left text-slate-500 w-10">#</th>
-              <th className="w-8 bg-[#0b111e]"></th>
+              <th className="px-2 py-1.5 text-left text-slate-500 w-8 text-xs">#</th>
+              <th className="w-6 bg-[#0b111e]"></th>
               {seatsSorted.map((s) => (
-                <th key={s.index} className="px-3 py-2 text-left font-display text-slate-100 min-w-[160px] border-l border-slate-800">
+                <th key={s.index} className={`px-3 py-1.5 text-left font-display text-slate-100 border-l border-slate-800 ${compact ? "text-[11px] min-w-[96px]" : "text-sm min-w-[160px]"}`}>
                   {s.player_name || "—"}<div className="text-[10px] text-slate-500 font-normal">Seat {s.index + 1}</div>
                 </th>
               ))}
@@ -233,17 +292,17 @@ export default function DraftRoom() {
               <tr><td colSpan={seatsSorted.length + 2} className="px-4 py-6 text-center text-sm text-slate-500">No picks yet.</td></tr>
             ) : Array.from({ length: maxRows }).map((_, r) => (
               <tr key={r} className="border-t border-slate-800/60">
-                <td className="px-2 py-1 text-slate-500 tabular-nums">{r + 1}</td>
-                <td className="px-1 text-slate-600 text-center">{r % 2 === 0 ? "→" : "←"}</td>
+                <td className="px-2 py-0.5 text-slate-500 tabular-nums text-xs">{r + 1}</td>
+                <td className="px-1 text-slate-600 text-center text-xs">{r % 2 === 0 ? "→" : "←"}</td>
                 {seatsSorted.map((s, ci) => {
                   const pk = perSeat[ci][r];
                   const card = pk ? cubeById[pk.card_id] : null;
                   return (
                     <td key={s.index} className="p-0.5 border-l border-slate-800/60">
                       {card ? (
-                        <div data-testid={`table-cell-${s.index}-${r}`} onMouseEnter={hoverIn(card)} onMouseLeave={hoverOut(card)}
-                          className={`px-3 py-1.5 rounded truncate cursor-default ${colorClass(card)}`}>{card.name}</div>
-                      ) : <div className="px-3 py-1.5 text-slate-700">·</div>}
+                        <div data-testid={compact ? undefined : `table-cell-${s.index}-${r}`} onMouseEnter={hoverIn(card)} onMouseLeave={hoverOut(card)}
+                          className={`rounded truncate cursor-default ${cell} ${colorClass(card)}`}>{card.name}</div>
+                      ) : <div className={`${cell} text-slate-700`}>·</div>}
                     </td>
                   );
                 })}
@@ -317,13 +376,16 @@ export default function DraftRoom() {
 
   return (
     <div className="min-h-screen bg-[#060a14] text-slate-100 grim-grain">
-      <header className="border-b border-slate-800 bg-[#070c17]">
+      <header className="sticky top-0 z-30 border-b border-slate-800 bg-[#070c17]">
         <div className="max-w-7xl mx-auto px-6 py-3 flex items-center gap-3 flex-wrap">
           <Link to="/" className="flex items-center gap-2"><Sparkles className="w-5 h-5 text-amber-400" /><span className="font-display text-lg font-bold">Grimoire</span></Link>
           <span className="text-slate-500">/</span>
           <span className="font-display font-semibold truncate">{state.name}</span>
           <span className="text-xs px-2 py-0.5 rounded-full border border-slate-700 text-slate-300 capitalize">{state.status}</span>
           <div className="ml-auto flex items-center gap-2">
+            {state.status === "drafting" && (
+              <Button size="sm" variant="outline" data-testid="mute-toggle" onClick={toggleMute} title={muted ? "Unmute turn alert" : "Mute turn alert"} className="bg-slate-900 border-slate-700 text-slate-300">{muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}</Button>
+            )}
             <Input readOnly value={shareUrl} className="w-56 h-8 bg-slate-950 border-slate-700 text-slate-300 text-xs hidden sm:block" data-testid="draft-share-url" />
             <Button size="sm" variant="outline" data-testid="draft-copy-link" onClick={() => { navigator.clipboard.writeText(shareUrl); toast.success("Invite link copied"); }} className="bg-slate-900 border-slate-700 text-slate-200"><Copy className="w-4 h-4 sm:mr-1.5" /><span className="hidden sm:inline">Copy invite</span></Button>
             {hostToken && state.status !== "complete" && (
@@ -334,11 +396,11 @@ export default function DraftRoom() {
       </header>
 
       <main className="max-w-7xl mx-auto px-6 py-6">
-        {/* Seats / lobby */}
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6" data-testid="seat-grid">
           {seatsSorted.map((s) => {
             const isCurrent = state.current_seat_index === s.index;
             const mine = me?.seats?.includes(s.index);
+            const last = seatPicks(s.index).slice(-1)[0];
             return (
               <div key={s.index} data-testid={`seat-${s.index}`} className={`rounded-xl border p-3 ${isCurrent ? "border-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.15)]" : "border-slate-800"} bg-slate-900/50`}>
                 <div className="flex items-center justify-between">
@@ -346,7 +408,8 @@ export default function DraftRoom() {
                   <span className="text-xs text-amber-400 tabular-nums">{seatPicks(s.index).length}/{state.pick_cap}</span>
                 </div>
                 <div className="font-display font-semibold truncate">{s.player_name || <span className="text-slate-600">unclaimed</span>}</div>
-                {isCurrent && <div className="text-[11px] text-amber-400 mt-1">On the clock</div>}
+                {isCurrent && <div className="text-[11px] text-amber-400 mt-0.5">On the clock</div>}
+                <div className="text-[11px] text-slate-500 mt-0.5 truncate" data-testid={`seat-last-${s.index}`}>{last ? <>Last: <span className="text-slate-400">{last.name}</span></> : "No picks yet"}</div>
               </div>
             );
           })}
@@ -358,6 +421,14 @@ export default function DraftRoom() {
               <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 max-w-md" data-testid="lobby-panel">
                 <h2 className="font-display text-xl font-bold mb-2">Join the draft</h2>
                 <p className="text-sm text-slate-400 mb-4">Enter your name to claim your seat(s). {state.seats_per_player} seat(s) each. {state.players.length}/{state.num_players} players in.</p>
+                <div className="mb-4 rounded-lg border border-slate-800 bg-slate-950 p-3">
+                  <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1.5">Invite players</div>
+                  <div className="flex items-center gap-2">
+                    <Input readOnly value={shareUrl} data-testid="lobby-share-url" className="h-8 bg-slate-900 border-slate-700 text-slate-300 text-xs" />
+                    <Button size="sm" data-testid="lobby-copy-link" onClick={() => { navigator.clipboard.writeText(shareUrl); toast.success("Invite link copied"); }} className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold shrink-0"><Copy className="w-4 h-4" /></Button>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1.5">Table code: <span className="text-amber-400 font-mono" data-testid="lobby-code">{shareId}</span></div>
+                </div>
                 {!me ? (
                   <div className="flex gap-2">
                     <Input data-testid="claim-name" value={claimName} onChange={(e) => setClaimName(e.target.value)} placeholder="Your name" className="bg-slate-950 border-slate-700 text-slate-100 focus-visible:ring-amber-400" />
@@ -379,6 +450,7 @@ export default function DraftRoom() {
                     {myTurn ? `Your pick! · Seat ${state.current_seat_index + 1}` : `${currentSeatName || "…"}'s pick`} · {state.pick_index}/{state.order_len}
                   </div>
                   {viewTabs([["pick", "Pick", LayoutGrid], ["table", "Draft Table", Table2], ["decks", "Decks", Eye]])}
+                  <button data-testid="toggle-mini-table" onClick={() => setShowMiniTable((v) => !v)} className="text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 flex items-center gap-1.5"><Table2 className="w-3.5 h-3.5" /> {showMiniTable ? "Hide peek" : "Table peek"}</button>
                 </div>
                 {view === "table" ? renderDraftTable() : view === "decks" ? renderDecks() : renderPickGrid()}
               </div>
@@ -396,7 +468,34 @@ export default function DraftRoom() {
             )}
           </div>
 
-          <aside className="space-y-4 lg:sticky lg:top-6 self-start" data-testid="draft-sidebar">
+          <aside className="space-y-4 lg:sticky lg:top-20 self-start" data-testid="draft-sidebar">
+            {state.status === "drafting" && (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4" data-testid="queue-panel">
+                <h3 className="font-display font-semibold text-sm mb-1 flex items-center gap-2"><Bookmark className="w-4 h-4 text-amber-400" /> Pick queue</h3>
+                <p className="text-[11px] text-slate-500 mb-3">Auto-picks your top available card the moment it's your turn.</p>
+                {queue.length === 0 ? (
+                  <p className="text-xs text-slate-600">Hit the bookmark on any card to queue it.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {queue.map((id, i) => {
+                      const c = cubeById[id]; if (!c) return null;
+                      const taken = pickedIds.has(id);
+                      return (
+                        <div key={id} data-testid={`queue-item-${id}`} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
+                          className={`flex items-center gap-1 text-xs rounded-md p-1 hover:bg-slate-800/60 ${taken ? "opacity-40" : ""}`}>
+                          <span className="text-slate-500 w-4 tabular-nums">{i + 1}</span>
+                          <span className="flex-1 truncate text-slate-200">{c.name}{taken && <span className="text-red-400 ml-1">(taken)</span>}</span>
+                          <button data-testid={`queue-up-${id}`} onClick={() => moveQueue(id, -1)} disabled={i === 0} className="p-0.5 text-slate-500 hover:text-amber-300 disabled:opacity-20"><ArrowUp className="w-3.5 h-3.5" /></button>
+                          <button data-testid={`queue-down-${id}`} onClick={() => moveQueue(id, 1)} disabled={i === queue.length - 1} className="p-0.5 text-slate-500 hover:text-amber-300 disabled:opacity-20"><ArrowDown className="w-3.5 h-3.5" /></button>
+                          <button data-testid={`queue-remove-${id}`} onClick={() => removeFromQueue(id)} className="p-0.5 text-slate-500 hover:text-red-400"><X className="w-3.5 h-3.5" /></button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
             {state.status !== "lobby" && (
               <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-2 h-[300px] flex items-center justify-center overflow-hidden" data-testid="card-preview">
                 {hoverCard ? (
@@ -452,6 +551,16 @@ export default function DraftRoom() {
           </aside>
         </div>
       </main>
+
+      {showMiniTable && state.status !== "lobby" && (
+        <div className="fixed bottom-4 right-4 z-40 w-[min(92vw,640px)] bg-[#0b111e] border border-amber-400/40 rounded-xl shadow-2xl overflow-hidden flex flex-col" data-testid="mini-table">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-slate-800">
+            <span className="text-xs font-display font-semibold flex items-center gap-1.5"><Table2 className="w-3.5 h-3.5 text-amber-400" /> Draft table — quick glance</span>
+            <button data-testid="mini-table-close" onClick={() => setShowMiniTable(false)} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
+          </div>
+          <div className="p-2">{renderDraftTable(true)}</div>
+        </div>
+      )}
 
       {confirmCard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" data-testid="confirm-pick-dialog" onClick={() => setConfirmCard(null)}>

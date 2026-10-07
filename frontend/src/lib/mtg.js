@@ -131,6 +131,7 @@ export function groupKeyFor(card, mode) {
     return b === 7 ? "7+" : String(b);
   }
   if (mode === "color") return colorGroup(card);
+  if (mode === "custom") return "1";
   return "all";
 }
 
@@ -138,10 +139,16 @@ export const GROUP_ORDER = {
   type: ["Creatures", "Planeswalkers", "Instants", "Sorceries", "Artifacts", "Enchantments", "Battles", "Lands", "Other"],
   cmc: ["0", "1", "2", "3", "4", "5", "6", "7+", "Lands"],
   color: ["White", "Blue", "Black", "Red", "Green", "Multicolor", "Colorless"],
-  custom: ["all"],
+  custom: ["1", "2", "3", "4", "5", "6", "7", "8"],
 };
 
-export function sortCards(cards, sortMode) {
+const TYPE_SORT = ["Creatures", "Planeswalkers", "Instants", "Sorceries", "Artifacts", "Enchantments", "Battles", "Lands", "Other"];
+export function sortCards(cards, sortMode, group) {
+  if (group === "color" && sortMode !== "manual") {
+    return [...cards].sort((a, b) =>
+      (TYPE_SORT.indexOf(primaryType(a.type_line)) - TYPE_SORT.indexOf(primaryType(b.type_line)))
+      || ((a.cmc || 0) - (b.cmc || 0)) || a.name.localeCompare(b.name));
+  }
   if (sortMode === "name") return [...cards].sort((a, b) => a.name.localeCompare(b.name));
   if (sortMode === "cmc") return [...cards].sort((a, b) => (a.cmc - b.cmc) || a.name.localeCompare(b.name));
   return cards; // manual = stored array order

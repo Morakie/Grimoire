@@ -204,7 +204,7 @@ export default function DeckBuilder() {
       {/* Header */}
       <header className="border-b border-slate-800 bg-[#070c17] shrink-0">
         <div className="px-6 lg:px-10 py-3 flex items-center gap-3 flex-wrap">
-          <Button data-testid="back-btn" variant="ghost" size="icon" onClick={() => navigate(user ? "/dashboard" : "/")} className="text-slate-400 hover:text-white hover:bg-slate-800 shrink-0">
+          <Button data-testid="back-btn" variant="ghost" size="icon" onClick={() => navigate(-1)} className="text-slate-400 hover:text-white hover:bg-slate-800 shrink-0">
             <ArrowLeft className="w-5 h-5" />
           </Button>
           <Input data-testid="deck-name-input" value={deck.name} onChange={(e) => setDeck({ ...deck, name: e.target.value })}
