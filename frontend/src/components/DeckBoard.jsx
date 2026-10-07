@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { DndContext, closestCorners, PointerSensor, useSensor, useSensors, useDroppable, DragOverlay } from "@dnd-kit/core";
-import { SortableContext, verticalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
+import { SortableContext, verticalListSortingStrategy, rectSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -20,7 +20,7 @@ const CATS = [
 const parseCardId = (id) => { const p = id.split("|"); return { cat: p[1], cid: p[2] }; };
 const parseContId = (id) => { const p = id.split("|"); return { cat: p[1], grp: p[2] }; };
 
-function BoardCard({ card, category, view, format, index, readOnly, onQty, onRemove, onPrintings, onMove, commanderMode }) {
+function BoardCard({ card, category, view, format, index, readOnly, onQty, onRemove, onPrintings, onMove, commanderMode, stacked = true }) {
   const sortId = `card|${category}|${card.id}`;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: sortId, disabled: readOnly });
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1, zIndex: isDragging ? 60 : undefined };
@@ -36,7 +36,7 @@ function BoardCard({ card, category, view, format, index, readOnly, onQty, onRem
 
   if (view === "grid") {
     return (
-      <div ref={setNodeRef} style={{ ...style, marginTop: index > 0 ? -188 : 0 }} data-testid={`deck-card-${card.id}`}
+      <div ref={setNodeRef} style={{ ...style, marginTop: stacked && index > 0 ? -188 : 0 }} data-testid={`deck-card-${card.id}`}
         className="group relative rounded-lg hover:z-50 focus-within:z-50 transition-[margin] duration-150 hover:-translate-y-0 hover:mt-0">
         <div {...dragProps} className={`relative rounded-lg overflow-hidden border border-slate-800 shadow-lg ${readOnly ? "" : "cursor-grab active:cursor-grabbing"}`}>
           <div className="aspect-[0.716] bg-slate-800">
@@ -64,7 +64,7 @@ function BoardCard({ card, category, view, format, index, readOnly, onQty, onRem
   // so they never steal width from the card name.
   return (
     <div ref={setNodeRef} style={style} {...dragProps} data-testid={`deck-card-${card.id}`}
-      className={`group relative flex items-center gap-1.5 h-8 pl-1 pr-1.5 rounded hover:bg-slate-800/70 transition-colors ${readOnly ? "" : "cursor-grab active:cursor-grabbing"}`}>
+      className={`group relative flex items-center gap-1.5 h-8 pl-1 pr-1.5 rounded break-inside-avoid hover:bg-slate-800/70 transition-colors ${readOnly ? "" : "cursor-grab active:cursor-grabbing"}`}>
       {!readOnly && (
         <span data-testid={`drag-${card.id}`} aria-hidden="true"
           className="absolute -left-4 top-1/2 -translate-y-1/2 text-slate-600 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -165,24 +165,31 @@ function CommandZone({ cards, readOnly, handlers }) {
   );
 }
 
-function Column({ cat, groupKey, label, count, cards, view, format, readOnly, group, handlers }) {
+// `wide` columns span the full board width: cards flow in rows (grid view) or newspaper-style
+// columns (text view) instead of one tall stack. Used for Lands.
+function Column({ cat, groupKey, label, count, cards, view, format, readOnly, group, handlers, wide = false }) {
   const { setNodeRef, isOver } = useDroppable({ id: `cont|${cat}|${groupKey}` });
   const items = cards.map((c) => `card|${cat}|${c.id}`);
   return (
-    <div className={`${view === "grid" ? "w-[168px]" : "w-full sm:w-64"} shrink-0`} data-testid={`column-${cat}-${groupKey}`}>
+    <div className={`${wide ? "w-full" : view === "grid" ? "w-[168px]" : "w-full sm:w-64"} shrink-0`} data-testid={`column-${cat}-${groupKey}`}>
       {group !== "custom" && (
         <div className="flex items-center justify-between mb-2 px-1">
           <h4 className="text-xs font-display font-semibold uppercase tracking-wide text-slate-300 truncate">{label}</h4>
           <span className="text-xs text-slate-500 tabular-nums">{count}</span>
         </div>
       )}
-      <SortableContext items={items} strategy={verticalListSortingStrategy}>
-        <div ref={setNodeRef} className={`${view === "grid" ? "pt-0 min-h-[60px]" : "space-y-0 min-h-[40px]"} rounded-lg transition-colors ${isOver ? "bg-amber-400/5 ring-1 ring-amber-400/30" : ""}`}>
-          {cards.map((c, i) => (
-            <BoardCard key={c.id} card={c} category={cat} view={view} index={i} format={format} readOnly={readOnly}
-              onQty={handlers.onQty} onRemove={handlers.onRemove} onPrintings={handlers.onPrintings}
-              onMove={handlers.onMove} commanderMode={handlers.commanderMode} />
-          ))}
+      <SortableContext items={items} strategy={wide ? rectSortingStrategy : verticalListSortingStrategy}>
+        <div ref={setNodeRef} className={`${wide
+          ? (view === "grid" ? "flex flex-wrap gap-3 min-h-[60px]" : "sm:columns-[16rem] gap-x-5 min-h-[40px]")
+          : (view === "grid" ? "pt-0 min-h-[60px]" : "space-y-0 min-h-[40px]")} rounded-lg transition-colors ${isOver ? "bg-amber-400/5 ring-1 ring-amber-400/30" : ""}`}>
+          {cards.map((c, i) => {
+            const cardEl = (
+              <BoardCard key={c.id} card={c} category={cat} view={view} index={i} format={format} readOnly={readOnly}
+                onQty={handlers.onQty} onRemove={handlers.onRemove} onPrintings={handlers.onPrintings}
+                onMove={handlers.onMove} commanderMode={handlers.commanderMode} stacked={!wide} />
+            );
+            return wide && view === "grid" ? <div key={c.id} className="w-[168px]">{cardEl}</div> : cardEl;
+          })}
           {cards.length === 0 && (
             <div className="h-10 flex items-center justify-center text-[11px] text-slate-600">Drop here</div>
           )}
@@ -306,7 +313,9 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
                 return <CommandZone key="commander" cards={deck.commander} format={format} readOnly={readOnly} handlers={handlers} />;
               }
               const sectionEmpty = deck[c.key].length === 0;
-              const cols = buildColumns(deck[c.key]);
+              const allCols = buildColumns(deck[c.key]);
+              const landCol = allCols.find((col) => col.key === "Lands");
+              const cols = allCols.filter((col) => col !== landCol);
               return (
                 <section key={c.key} data-testid={`section-${c.key}`}>
                   <div className="flex items-center gap-2 mb-3">
@@ -321,6 +330,12 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
                         count={totalCount(col.cards)} cards={col.cards} view={view} format={format} readOnly={readOnly} group={group} handlers={handlers} />
                     ))}
                   </div>
+                  {!sectionEmpty && landCol && (
+                    <div className="mt-6">
+                      <Column cat={c.key} groupKey="Lands" label="Lands" count={totalCount(landCol.cards)} cards={landCol.cards}
+                        view={view} format={format} readOnly={readOnly} group={group} handlers={handlers} wide />
+                    </div>
+                  )}
                 </section>
               );
             })}
