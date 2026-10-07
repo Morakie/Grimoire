@@ -75,8 +75,8 @@ export default function DraftRoom() {
     const cards = seatPicks(seatIdx);
     const merged = [];
     cards.forEach((c) => { const e = merged.find((x) => x.name === c.name); if (e) e.quantity++; else merged.push({ ...c, quantity: 1 }); });
-    const seat = draft.seats.find((s) => s.index === seatIdx);
-    return { name: `${draft.name} — ${seat?.player_name || "Seat"} (Seat ${seatIdx + 1})`, format: "kitchen", description: `Drafted from ${draft.name}`, mainboard: merged, sideboard: [], commander: [] };
+    const seat = state.seats.find((s) => s.index === seatIdx);
+    return { name: `${state.name} — ${seat?.player_name || "Seat"} (Seat ${seatIdx + 1})`, format: "kitchen", description: `Drafted from ${state.name}`, mainboard: merged, sideboard: [], commander: [] };
   };
 
   const editInBuilder = (seatIdx) => {
@@ -92,7 +92,7 @@ export default function DraftRoom() {
   const shareUrl = `${window.location.origin}/draft/${shareId}`;
   const myTurn = me && state.current_seat_index != null && me.seats.includes(state.current_seat_index);
   const available = (draft.cube || []).filter((c) => !pickedIds.has(c.id) && (!query.trim() || c.name.toLowerCase().includes(query.toLowerCase())));
-  const currentSeatName = state.current_seat_index != null ? draft.seats.find((s) => s.index === state.current_seat_index)?.player_name : null;
+  const currentSeatName = state.current_seat_index != null ? state.seats.find((s) => s.index === state.current_seat_index)?.player_name : null;
 
   return (
     <div className="min-h-screen bg-[#060a14] text-slate-100 grim-grain">
@@ -100,7 +100,7 @@ export default function DraftRoom() {
         <div className="max-w-7xl mx-auto px-6 py-3 flex items-center gap-3 flex-wrap">
           <Link to="/" className="flex items-center gap-2"><Sparkles className="w-5 h-5 text-amber-400" /><span className="font-display text-lg font-bold">Grimoire</span></Link>
           <span className="text-slate-500">/</span>
-          <span className="font-display font-semibold truncate">{draft.name}</span>
+          <span className="font-display font-semibold truncate">{state.name}</span>
           <span className="text-xs px-2 py-0.5 rounded-full border border-slate-700 text-slate-300 capitalize">{state.status}</span>
           <div className="ml-auto flex items-center gap-2">
             <Input readOnly value={shareUrl} className="w-56 h-8 bg-slate-950 border-slate-700 text-slate-300 text-xs hidden sm:block" data-testid="draft-share-url" />
@@ -112,14 +112,14 @@ export default function DraftRoom() {
       <main className="max-w-7xl mx-auto px-6 py-6">
         {/* Seats / lobby */}
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6" data-testid="seat-grid">
-          {draft.seats.map((s) => {
+          {state.seats.map((s) => {
             const isCurrent = state.current_seat_index === s.index;
             const mine = me?.seats?.includes(s.index);
             return (
               <div key={s.index} data-testid={`seat-${s.index}`} className={`rounded-xl border p-3 ${isCurrent ? "border-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.15)]" : "border-slate-800"} bg-slate-900/50`}>
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-slate-500">Seat {s.index + 1}{mine ? " · you" : ""}</span>
-                  <span className="text-xs text-amber-400 tabular-nums">{seatPicks(s.index).length}/{draft.pick_cap}</span>
+                  <span className="text-xs text-amber-400 tabular-nums">{seatPicks(s.index).length}/{state.pick_cap}</span>
                 </div>
                 <div className="font-display font-semibold truncate">{s.player_name || <span className="text-slate-600">unclaimed</span>}</div>
                 {isCurrent && <div className="text-[11px] text-amber-400 mt-1">On the clock</div>}
@@ -140,8 +140,8 @@ export default function DraftRoom() {
             ) : (
               <div className="flex items-center gap-2 text-green-400 text-sm"><Check className="w-4 h-4" /> You are <b>{me.name}</b> — seat(s) {me.seats.map((s) => s + 1).join(", ")}</div>
             )}
-            <Button data-testid="start-draft" onClick={start} disabled={draft.seats.some((s) => !s.player_name)} className="w-full mt-4 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold disabled:opacity-40">
-              Start draft {draft.seats.some((s) => !s.player_name) ? "(waiting for all seats)" : ""}
+            <Button data-testid="start-draft" onClick={start} disabled={state.seats.some((s) => !s.player_name)} className="w-full mt-4 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold disabled:opacity-40">
+              Start draft {state.seats.some((s) => !s.player_name) ? "(waiting for all seats)" : ""}
             </Button>
           </div>
         )}
@@ -173,7 +173,7 @@ export default function DraftRoom() {
           <div data-testid="draft-complete">
             <h2 className="font-display text-2xl font-bold mb-4">Draft complete 🎉</h2>
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {draft.seats.map((s) => (
+              {state.seats.map((s) => (
                 <div key={s.index} className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4" data-testid={`result-seat-${s.index}`}>
                   <div className="font-display font-semibold">{s.player_name} · Seat {s.index + 1}</div>
                   <div className="text-xs text-slate-500 mb-3">{seatPicks(s.index).length} cards</div>

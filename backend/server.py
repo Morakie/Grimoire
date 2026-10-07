@@ -363,6 +363,10 @@ async def public_deck(share_id: str):
 async def root():
     return {"message": "Grimoire API"}
 
+@api_router.get("/health")
+async def health():
+    return {"status": "ok"}
+
 # ===================== Rotisserie Cube Draft =====================
 
 class DraftCreate(BaseModel):
@@ -474,6 +478,23 @@ async def create_draft(data: DraftCreate):
     }
     await db.drafts.insert_one(draft)
     return draft_state(draft)
+
+@api_router.get("/drafts/open")
+async def list_open_drafts():
+    cursor = db.drafts.find({"status": "lobby"}).sort("created_at", -1).limit(30)
+    out = []
+    async for d in cursor:
+        out.append({
+            "share_id": d["share_id"],
+            "name": d["name"],
+            "num_players": d["num_players"],
+            "num_seats": d["num_seats"],
+            "players_joined": len(d.get("players", [])),
+            "seats_claimed": sum(1 for s in d["seats"] if s["player_id"] is not None),
+            "cube_size": len(d.get("cube", [])),
+            "created_at": d["created_at"],
+        })
+    return {"drafts": out}
 
 @api_router.get("/drafts/{share_id}")
 async def get_draft(share_id: str):
