@@ -21,8 +21,8 @@ function cleanName(name) {
     .replace(/\s*\[[^\]]*\]/g, "")         // [tags]
     .replace(/\s+#.*$/, "")                // trailing #comment
     .trim();
-  // Double-faced cards: "Front // Back" (Scryfall) or "Front / Back" (Moxfield export).
-  n = n.split(/\s\/\/?\s/)[0].trim();
+  // Split / double-faced cards: "Front // Back" (Scryfall), "Front / Back" (Moxfield), "Wear/Tear" (MTGO).
+  n = n.split(/\s*\/\/?\s*/)[0].trim();
   return n;
 }
 
@@ -34,17 +34,22 @@ function parsePrinting(name) {
 }
 
 function parseText(text) {
-  const out = { mainboard: [], sideboard: [], commander: [] };
+  const out = { mainboard: [], sideboard: [], commander: [], explicitCommander: false };
   let section = "mainboard";
+  let block = 0; // blank-line separated chunks; MTGO puts commanders in a final chunk
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
-    if (!line) continue;
+    if (!line) { if (out[section].length && out[section][out[section].length - 1].block === block) block += 1; continue; }
     if (SKIP_RE.test(line)) continue;
     let matchedSection = null;
     for (const [sec, re] of Object.entries(SECTION_RE)) {
       if (re.test(line) && !/\d/.test(line.replace(/^(deck|sideboard|commander)\b/i, ""))) { matchedSection = sec; break; }
     }
-    if (matchedSection) { section = matchedSection; continue; }
+    if (matchedSection) {
+      section = matchedSection;
+      if (section === "commander") out.explicitCommander = true;
+      continue;
+    }
     if (TYPE_LABEL_RE.test(line) && !/^\d/.test(line)) continue;
 
     let qty = 1, name = line;
@@ -57,9 +62,39 @@ function parseText(text) {
     const printing = parsePrinting(name);
     name = cleanName(name);
     if (!name) continue;
-    out[section].push({ name, quantity: Math.max(1, qty), ...printing });
+    out[section].push({ name, quantity: Math.max(1, qty), block, ...printing });
   }
   return out;
+}
+
+// ---------- Commander detection for lists without a "Commander" heading ----------
+
+function canCommand(card) {
+  const t = card.type_line || "";
+  return (t.includes("Legendary") && t.includes("Creature")) || t.includes("Background")
+    || /can be your commander/i.test(card.oracle_text || "");
+}
+
+// Given the resolved mainboard (in list order, each with its parsed `block`), return how many
+// cards to treat as commanders and where they are:
+//  - MTGO / plain text: 1–2 commanders in a final chunk after a blank line.
+//  - Moxfield: 1–2 commanders listed first, ahead of an otherwise alphabetical list.
+function detectCommanders(main) {
+  if (main.length < 3) return null;
+  const lastBlock = main[main.length - 1].block;
+  if (lastBlock > main[0].block) {
+    const tail = main.filter((c) => c.block === lastBlock);
+    if (tail.length <= 2 && tail.every(canCommand)) return { from: "end", count: tail.length };
+  }
+  const names = main.map((c) => c.importName.toLowerCase());
+  // Sites sort punctuation slightly differently, so allow one out-of-order pair in the rest of the list.
+  const descents = (list) => list.slice(1).filter((n, i) => n.localeCompare(list[i]) < 0).length;
+  for (const k of [2, 1]) {
+    const head = main.slice(0, k);
+    if (!head.every(canCommand)) continue;
+    if (names[k - 1].localeCompare(names[k]) > 0 && descents(names.slice(k)) <= 1) return { from: "start", count: k };
+  }
+  return null;
 }
 
 function parseJson(obj) {
@@ -84,7 +119,7 @@ function parseJson(obj) {
 
 // mode="merge": add the pasted cards to the deck (Import).
 // mode="replace": the textarea starts as the current decklist and saving replaces the deck (Bulk edit).
-export default function ImportDialog({ open, onOpenChange, onImport, mode = "merge", initialText = "" }) {
+export default function ImportDialog({ open, onOpenChange, onImport, mode = "merge", initialText = "", format }) {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
   const replace = mode === "replace";
@@ -131,7 +166,7 @@ export default function ImportDialog({ open, onOpenChange, onImport, mode = "mer
         const missing = [];
         list.forEach((item) => {
           const card = found[keyOf(item)];
-          if (card) resolved.push({ ...card, quantity: item.quantity });
+          if (card) resolved.push({ ...card, quantity: item.quantity, block: item.block || 0, importName: item.name });
           else missing.push(item.name);
         });
         return { resolved, missing };
@@ -139,13 +174,29 @@ export default function ImportDialog({ open, onOpenChange, onImport, mode = "mer
       const mb = resolve(parsed.mainboard);
       const sb = resolve(parsed.sideboard);
       const cmd = resolve(parsed.commander);
+
+      // No "Commander" heading? Look for the commander where Moxfield / MTGO put it.
+      let detected = [];
+      const mainCount = mb.resolved.reduce((n, c) => n + c.quantity, 0);
+      if (!parsed.explicitCommander && !cmd.resolved.length && (format === "commander" || (mainCount >= 98 && mainCount <= 101))) {
+        const hit = detectCommanders(mb.resolved);
+        if (hit) {
+          detected = hit.from === "end" ? mb.resolved.slice(-hit.count) : mb.resolved.slice(0, hit.count);
+          mb.resolved = hit.from === "end" ? mb.resolved.slice(0, -hit.count) : mb.resolved.slice(hit.count);
+          cmd.resolved = detected;
+        }
+      }
+      const strip = (list) => list.map(({ block, importName, ...c }) => c);
+      [mb, sb, cmd].forEach((g) => { g.resolved = strip(g.resolved); });
       const missing = [...mb.missing, ...sb.missing, ...cmd.missing];
       // Never silently drop cards when replacing the whole deck: fix the list first.
       if (replace && missing.length) {
         toast.error(`Couldn't find ${missing.length} card${missing.length === 1 ? "" : "s"}: ${missing.slice(0, 4).join(", ")}${missing.length > 4 ? "…" : ""}. Fix ${missing.length === 1 ? "it" : "them"} and save again.`, { duration: 7000 });
         return;
       }
-      onImport({ mainboard: mb.resolved, sideboard: sb.resolved, commander: cmd.resolved }, { replace });
+      onImport({ mainboard: mb.resolved, sideboard: sb.resolved, commander: cmd.resolved },
+        { replace, format: detected.length && format !== "commander" ? "commander" : undefined });
+      if (detected.length) toast.success(`Commander: ${detected.map((c) => c.name).join(" & ")}`, { duration: 4000 });
       const total = mb.resolved.length + sb.resolved.length + cmd.resolved.length;
       toast.success(replace ? "Decklist updated" : `Imported ${total} card${total === 1 ? "" : "s"}`);
       if (missing.length) toast.error(`${missing.length} not found: ${missing.slice(0, 4).join(", ")}${missing.length > 4 ? "…" : ""}`, { duration: 5000 });

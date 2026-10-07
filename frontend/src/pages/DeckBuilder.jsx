@@ -154,8 +154,9 @@ export default function DeckBuilder() {
 
   const onCardsChange = (cats) => setDeck((prev) => ({ ...prev, ...cats }));
 
-  const applyImport = (imported, { replace = false } = {}) => {
+  const applyImport = (imported, { replace = false, format } = {}) => {
     setDeck((prev) => {
+      if (format) prev = { ...prev, format }; // e.g. switch to Commander when a commander was detected
       if (replace) {
         // Keep per-card extras (e.g. custom group placement) for cards that survived the edit.
         const old = {};
@@ -286,8 +287,8 @@ export default function DeckBuilder() {
 
       <PrintingsDialog open={!!printingCtx} onOpenChange={(o) => !o && setPrintingCtx(null)} card={printingCtx?.card} onSelect={selectPrinting} />
       <AuthDialog open={authOpen} onOpenChange={setAuthOpen} onSuccess={onAuthSuccess} />
-      <ImportDialog open={importOpen} onOpenChange={setImportOpen} onImport={applyImport} />
-      <ImportDialog open={bulkOpen} onOpenChange={setBulkOpen} onImport={applyImport} mode="replace"
+      <ImportDialog open={importOpen} onOpenChange={setImportOpen} onImport={applyImport} format={deck.format} />
+      <ImportDialog open={bulkOpen} onOpenChange={setBulkOpen} onImport={applyImport} mode="replace" format={deck.format}
         initialText={bulkOpen ? buildExport(deck) : ""} />
       <ExportDialog open={exportOpen} onOpenChange={setExportOpen} deck={deck} />
     </div>
