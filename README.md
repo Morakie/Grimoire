@@ -97,4 +97,5 @@ startup.
 
 ## Deployment
 
-Production and staging both run on Render with MongoDB Atlas. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+Production and staging both run on Render with MongoDB Atlas. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md),
+which also walks through [running your own copy](docs/DEPLOYMENT.md#run-your-own-copy) from a fork.
