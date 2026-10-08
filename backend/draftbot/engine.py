@@ -36,6 +36,7 @@ TUNING: Dict[str, float] = {
     "needs_start": 0.45, "needs_slope": 1.8,
     "float_base": 0.25, "float_growth": 0.3, "float_cap": 0.6,
     "fixing_base": 0.08, "fixing_growth": 0.3,
+    "early_fixing_damp": 0.55,     # dual/fetch lands' power counts this much at pick 1, rising to full by mid-draft
     "package_unit": 0.12, "package_cap": 0.3, "package_urgency": 0.12, "package_urgency_cap": 0.45,
     "card_openness": 0.5,          # mid-draft: how much crowding deters moving INTO a colour
     "splash_threshold": 0.9,       # owned value in a third colour before it becomes a splash target
@@ -368,7 +369,11 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     for cid in remaining:
         card = ctx.index[cid]
         fit = card_fit(card, dist)
-        base = (w_power * max(card.power, 0.0)
+        power = max(card.power, 0.0)
+        if card.is_fixing and card.is_land:
+            damp = k("early_fixing_damp")
+            power *= damp + (1 - damp) * min(1.0, 2 * t)   # people take spells first and fix later
+        base = (w_power * power
                 + w_combo * combo_value(card, owned, remaining, ctx.combos, dist, ctx.index)
                 + package_value(card, roles, k)
                 + w_arch * arch.card_archetype_bonus(card, adist)
