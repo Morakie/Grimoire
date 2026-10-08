@@ -492,8 +492,9 @@ async def health():
 
 class DraftCreate(BaseModel):
     name: str = "Cube Draft"
-    num_players: int = Field(ge=1, le=8)
+    num_players: int = Field(ge=1, le=12)   # everyone at the table, bots included
     num_seats: int = Field(ge=1, le=64)
+    num_bots: int = Field(0, ge=0, le=11)    # bots seated straight away (the rest are people)
     double_draft_after: int = 0   # picks per seat made singly before turns grant 2; 0 = never
     pick_cap: int = 45            # picks per seat
     cube: List[dict] = []
@@ -593,6 +594,8 @@ async def create_draft(data: DraftCreate):
         raise HTTPException(status_code=400, detail="Seats must divide evenly among players")
     if not data.cube:
         raise HTTPException(status_code=400, detail="Cube is empty")
+    if data.num_bots >= data.num_players:
+        raise HTTPException(status_code=400, detail="Leave at least one seat for a person")
     now = datetime.now(timezone.utc).isoformat()
     draft = {
         "id": str(uuid.uuid4()),
@@ -613,6 +616,11 @@ async def create_draft(data: DraftCreate):
         "created_at": now,
         "updated_at": now,
     }
+    if data.num_bots:
+        rng = random.Random()
+        for _ in range(data.num_bots):
+            _seat_bot(draft, rng)
+        _warm_card_stats(draft["cube"])
     await db.drafts.insert_one(draft)
     return {**draft_state(draft), "host_token": draft["host_token"]}
 
@@ -897,6 +905,20 @@ async def _bot_pick_once(d: dict) -> dict:
     return await db.drafts.find_one({"share_id": d["share_id"]})
 
 
+def _seat_bot(d: dict, rng: random.Random) -> None:
+    """Seat a new bot in the next player slot (seats spread around the snake like a person's)."""
+    name = bot_names(rng, 1, [p["name"] for p in d["players"]])[0]
+    j = len(d["players"])
+    assigned = sorted(s["index"] for s in d["seats"] if s["index"] % d["num_players"] == j)
+    pid = str(uuid.uuid4())
+    for s in d["seats"]:
+        if s["index"] in assigned:
+            s["player_id"] = pid
+            s["player_name"] = name
+    d["players"].append({"id": pid, "token": str(uuid.uuid4()), "name": name, "seats": assigned,
+                         "is_bot": True, "persona": random_persona(rng).to_dict()})
+
+
 @api_router.post("/drafts/{share_id}/bots")
 async def add_bot(share_id: str, data: BotInput):
     d = await db.drafts.find_one({"share_id": share_id})
@@ -908,17 +930,7 @@ async def add_bot(share_id: str, data: BotInput):
         raise HTTPException(status_code=400, detail="Draft already started")
     if len(d["players"]) >= d["num_players"]:
         raise HTTPException(status_code=400, detail="All player slots are taken")
-    rng = random.Random()
-    name = bot_names(rng, 1, [p["name"] for p in d["players"]])[0]
-    j = len(d["players"])
-    assigned = sorted(s["index"] for s in d["seats"] if s["index"] % d["num_players"] == j)
-    pid = str(uuid.uuid4())
-    for s in d["seats"]:
-        if s["index"] in assigned:
-            s["player_id"] = pid
-            s["player_name"] = name
-    d["players"].append({"id": pid, "token": str(uuid.uuid4()), "name": name, "seats": assigned,
-                         "is_bot": True, "persona": random_persona(rng).to_dict()})
+    _seat_bot(d, random.Random())
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": d["players"], "updated_at": datetime.now(timezone.utc).isoformat()}})
     _warm_card_stats(d["cube"])
     return draft_state(d, light=True)

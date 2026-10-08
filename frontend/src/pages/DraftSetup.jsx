@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Sparkles, Loader2, Shuffle, Users, RefreshCw, Plus, ArrowRight } from "lucide-react";
+import { Sparkles, Loader2, Shuffle, Users, RefreshCw, Plus, ArrowRight, Bot } from "lucide-react";
 import { toast } from "sonner";
 
 function parseList(text) {
@@ -33,15 +33,20 @@ export default function DraftSetup() {
   const [loadingLobbies, setLoadingLobbies] = useState(true);
 
   const [name, setName] = useState("Cube Draft");
-  const [players, setPlayers] = useState(4);
-  const [seats, setSeats] = useState(8);
+  const [players, setPlayers] = useState(4);       // people
+  const [bots, setBots] = useState(0);
+  const [seatsEach, setSeatsEach] = useState(2);
   const [pickCap, setPickCap] = useState(45);
   const [doubleAfter, setDoubleAfter] = useState(0);
   const [cubeText, setCubeText] = useState("");
   const [cubeCobra, setCubeCobra] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const seatsOk = players > 0 && seats % players === 0;
+  const nPeople = Number(players) || 0;
+  const nBots = Number(bots) || 0;
+  const nEach = Number(seatsEach) || 0;
+  const totalSeats = (nPeople + nBots) * nEach;
+  const seatsOk = nPeople >= 1 && nBots >= 0 && nEach >= 1 && nPeople + nBots <= 12 && totalSeats <= 64;
 
   const loadLobbies = async () => {
     try {
@@ -71,7 +76,7 @@ export default function DraftSetup() {
   };
 
   const create = async () => {
-    if (!seatsOk) { toast.error("Seats must divide evenly among players"); return; }
+    if (!seatsOk) { toast.error("Need at least 1 player, at most 12 players + bots, and 64 seats in total"); return; }
     setLoading(true);
     try {
       let names = [];
@@ -88,8 +93,9 @@ export default function DraftSetup() {
       if (col.not_found?.length) toast(`${col.not_found.length} card(s) not found and skipped`);
       const { data: draft } = await api.post("/drafts", {
         name: name.trim() || "Cube Draft",
-        num_players: Number(players),
-        num_seats: Number(seats),
+        num_players: nPeople + nBots,
+        num_bots: nBots,
+        num_seats: totalSeats,
         double_draft_after: Number(doubleAfter) || 0,
         pick_cap: Number(pickCap) || 45,
         cube: col.cards,
@@ -174,14 +180,18 @@ export default function DraftSetup() {
                 <Label className="text-slate-300">Draft name</Label>
                 <Input data-testid="draft-name" value={name} onChange={(e) => setName(e.target.value)} className="mt-1.5 bg-slate-950 border-slate-700 text-slate-100 focus-visible:ring-amber-400" />
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
                 <div>
                   <Label className="text-slate-300">Players</Label>
-                  <Input data-testid="draft-players" type="number" min={1} max={8} value={players} onChange={(e) => setPlayers(e.target.value)} className="mt-1.5 bg-slate-950 border-slate-700 text-slate-100" />
+                  <Input data-testid="draft-players" type="number" min={1} max={12} value={players} onChange={(e) => setPlayers(e.target.value)} className={`mt-1.5 bg-slate-950 border-slate-700 text-slate-100 ${seatsOk ? "" : "ring-1 ring-red-500"}`} />
                 </div>
                 <div>
-                  <Label className="text-slate-300">Seats</Label>
-                  <Input data-testid="draft-seats" type="number" min={players} value={seats} onChange={(e) => setSeats(e.target.value)} className={`mt-1.5 bg-slate-950 border-slate-700 text-slate-100 ${seatsOk ? "" : "ring-1 ring-red-500"}`} />
+                  <Label className="text-slate-300 flex items-center gap-1.5"><Bot className="w-3.5 h-3.5 text-amber-400" /> Bots</Label>
+                  <Input data-testid="draft-bots" type="number" min={0} max={11} value={bots} onChange={(e) => setBots(e.target.value)} className="mt-1.5 bg-slate-950 border-slate-700 text-slate-100" />
+                </div>
+                <div>
+                  <Label className="text-slate-300">Seats each</Label>
+                  <Input data-testid="draft-seats-each" type="number" min={1} value={seatsEach} onChange={(e) => setSeatsEach(e.target.value)} className="mt-1.5 bg-slate-950 border-slate-700 text-slate-100" />
                 </div>
                 <div>
                   <Label className="text-slate-300">Picks / seat</Label>
@@ -193,7 +203,10 @@ export default function DraftSetup() {
                 </div>
               </div>
               <p className="text-xs text-slate-500">
-                {seatsOk ? `${seats / players} seat(s) per player.` : "Seats must divide evenly by players."} “Double after” = single picks per seat before each turn grants 2 (0 = off). Boundary seats get 4 in a row during the double phase.
+                {seatsOk
+                  ? <><span className="text-slate-300" data-testid="draft-seat-summary">{nPeople} {nPeople === 1 ? "player" : "players"}{nBots ? ` + ${nBots} ${nBots === 1 ? "bot" : "bots"}` : ""} · {totalSeats} seats ({nEach} each).</span> </>
+                  : <span className="text-red-400">Need at least 1 player, at most 12 players + bots, and 64 seats in total. </span>}
+                Bots are seated automatically and pick on their own turns. “Double after” = single picks per seat before each turn grants 2 (0 = off). Boundary seats get 4 in a row during the double phase.
               </p>
 
               <div>
