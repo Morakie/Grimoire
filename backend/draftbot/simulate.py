@@ -58,6 +58,7 @@ def summarise(result: dict, combos: List[Combo]) -> List[dict]:
             "seat": seat,
             "name": result["names"][seat],
             "persona": result["personas"][seat].archetype,
+            "style": next((k[6:] for k in result["personas"][seat].weights if k.startswith("style_")), "steady"),
             "plan": max((d := arch.archetype_distribution(pool, len(pool))), key=d.get),
             "lane": "".join(sorted(lane, key="WUBRG".index)),
             "on_lane_pct": round(100 * len(on_lane) / max(len(spells), 1)),

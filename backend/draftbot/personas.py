@@ -50,9 +50,21 @@ def random_persona(rng: random.Random) -> Persona:
     # Small per-bot jitter on every weight so two bots of the same archetype still differ.
     for key in ("power", "lane", "combo", "openness", "float", "curve", "interaction"):
         weights[key] = round(weights.get(key, 1.0) * rng.uniform(0.95, 1.05), 3)
-    # A slight soft spot for one deck plan (hidden), e.g. a bot that leans a little towards aggro.
+    # Drafting style (hidden): how the bot handles deck plans.
+    #  - forcer:   picks a plan up front, leans into it, and is less put off when others contest it
+    #  - flexible: stays open, reacts more to crowding and pivots readily (usually to a related plan)
+    #  - steady:   in between
     from .archetypes import NAMES
-    weights["arch_" + rng.choice(NAMES)] = round(rng.uniform(1.03, 1.07), 3)
+    style = rng.choices(["steady", "forcer", "flexible"], weights=[0.5, 0.25, 0.25])[0]
+    if style == "forcer":
+        weights["arch_" + rng.choice(NAMES)] = round(rng.uniform(1.12, 1.2), 3)
+        weights["plan_crowding"] = round(rng.uniform(0.5, 0.65), 3)
+    elif style == "flexible":
+        weights["plan_crowding"] = round(rng.uniform(1.2, 1.35), 3)
+        weights["arch_" + rng.choice(NAMES)] = round(rng.uniform(1.02, 1.05), 3)
+    else:
+        weights["arch_" + rng.choice(NAMES)] = round(rng.uniform(1.03, 1.07), 3)
+    weights["style_" + style] = 1.0
     return Persona(archetype, weights, temperature=rng.uniform(0.035, 0.06), seed=rng.randrange(1 << 30))
 
 

@@ -334,8 +334,10 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     t = min(1.0, n / max(ctx.picks_per_seat, 1))          # draft phase 0..1
 
     rivals = [s for s in ctx.picks_by_seat if s != ctx.seat]
-    adist = arch.archetype_distribution(mine, n, archetype_crowding(ctx, rivals),
-                                        {a: 0.4 * (p.w("arch_" + a) - 1) * 10 for a in arch.NAMES})
+    crowd = {a: v * p.w("plan_crowding") for a, v in archetype_crowding(ctx, rivals).items()}
+    # A preferred plan (forcers have a strong one) pulls hardest early and fades as the pool speaks.
+    bias = {a: 4.0 * (p.w("arch_" + a) - 1) * (1.6 - t) for a in arch.NAMES}
+    adist = arch.archetype_distribution(mine, n, crowd, bias)
     support = arch.lane_support(adist)
     open_by_colour = openness(ctx, rivals)
     prior = {}
