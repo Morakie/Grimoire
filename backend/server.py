@@ -28,6 +28,7 @@ from draftbot.cardstats import draft_stats, ensure_stats
 from draftbot.personas import Persona
 from draftbot.engine import suggest_picks
 from draftbot.simulate import run_draft, summarise
+import commander as cmdr
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -529,6 +530,24 @@ async def public_deck(share_id: str):
         raise HTTPException(status_code=404, detail="Deck not found")
     owner = await db.users.find_one({"id": deck["user_id"]})
     return deck_to_public(deck, owner.get("name", "") if owner else "")
+
+# ----------------------- Commander checks -----------------------
+
+class CommanderCheckInput(BaseModel):
+    commander: List[DeckCard] = Field(default=[], max_length=4)
+    mainboard: List[DeckCard] = Field(default=[], max_length=250)
+
+@api_router.post("/commander/check")
+async def commander_check(data: CommanderCheckInput):
+    """Legality and bracket estimate for a Commander deck (no login needed, nothing is stored)."""
+    commanders = [c.model_dump() for c in data.commander]
+    cards = [c.model_dump() for c in data.mainboard]
+    ref, combos = await asyncio.gather(
+        cmdr.fetch_reference(),
+        cmdr.fetch_two_card_combos([c["name"] for c in commanders + cards]),
+    )
+    return cmdr.evaluate(commanders, cards, ref["game_changers"], ref["banned"], combos or [],
+                         reference_ok=bool(ref.get("ok")), combos_ok=combos is not None)
 
 @api_router.get("/")
 async def root():

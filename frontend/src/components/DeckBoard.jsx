@@ -375,7 +375,7 @@ function Control({ label, value, onChange, options, testid }) {
     <label className="flex items-center gap-2">
       <span className="text-xs text-slate-500">{label}</span>
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger data-testid={testid} className="h-8 w-32 bg-slate-900 border-slate-700 text-slate-200 text-xs"><SelectValue /></SelectTrigger>
+        <SelectTrigger data-testid={testid} className="h-8 w-36 bg-slate-900 border-slate-700 text-slate-200 text-xs"><SelectValue /></SelectTrigger>
         <SelectContent className="bg-slate-900 border-slate-700 text-slate-200">
           {options.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
         </SelectContent>

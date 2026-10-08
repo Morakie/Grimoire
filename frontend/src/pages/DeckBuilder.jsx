@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import api from "@/lib/api";
 import CardSearchBar from "@/components/CardSearchBar";
 import DeckBoard from "@/components/DeckBoard";
 import DeckStats from "@/components/DeckStats";
+import CommanderCheck, { CommanderBadge, useCommanderCheck } from "@/components/CommanderCheck";
 import PrintingsDialog from "@/components/PrintingsDialog";
 import ImportDialog from "@/components/ImportDialog";
 import ExportDialog, { buildExport } from "@/components/ExportDialog";
@@ -29,7 +30,14 @@ const CATEGORIES = [
 export default function DeckBuilder() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
+  // Back returns to the previous page inside Grimoire. When the deck was opened directly (new tab,
+  // refresh, a pasted link) there is no previous Grimoire page, so go to My Decks (or home for guests).
+  const goBack = () => {
+    if (location.key !== "default" && window.history.length > 1) navigate(-1);
+    else navigate(user ? "/dashboard" : "/");
+  };
   const guest = !id;
   const [deck, setDeck] = useState(null);
   const [target, setTarget] = useState("mainboard");
@@ -41,6 +49,8 @@ export default function DeckBuilder() {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [printingCtx, setPrintingCtx] = useState(null);
+  const [statsOpen, setStatsOpen] = useState(false);
+  const sidebarRef = useRef(null);
   const skipSave = useRef(true);
   const saveTimer = useRef(null);
 
@@ -60,6 +70,12 @@ export default function DeckBuilder() {
   }, [id, navigate]);
 
   const showCommander = deck?.format === "commander";
+  const commanderCheck = useCommanderCheck(deck, showCommander);
+  // The badge opens the full check: the sidebar on wide screens, the analytics sheet otherwise.
+  const openCheck = () => {
+    if (window.matchMedia && window.matchMedia("(min-width: 1280px)").matches && sidebarRef.current) sidebarRef.current.scrollTo({ top: 0, behavior: "smooth" });
+    else setStatsOpen(true);
+  };
 
   // Autosave
   useEffect(() => {
@@ -98,7 +114,8 @@ export default function DeckBuilder() {
       });
       localStorage.removeItem(GUEST_KEY);
       toast.success("Deck saved to your account");
-      navigate(`/deck/${data.id}`);
+      // Replace the guest page in history, so Back doesn't land on the now-empty guest builder.
+      navigate(`/deck/${data.id}`, { replace: true });
     } catch { toast.error("Save failed"); }
     finally { setSaving(false); }
   };
@@ -213,7 +230,7 @@ export default function DeckBuilder() {
       {/* Header */}
       <header className="border-b border-slate-800 bg-[#070c17] shrink-0">
         <div className="px-6 lg:px-10 py-3 flex items-center gap-3 flex-wrap">
-          <Button data-testid="back-btn" variant="ghost" size="icon" onClick={() => navigate(-1)} className="text-slate-400 hover:text-white hover:bg-slate-800 shrink-0">
+          <Button data-testid="back-btn" variant="ghost" size="icon" onClick={goBack} title="Back" className="text-slate-400 hover:text-white hover:bg-slate-800 shrink-0">
             <ArrowLeft className="w-5 h-5" />
           </Button>
           <Input data-testid="deck-name-input" value={deck.name} onChange={(e) => setDeck({ ...deck, name: e.target.value })}
@@ -224,6 +241,7 @@ export default function DeckBuilder() {
               {FORMATS.map((f) => <SelectItem key={f.value} value={f.value}>{f.label}</SelectItem>)}
             </SelectContent>
           </Select>
+          {showCommander && <CommanderBadge check={commanderCheck} onClick={openCheck} />}
           <div className="flex items-center gap-2 ml-auto flex-wrap justify-end">
             <span className="text-xs text-slate-500 hidden md:flex items-center gap-1">
               {saving ? <><Loader2 className="w-3 h-3 animate-spin" /> Saving</> : savedAt ? <><Check className="w-3 h-3 text-green-400" /> {guest ? "Saved locally" : "Saved"}</> : (guest ? <span className="text-amber-400/80">Draft · not saved</span> : null)}
@@ -237,13 +255,16 @@ export default function DeckBuilder() {
             <Button data-testid="export-btn" variant="outline" size="sm" onClick={() => setExportOpen(true)} className="bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
               <Download className="w-4 h-4 sm:mr-1" /> <span className="hidden sm:inline">Export</span>
             </Button>
-            <Sheet>
+            <Sheet open={statsOpen} onOpenChange={setStatsOpen}>
               <SheetTrigger asChild>
                 <Button data-testid="mobile-stats-btn" variant="outline" size="sm" className="xl:hidden bg-slate-900 border-slate-700 text-slate-200"><BarChart3 className="w-4 h-4" /></Button>
               </SheetTrigger>
               <SheetContent side="right" className="bg-[#070c17] border-slate-800 text-slate-100 overflow-y-auto w-[340px]">
                 <SheetHeader><SheetTitle className="text-slate-100 font-display">Analytics</SheetTitle></SheetHeader>
-                <div className="mt-4"><DeckStats cards={analyticsCards} /></div>
+                <div className="mt-4 space-y-5">
+                  {showCommander && <CommanderCheck check={commanderCheck} />}
+                  <DeckStats cards={analyticsCards} />
+                </div>
               </SheetContent>
             </Sheet>
             <Button data-testid="share-btn" variant="outline" size="sm" onClick={() => (guest ? handleSave() : setShareOpen(true))} className="bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
@@ -266,7 +287,8 @@ export default function DeckBuilder() {
           <DeckBoard deck={deck} format={deck.format} showCommander={showCommander}
             onQty={changeQty} onRemove={removeCard} onPrintings={openPrintings} onCardsChange={onCardsChange} />
         </div>
-        <aside className="w-80 border-l border-slate-800 bg-[#070c17] overflow-y-auto p-4 hidden xl:block" data-testid="stats-sidebar">
+        <aside ref={sidebarRef} className="w-80 border-l border-slate-800 bg-[#070c17] overflow-y-auto p-4 hidden xl:block space-y-5" data-testid="stats-sidebar">
+          {showCommander && <CommanderCheck check={commanderCheck} />}
           <DeckStats cards={analyticsCards} />
         </aside>
       </div>
