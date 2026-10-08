@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { buildExport } from "@/components/ExportDialog";
 import { useAuth } from "@/context/AuthContext";
 import { getBasics } from "@/lib/mtg";
+import PackDraftView from "@/components/PackDraftView";
 import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock } from "lucide-react";
 import { toast } from "sonner";
 
@@ -91,17 +92,23 @@ export default function DraftRoom() {
   }, [shareId, navigate]);
 
   // Poll every 2s, or every second while a bot is on the clock (its pick lands on the next poll).
-  const botOnClock = !!(state && state.status === "drafting" && state.current_seat_index != null
-    && (state.players || []).some((p) => p.is_bot && p.seats.includes(state.current_seat_index)));
+  // Pack drafts poll every second while drafting (bots and other players pass packs constantly).
+  const botOnClock = !!(state && state.status === "drafting" && (state.mode === "packs" || (state.current_seat_index != null
+    && (state.players || []).some((p) => p.is_bot && p.seats.includes(state.current_seat_index)))));
+  const playerToken = me?.player_token;
   useEffect(() => {
     let active = true;
     const tick = async () => {
-      try { const { data } = await api.get(`/drafts/${shareId}/state`); if (active) setState(data); } catch {}
+      try {
+        // The player token lets a pack draft show you your own packs and picks (hidden from everyone else).
+        const { data } = await api.get(`/drafts/${shareId}/state`, playerToken ? { headers: { "X-Player-Token": playerToken } } : undefined);
+        if (active) setState(data);
+      } catch {}
     };
     tick();
     const iv = setInterval(tick, botOnClock ? 1000 : 2000);
     return () => { active = false; clearInterval(iv); };
-  }, [shareId, botOnClock]);
+  }, [shareId, botOnClock, playerToken]);
 
   useEffect(() => { localStorage.setItem(`grim_draft_queue_${shareId}`, JSON.stringify(queue)); }, [queue, shareId]);
 
@@ -165,6 +172,19 @@ export default function DraftRoom() {
       <Button onClick={() => navigate("/draft")} className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">Back to drafts</Button>
     </div>
   );
+
+  if (draft.mode === "packs" && state.status === "drafting") {
+    const closeTable = async () => {
+      if (!window.confirm("Close this table for everyone? This cannot be undone.")) return;
+      try { await api.post(`/drafts/${shareId}/cancel`, { host_token: hostToken }); localStorage.removeItem(`grim_draft_host_${shareId}`); navigate("/draft"); }
+      catch (e) { toast.error(e.response?.data?.detail || "Could not close table"); }
+    };
+    return (
+      <PackDraftView shareId={shareId} draft={draft} state={state} setState={setState} me={me} hostToken={hostToken}
+        muted={muted} onToggleMute={() => setMuted((m) => { localStorage.setItem("grim_draft_muted", (!m).toString()); return !m; })}
+        onBeep={playBeep} onCancel={closeTable} shareUrl={`${window.location.origin}/draft/${shareId}`} />
+    );
+  }
 
   const claim = async () => {
     if (!claimName.trim()) { toast.error("Enter your name"); return; }
@@ -652,7 +672,10 @@ export default function DraftRoom() {
             {state.status === "lobby" && (
               <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 max-w-md" data-testid="lobby-panel">
                 <h2 className="font-display text-xl font-bold mb-2">Join the draft</h2>
-                <p className="text-sm text-slate-400 mb-4">Enter your name to claim your seat(s). {state.seats_per_player} seat(s) each. {state.players.length}/{state.num_players} players in.</p>
+                <p className="text-sm text-slate-400 mb-4">
+                  {state.mode === "packs" && <span className="block text-amber-300/90 mb-1" data-testid="lobby-format">Pack draft · {state.pack_count} packs of {state.pack_size}{state.timer === "off" ? " · no timer" : " · pick timer on"}</span>}
+                  Enter your name to claim your seat(s). {state.seats_per_player} seat(s) each. {state.players.length}/{state.num_players} players in.
+                </p>
                 <div className="mb-4 rounded-lg border border-slate-800 bg-slate-950 p-3">
                   <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1.5">Invite players</div>
                   <div className="flex items-center gap-2">

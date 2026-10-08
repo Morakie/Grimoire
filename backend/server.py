@@ -971,6 +971,7 @@ async def list_open_drafts():
             "players_joined": len(d.get("players", [])),
             "seats_claimed": sum(1 for s in d["seats"] if s["player_id"] is not None),
             "picks_made": len(d.get("picks", [])),
+            "mode": d.get("mode", "rotisserie"),
             "created_at": d["created_at"],
         }
         (lobbies if d["status"] == "lobby" else live).append(row)
@@ -1013,6 +1014,7 @@ def _player_by_token(d: dict, token: Optional[str]) -> Optional[dict]:
 def _pack_state(d: dict, token: Optional[str]) -> dict:
     """Light state plus, for a seated player, the packs in front of their own seats and their picks."""
     out = draft_state(d, light=True)
+    out["server_time"] = datetime.now(timezone.utc).isoformat()   # lets clients correct their clock for timers
     player = _player_by_token(d, token)
     if player and d.get("packs"):
         out["my"] = pd.private_view(d, player["seats"])
