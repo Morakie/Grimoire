@@ -143,14 +143,31 @@ export const GROUP_ORDER = {
 };
 
 const TYPE_SORT = ["Creatures", "Planeswalkers", "Instants", "Sorceries", "Artifacts", "Enchantments", "Battles", "Lands", "Other"];
+const COLOR_SORT = GROUP_ORDER.color;
+// White, Blue, Black, Red, Green, then multicolour (by its colours in WUBRG order), then colourless.
+function colorRank(card) {
+  const g = colorGroup(card);
+  const base = COLOR_SORT.indexOf(g) * 100;
+  if (g !== "Multicolor") return base;
+  const ci = card.color_identity || [];
+  // Two-colour cards before three-colour, then by the earliest colour in WUBRG order.
+  return base + ci.length * 10 + Math.min(...ci.map((c) => "WUBRG".indexOf(c)).filter((i) => i >= 0));
+}
+const byName = (a, b) => a.name.localeCompare(b.name);
+const byType = (a, b) => TYPE_SORT.indexOf(primaryType(a.type_line)) - TYPE_SORT.indexOf(primaryType(b.type_line));
+const byCmc = (a, b) => (a.cmc || 0) - (b.cmc || 0);
+
 export function sortCards(cards, sortMode, group) {
+  // Colour, then card type, then mana value (then name). Works inside any grouping.
+  if (sortMode === "color") return [...cards].sort((a, b) => (colorRank(a) - colorRank(b)) || byType(a, b) || byCmc(a, b) || byName(a, b));
+  if (sortMode === "type") return [...cards].sort((a, b) => byType(a, b) || byCmc(a, b) || byName(a, b));
   if (group === "color" && sortMode !== "manual") {
     return [...cards].sort((a, b) =>
       (TYPE_SORT.indexOf(primaryType(a.type_line)) - TYPE_SORT.indexOf(primaryType(b.type_line)))
       || ((a.cmc || 0) - (b.cmc || 0)) || a.name.localeCompare(b.name));
   }
-  if (sortMode === "name") return [...cards].sort((a, b) => a.name.localeCompare(b.name));
-  if (sortMode === "cmc") return [...cards].sort((a, b) => (a.cmc - b.cmc) || a.name.localeCompare(b.name));
+  if (sortMode === "name") return [...cards].sort(byName);
+  if (sortMode === "cmc") return [...cards].sort((a, b) => byCmc(a, b) || byName(a, b));
   return cards; // manual = stored array order
 }
 
@@ -162,10 +179,25 @@ export const GROUP_OPTIONS = [
   { value: "type", label: "Type" },
   { value: "cmc", label: "Mana Value" },
   { value: "color", label: "Color" },
-  { value: "custom", label: "Custom" },
+  { value: "custom", label: "Manual piles" },
 ];
 export const SORT_OPTIONS = [
   { value: "manual", label: "Manual" },
   { value: "name", label: "Name" },
   { value: "cmc", label: "Mana Value" },
+  { value: "color", label: "Color, type, MV" },
+  { value: "type", label: "Type, MV" },
 ];
+
+// ---------- Basic lands ----------
+
+export const BASIC_COLORS = ["W", "U", "B", "R", "G", "C"];
+export const BASIC_LABEL = { W: "Plains", U: "Island", B: "Swamp", R: "Mountain", G: "Forest", C: "Wastes" };
+let basicsPromise = null;
+/** One card per basic land type, keyed by colour (W U B R G, C = Wastes). Fetched once. */
+export function getBasics(api) {
+  if (!basicsPromise) {
+    basicsPromise = api.get("/cards/basics").then(({ data }) => data.basics || {}).catch((e) => { basicsPromise = null; throw e; });
+  }
+  return basicsPromise;
+}

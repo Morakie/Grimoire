@@ -27,7 +27,9 @@ from draftbot.combos import attach_combos
 from draftbot.cardstats import draft_stats, ensure_stats
 from draftbot.personas import Persona
 from draftbot.engine import suggest_picks
+from draftbot.deckbuild import suggest_deck
 from draftbot.simulate import run_draft, summarise
+import commander as cmdr
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -131,7 +133,7 @@ class DeckCard(BaseModel):
 class DeckInput(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     format: str = "standard"
-    description: str = ""
+    description: str = Field(default="", max_length=20000)
     mainboard: List[DeckCard] = []
     sideboard: List[DeckCard] = []
     commander: List[DeckCard] = []
@@ -283,14 +285,27 @@ def _name_keys(c: Dict[str, Any]) -> List[str]:
     keys += [f.get("name", "") for f in c.get("card_faces") or []]
     return [k.strip().lower() for k in keys if k]
 
+async def _scryfall_post(hc: httpx.AsyncClient, path: str, body: dict) -> httpx.Response:
+    """POST to Scryfall, retrying briefly when it is busy (429 / 5xx). Raises a 502 if it still fails,
+    so a Scryfall hiccup is reported instead of silently dropping cards."""
+    for attempt in range(3):
+        r = await hc.post(f"{SCRYFALL}{path}", json=body)
+        if r.status_code == 200:
+            return r
+        if r.status_code not in (429, 500, 502, 503, 504):
+            break
+        await asyncio.sleep(1.0 * (attempt + 1))
+    logger.warning("Scryfall %s failed: %s", path, r.status_code)
+    raise HTTPException(status_code=502, detail="Scryfall is busy, please try again in a moment")
+
+
 async def _collection_lookup(hc: httpx.AsyncClient, identifiers: List[dict]) -> List[dict]:
     out = []
     for i in range(0, len(identifiers), 75):
         if i:
             await asyncio.sleep(0.1)
-        r = await hc.post(f"{SCRYFALL}/cards/collection", json={"identifiers": identifiers[i:i + 75]})
-        if r.status_code == 200:
-            out.extend(r.json().get("data", []))
+        r = await _scryfall_post(hc, "/cards/collection", {"identifiers": identifiers[i:i + 75]})
+        out.extend(r.json().get("data", []))
     return out
 
 _OLDEST_CACHE: Dict[str, dict] = {}   # oracle_id -> oldest paper printing (raw Scryfall card)
@@ -394,9 +409,7 @@ async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
         for i in range(0, len(names), 75):
             if i:
                 await asyncio.sleep(0.1)
-            r = await hc.post(f"{SCRYFALL}/cards/collection", json={"identifiers": [{"name": n} for n in names[i:i + 75]]})
-            if r.status_code != 200:
-                continue
+            r = await _scryfall_post(hc, "/cards/collection", {"identifiers": [{"name": n} for n in names[i:i + 75]]})
             payload = r.json()
             raw.extend(payload.get("data", []))
             missed.extend(nf["name"] for nf in payload.get("not_found", []) if nf.get("name"))
@@ -410,6 +423,81 @@ async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
         found.extend(retry["resolved"].values())
         missed = [missed[int(k)] for k in range(len(missed)) if str(k) not in retry["resolved"]]
     return {"cards": found, "not_found": missed}
+
+class ExtrasInput(BaseModel):
+    ids: List[str] = Field(default=[], max_length=400)
+
+
+_EXTRAS_CACHE: Dict[str, tuple] = {}   # card id -> (fetched at, prices, token ids)
+_TOKEN_CACHE: Dict[str, dict] = {}     # token id -> mapped token card
+_EXTRAS_TTL = 6 * 3600
+
+
+@api_router.post("/cards/extras")
+async def card_extras(data: ExtrasInput):
+    """Current prices for the given Scryfall card ids, and the tokens those cards make.
+    Prices change daily, so they come from Scryfall rather than the saved deck."""
+    ids = list(dict.fromkeys(i for i in data.ids if i))
+    now = datetime.now(timezone.utc).timestamp()
+    stale = [i for i in ids if i not in _EXTRAS_CACHE or now - _EXTRAS_CACHE[i][0] > _EXTRAS_TTL]
+    async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
+        if stale:
+            printings = await _collection_lookup(hc, [{"id": i} for i in stale])
+            # Price each card by Scryfall's default (usually current, in-print) printing: decks default
+            # to original art, and an Alpha or promo price says little about what the deck costs.
+            await asyncio.sleep(0.1)
+            names = list(dict.fromkeys(c["name"] for c in printings))
+            default_price = {}
+            for c in await _collection_lookup(hc, [{"name": n} for n in names]):
+                default_price[c["name"]] = c.get("prices") or {}
+            for c in printings:
+                tokens = [p["id"] for p in c.get("all_parts") or []
+                          if p.get("component") == "token" and p.get("id") != c["id"]]
+                own = c.get("prices") or {}
+                pr = default_price.get(c["name"]) or own
+                _EXTRAS_CACHE[c["id"]] = (now, {"usd": pr.get("usd") or own.get("usd"), "usd_foil": pr.get("usd_foil") or own.get("usd_foil"),
+                                               "tix": pr.get("tix") or own.get("tix")}, tokens)
+        token_ids = list(dict.fromkeys(t for i in ids if i in _EXTRAS_CACHE for t in _EXTRAS_CACHE[i][2]))
+        missing = [t for t in token_ids if t not in _TOKEN_CACHE]
+        if missing:
+            await asyncio.sleep(0.1)
+            for t in await _collection_lookup(hc, [{"id": t} for t in missing]):
+                _TOKEN_CACHE[t["id"]] = map_card(t)
+    if len(_EXTRAS_CACHE) > 20000:
+        _EXTRAS_CACHE.clear()
+    if len(_TOKEN_CACHE) > 5000:
+        _TOKEN_CACHE.clear()
+    # The same token often exists in several printings: show each token name once.
+    tokens, seen = [], set()
+    for t in token_ids:
+        tok = _TOKEN_CACHE.get(t)
+        if not tok:
+            continue
+        key = (tok["name"], tok.get("oracle_text", ""), tok.get("type_line", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        makers = [i for i in ids if i in _EXTRAS_CACHE and t in _EXTRAS_CACHE[i][2]]
+        tokens.append({**{k: tok[k] for k in ("id", "name", "type_line", "oracle_text", "image", "colors")}, "made_by": makers})
+    return {
+        "prices": {i: _EXTRAS_CACHE[i][1] for i in ids if i in _EXTRAS_CACHE},
+        "tokens": tokens,
+    }
+
+BASIC_NAMES = {"W": "Plains", "U": "Island", "B": "Swamp", "R": "Mountain", "G": "Forest", "C": "Wastes"}
+_BASICS_CACHE: Dict[str, dict] = {}
+
+
+@api_router.get("/cards/basics")
+async def basic_lands():
+    """One card per basic land type (original printing), keyed by colour: W U B R G and C (Wastes)."""
+    if len(_BASICS_CACHE) < len(BASIC_NAMES):
+        found = (await _collection_by_names(list(BASIC_NAMES.values())))["cards"]
+        by_name = {c["name"]: c for c in found}
+        for col, name in BASIC_NAMES.items():
+            if name in by_name:
+                _BASICS_CACHE[col] = by_name[name]
+    return {"basics": _BASICS_CACHE}
 
 @api_router.get("/cards/autocomplete")
 async def card_autocomplete(q: str = ""):
@@ -530,6 +618,24 @@ async def public_deck(share_id: str):
     owner = await db.users.find_one({"id": deck["user_id"]})
     return deck_to_public(deck, owner.get("name", "") if owner else "")
 
+# ----------------------- Commander checks -----------------------
+
+class CommanderCheckInput(BaseModel):
+    commander: List[DeckCard] = Field(default=[], max_length=4)
+    mainboard: List[DeckCard] = Field(default=[], max_length=250)
+
+@api_router.post("/commander/check")
+async def commander_check(data: CommanderCheckInput):
+    """Legality and bracket estimate for a Commander deck (no login needed, nothing is stored)."""
+    commanders = [c.model_dump() for c in data.commander]
+    cards = [c.model_dump() for c in data.mainboard]
+    ref, combos = await asyncio.gather(
+        cmdr.fetch_reference(),
+        cmdr.fetch_two_card_combos([c["name"] for c in commanders + cards]),
+    )
+    return cmdr.evaluate(commanders, cards, ref["game_changers"], ref["banned"], combos or [],
+                         reference_ok=bool(ref.get("ok")), combos_ok=combos is not None)
+
 @api_router.get("/")
 async def root():
     return {"message": "Grimoire API"}
@@ -537,6 +643,93 @@ async def root():
 @api_router.get("/health")
 async def health():
     return {"status": "ok"}
+
+# ===================== My Cubes (saved cube lists) =====================
+
+CUBE_CARD_KEYS = ("id", "oracle_id", "name", "mana_cost", "cmc", "type_line", "oracle_text", "colors",
+                  "color_identity", "rarity", "set", "set_name", "collector_number", "image", "art_crop", "elo", "is_custom")
+MAX_CUBE_CARDS = 1200
+
+
+class CubeInput(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    cubecobra_id: Optional[str] = Field(default=None, max_length=200)   # set when the list came from CubeCobra
+    cards: List[dict] = Field(default=[], max_length=MAX_CUBE_CARDS)
+
+
+class CubeUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    cubecobra_id: Optional[str] = Field(default=None, max_length=200)
+    cards: Optional[List[dict]] = Field(default=None, max_length=MAX_CUBE_CARDS)
+
+
+def _cube_cards(cards: List[dict]) -> List[dict]:
+    """Keep only the card fields a draft needs (no prices etc.) and validate custom cards."""
+    if not cards:
+        raise HTTPException(status_code=400, detail="A cube needs at least one card")
+    cleaned = _clean_custom_cards([c for c in cards if isinstance(c, dict) and c.get("id") and c.get("name")])
+    return [{k: c[k] for k in CUBE_CARD_KEYS if k in c} for c in cleaned]
+
+
+def cube_summary(c: dict) -> dict:
+    cards = c.get("cards", [])
+    art = next((x.get("art_crop") for x in cards if x.get("art_crop") and not x.get("is_custom")), None)
+    return {
+        "id": c["id"], "name": c["name"], "cubecobra_id": c.get("cubecobra_id"),
+        "card_count": len(cards), "custom_count": sum(1 for x in cards if x.get("is_custom")),
+        "art": art, "created_at": c["created_at"], "updated_at": c["updated_at"],
+    }
+
+
+async def _owned_cube(cube_id: str, user: dict) -> dict:
+    c = await db.cubes.find_one({"id": cube_id}, {"_id": 0})
+    if not c or c["user_id"] != user["id"]:
+        raise HTTPException(status_code=404, detail="Cube not found")
+    return c
+
+
+@api_router.get("/cubes")
+async def list_cubes(user: dict = Depends(get_current_user)):
+    rows = db.cubes.find({"user_id": user["id"]}, {"_id": 0}).sort("updated_at", -1).limit(200)
+    return {"cubes": [cube_summary(c) async for c in rows]}
+
+
+@api_router.get("/cubes/{cube_id}")
+async def get_cube(cube_id: str, user: dict = Depends(get_current_user)):
+    c = await _owned_cube(cube_id, user)
+    return {**cube_summary(c), "cards": c.get("cards", [])}
+
+
+@api_router.post("/cubes")
+async def create_cube(data: CubeInput, user: dict = Depends(get_current_user)):
+    now = datetime.now(timezone.utc).isoformat()
+    cube = {"id": str(uuid.uuid4()), "user_id": user["id"], "name": data.name.strip(),
+            "cubecobra_id": (data.cubecobra_id or "").strip() or None,
+            "cards": _cube_cards(data.cards), "created_at": now, "updated_at": now}
+    await db.cubes.insert_one(cube)
+    return {**cube_summary(cube), "cards": cube["cards"]}
+
+
+@api_router.put("/cubes/{cube_id}")
+async def update_cube(cube_id: str, data: CubeUpdate, user: dict = Depends(get_current_user)):
+    await _owned_cube(cube_id, user)
+    update: Dict[str, Any] = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if data.name is not None:
+        update["name"] = data.name.strip()
+    if data.cubecobra_id is not None:
+        update["cubecobra_id"] = data.cubecobra_id.strip() or None
+    if data.cards is not None:
+        update["cards"] = _cube_cards(data.cards)
+    await db.cubes.update_one({"id": cube_id}, {"$set": update})
+    c = await _owned_cube(cube_id, user)
+    return {**cube_summary(c), "cards": c.get("cards", [])}
+
+
+@api_router.delete("/cubes/{cube_id}")
+async def delete_cube(cube_id: str, user: dict = Depends(get_current_user)):
+    await _owned_cube(cube_id, user)
+    await db.cubes.delete_one({"id": cube_id})
+    return {"ok": True}
 
 # ===================== Rotisserie Cube Draft =====================
 
@@ -547,6 +740,7 @@ class DraftCreate(BaseModel):
     num_bots: int = Field(0, ge=0, le=11)    # bots seated straight away (the rest are people)
     double_draft_after: int = 0   # picks per seat made singly before turns grant 2; 0 = never
     pick_cap: int = 45            # picks per seat
+    private: bool = False         # hidden from Open tables; join by link or code
     cube: List[dict] = []
 
 class ClaimInput(BaseModel):
@@ -602,6 +796,8 @@ def draft_state(d: dict, light: bool = False) -> dict:
     picked_ids = [p["card_id"] for p in d.get("picks", [])]
     base = {
         "share_id": d["share_id"],
+        "join_code": d.get("join_code"),
+        "private": bool(d.get("private")),
         "name": d["name"],
         "status": d["status"],
         "num_players": d["num_players"],
@@ -638,6 +834,57 @@ async def cubecobra_fetch(id: str):
         names = [ln.strip() for ln in r.text.splitlines() if ln.strip()]
     return {"names": names}
 
+MAX_CUSTOM_CARDS = 30
+MAX_CUSTOM_IMAGE = 400_000   # characters of data URL (~300 KB image); the client sends ~60 KB JPEGs
+
+
+def _clean_custom_cards(cube: List[dict]) -> List[dict]:
+    """Custom cards carry an uploaded image (as a data URL) and are treated as tokens: no mana cost,
+    no colour, never chosen by bots. Normalise them and reject anything malformed or oversized."""
+    customs = [c for c in cube if c.get("is_custom")]
+    if len(customs) > MAX_CUSTOM_CARDS:
+        raise HTTPException(status_code=400, detail=f"At most {MAX_CUSTOM_CARDS} custom cards per draft")
+    out = []
+    for c in cube:
+        if not c.get("is_custom"):
+            out.append(c)
+            continue
+        image = str(c.get("image") or "")
+        if not image.startswith("data:image/") or len(image) > MAX_CUSTOM_IMAGE:
+            raise HTTPException(status_code=400, detail="Each custom card needs an image under 300 KB")
+        name = str(c.get("name") or "").strip()[:80] or "Custom card"
+        out.append({
+            "id": "custom-" + str(c.get("id") or uuid.uuid4().hex).removeprefix("custom-")[:40],
+            "is_custom": True, "name": name, "image": image,
+            "type_line": "Token — Custom", "mana_cost": "", "cmc": 0, "colors": [], "color_identity": [],
+            "oracle_text": str(c.get("oracle_text") or "")[:500], "rarity": "special", "set": "", "elo": None,
+        })
+    return out
+
+
+# Join codes: 5 characters without look-alikes (no 0/O, 1/I/L), easy to read out at the table.
+CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+
+async def _new_join_code() -> str:
+    for _ in range(20):
+        code = "".join(random.choice(CODE_ALPHABET) for _ in range(5))
+        if not await db.drafts.find_one({"join_code": code}, {"_id": 1}):
+            return code
+    raise HTTPException(status_code=503, detail="Could not create a table code, try again")
+
+
+@api_router.get("/drafts/code/{code}")
+async def find_by_code(code: str):
+    """Look up a table by its join code (or its share id, which works as a code too)."""
+    c = code.strip()
+    d = await db.drafts.find_one({"join_code": c.upper()}, {"share_id": 1, "status": 1, "_id": 0}) \
+        or await db.drafts.find_one({"share_id": c.lower()}, {"share_id": 1, "status": 1, "_id": 0})
+    if not d or d.get("status") == "cancelled":
+        raise HTTPException(status_code=404, detail="No table with that code")
+    return {"share_id": d["share_id"], "status": d["status"]}
+
+
 @api_router.post("/drafts")
 async def create_draft(data: DraftCreate):
     if data.num_seats % data.num_players != 0:
@@ -646,6 +893,7 @@ async def create_draft(data: DraftCreate):
         raise HTTPException(status_code=400, detail="Cube is empty")
     if data.num_bots >= data.num_players:
         raise HTTPException(status_code=400, detail="Leave at least one seat for a person")
+    data.cube = _clean_custom_cards(data.cube)
     now = datetime.now(timezone.utc).isoformat()
     draft = {
         "id": str(uuid.uuid4()),
@@ -656,6 +904,8 @@ async def create_draft(data: DraftCreate):
         "num_seats": data.num_seats,
         "double_draft_after": data.double_draft_after,
         "pick_cap": data.pick_cap,
+        "private": data.private,
+        "join_code": await _new_join_code(),
         "cube": data.cube,
         "seats": [{"index": i, "player_id": None, "player_name": None} for i in range(data.num_seats)],
         "players": [],
@@ -677,20 +927,36 @@ async def create_draft(data: DraftCreate):
 @api_router.get("/drafts/open")
 async def list_open_drafts():
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
-    cursor = db.drafts.find({"status": "lobby", "created_at": {"$gte": cutoff}}).sort("created_at", -1).limit(30)
-    out = []
+    # Lobbies to join, plus drafts under way to watch. Private tables never appear here.
+    live_cutoff = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    query = {"private": {"$ne": True}, "$or": [
+        {"status": "lobby", "created_at": {"$gte": cutoff}},
+        {"status": "drafting", "updated_at": {"$gte": live_cutoff}},
+    ]}
+    projection = {"_id": 0, "cube": 0, "bot_stats": 0, "bot_combos": 0, "messages": 0, "order": 0}
+    cursor = db.drafts.find(query, projection).sort("created_at", -1).limit(40)
+    lobbies, live = [], []
     async for d in cursor:
-        out.append({
+        row = {
             "share_id": d["share_id"],
             "name": d["name"],
+            "status": d["status"],
             "num_players": d["num_players"],
             "num_seats": d["num_seats"],
             "players_joined": len(d.get("players", [])),
             "seats_claimed": sum(1 for s in d["seats"] if s["player_id"] is not None),
-            "cube_size": len(d.get("cube", [])),
+            "picks_made": len(d.get("picks", [])),
             "created_at": d["created_at"],
-        })
-    return {"drafts": out}
+        }
+        (lobbies if d["status"] == "lobby" else live).append(row)
+    sizes = {r["share_id"]: 0 for r in lobbies}
+    if sizes:   # cube size for lobbies only, without loading whole cubes
+        async for r in db.drafts.aggregate([{"$match": {"share_id": {"$in": list(sizes)}}},
+                                            {"$project": {"_id": 0, "share_id": 1, "n": {"$size": {"$ifNull": ["$cube", []]}}}}]):
+            sizes[r["share_id"]] = r["n"]
+    for r in lobbies:
+        r["cube_size"] = sizes[r["share_id"]]
+    return {"drafts": lobbies, "live": live}
 
 @api_router.get("/drafts/{share_id}")
 async def get_draft(share_id: str):
@@ -783,6 +1049,18 @@ async def cancel_draft(share_id: str, data: CancelInput):
         raise HTTPException(status_code=403, detail="Only the host can close this table")
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"status": "cancelled", "updated_at": datetime.now(timezone.utc).isoformat()}})
     return {"status": "cancelled"}
+
+@api_router.get("/drafts/{share_id}/build")
+async def build_from_pool(share_id: str, seat: int, size: int = 40):
+    """Suggested deck for one seat's picks: main deck card ids plus basic land counts by colour."""
+    d = await db.drafts.find_one({"share_id": share_id}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    size = max(20, min(size, 100))
+    picked = {p["card_id"] for p in d.get("picks", []) if p["seat_index"] == seat}
+    pool = [c for c in d["cube"] if c["id"] in picked and not c.get("is_custom")]
+    index, _ = _bot_index(d)
+    return await run_in_threadpool(suggest_deck, pool, index, size)
 
 @api_router.post("/drafts/{share_id}/pick")
 async def make_pick(share_id: str, data: PickInput):
@@ -953,12 +1231,17 @@ async def _bot_pick_once(d: dict) -> dict:
         picks_by_seat.setdefault(p["seat_index"], []).append(p["card_id"])
     taken = {p["card_id"] for p in d["picks"]}
     remaining = [cid for cid in index if cid not in taken]
-    if not remaining:
-        return d
-    ctx = BotContext(index, combos, remaining, picks_by_seat, seat, d["order"], pick_index,
-                     d["pick_cap"], Persona.from_dict(bot.get("persona", {})))
     rng = random.Random(f"{d['share_id']}:{pick_index}:{bot['id']}")
-    card_id = await run_in_threadpool(choose_pick, ctx, rng)
+    if remaining:
+        ctx = BotContext(index, combos, remaining, picks_by_seat, seat, d["order"], pick_index,
+                         d["pick_cap"], Persona.from_dict(bot.get("persona", {})))
+        card_id = await run_in_threadpool(choose_pick, ctx, rng)
+    else:
+        # Bots ignore custom cards, but if those are all that's left they take one so the draft can finish.
+        leftovers = [c["id"] for c in d["cube"] if c["id"] not in taken]
+        if not leftovers:
+            return d
+        card_id = rng.choice(leftovers)
 
     pick = {"order": pick_index, "seat_index": seat, "card_id": card_id, "ts": datetime.now(timezone.utc).isoformat(), "bot": True}
     status = "complete" if pick_index + 1 >= len(d["order"]) else "drafting"
@@ -1114,7 +1397,10 @@ async def startup():
     await db.decks.create_index("share_id")
     await db.decks.create_index("user_id")
     await db.drafts.create_index("share_id", unique=True)
+    await db.drafts.create_index("join_code", sparse=True)
     await db.card_stats.create_index("key", unique=True)
+    await db.cubes.create_index("id", unique=True)
+    await db.cubes.create_index("user_id")
     # Optional seed account (handy for local dev and tests). Only created when both values
     # are set explicitly; there is deliberately no built-in default password.
     admin_email = os.environ.get("ADMIN_EMAIL", "").strip().lower()

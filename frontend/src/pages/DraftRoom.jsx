@@ -4,7 +4,9 @@ import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { buildExport } from "@/components/ExportDialog";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb } from "lucide-react";
+import { useAuth } from "@/context/AuthContext";
+import { getBasics } from "@/lib/mtg";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -53,6 +55,8 @@ function playBeep() {
 export default function DraftRoom() {
   const { shareId } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const [building, setBuilding] = useState(null);   // seat whose deck is being built
   const [draft, setDraft] = useState(null);
   const [state, setState] = useState(null);
   const [me, setMe] = useState(() => { try { return JSON.parse(localStorage.getItem(storeKey(shareId))) || null; } catch { return null; } });
@@ -246,10 +250,45 @@ export default function DraftRoom() {
     return { name: `${state.name} — ${seatLabel(seatIdx)}`, format: "kitchen", description: `Drafted from ${state.name}`, mainboard: merged, sideboard: [], commander: [] };
   };
 
-  const editInBuilder = (seatIdx) => {
-    const deck = { id: null, share_id: null, ...deckForSeat(seatIdx) };
-    localStorage.setItem(GUEST_KEY, JSON.stringify(deck));
-    navigate("/build");
+  // Build deck: a suggested deck (best two colours, ~40 cards with basics added from outside the draft)
+  // goes in the main deck and every other pick in the sideboard. Kitchen Magic, so nothing is enforced.
+  const editInBuilder = async (seatIdx) => {
+    if (building != null) return;
+    setBuilding(seatIdx);
+    const base = deckForSeat(seatIdx);
+    let deck = { ...base, mainboard: [], sideboard: base.mainboard };
+    try {
+      const [{ data: plan }, basics] = await Promise.all([
+        api.get(`/drafts/${shareId}/build`, { params: { seat: seatIdx } }),
+        getBasics(api),
+      ]);
+      const wanted = new Set(plan.main);
+      const main = [];
+      const side = [];
+      base.mainboard.forEach((c) => {
+        if (wanted.has(c.id)) { main.push({ ...c, quantity: 1 }); if (c.quantity > 1) side.push({ ...c, quantity: c.quantity - 1 }); }
+        else side.push(c);
+      });
+      Object.entries(plan.basics || {}).forEach(([col, n]) => { if (basics[col] && n > 0) main.push({ ...basics[col], quantity: n }); });
+      deck = { ...base, mainboard: main, sideboard: side };
+      const total = main.reduce((n, c) => n + c.quantity, 0);
+      const cols = [...(plan.colors || []), ...(plan.splash ? [plan.splash] : [])].join("");
+      toast.success(`Suggested a ${total}-card ${cols || ""} deck. Every other pick is in the sideboard.`);
+    } catch {
+      toast("Couldn't suggest a build, so all picks are in the sideboard");
+    }
+    try {
+      if (user) {
+        const { data } = await api.post("/decks", { name: deck.name.slice(0, 120), format: "kitchen", description: deck.description,
+          mainboard: deck.mainboard, sideboard: deck.sideboard, commander: [] });
+        navigate(`/deck/${data.id}`);
+      } else {
+        localStorage.setItem(GUEST_KEY, JSON.stringify({ id: null, share_id: null, ...deck }));
+        navigate("/build");
+      }
+    } catch {
+      toast.error("Couldn't open the deck builder");
+    } finally { setBuilding(null); }
   };
   const exportSeat = (seatIdx) => {
     navigator.clipboard.writeText(buildExport(deckForSeat(seatIdx)));
@@ -269,6 +308,9 @@ export default function DraftRoom() {
   };
 
   const comparator = (a, b) => {
+    // Custom (uploaded) cards always sit at the top of the pool, whatever the sort.
+    const custom = (b.is_custom ? 1 : 0) - (a.is_custom ? 1 : 0);
+    if (custom) return custom;
     if (sortBy === "elo") return (b.elo || 0) - (a.elo || 0) || a.name.localeCompare(b.name);
     if (sortBy === "color") return colorKey(a) - colorKey(b) || typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
     if (sortBy === "type") return typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
@@ -446,7 +488,7 @@ export default function DraftRoom() {
             <div className="font-display font-semibold">{seatLabel(activeSeat)} · <span className="text-amber-400">{total}</span> cards</div>
             <div className="flex gap-2">
               <Button size="sm" data-testid="decks-export" variant="outline" onClick={() => exportSeat(activeSeat)} className="bg-slate-900 border-slate-700 text-slate-200">Export</Button>
-              <Button size="sm" data-testid="decks-edit" onClick={() => editInBuilder(activeSeat)} className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">Edit in builder</Button>
+              <Button size="sm" data-testid="decks-edit" onClick={() => editInBuilder(activeSeat)} disabled={building != null} className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">{building === activeSeat ? <Loader2 className="w-4 h-4 animate-spin" /> : "Build deck"}</Button>
             </div>
           </div>
           {deck.mainboard.length === 0 ? (
@@ -536,7 +578,7 @@ export default function DraftRoom() {
           <div className="text-xs text-slate-500 mb-3">{seatPicks(s.index).length} cards</div>
           <div className="flex gap-2">
             <Button size="sm" data-testid={`export-seat-${s.index}`} variant="outline" onClick={() => exportSeat(s.index)} className="bg-slate-900 border-slate-700 text-slate-200">Export</Button>
-            <Button size="sm" data-testid={`edit-seat-${s.index}`} onClick={() => editInBuilder(s.index)} className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">Edit in builder</Button>
+            <Button size="sm" data-testid={`edit-seat-${s.index}`} onClick={() => editInBuilder(s.index)} disabled={building != null} className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">{building === s.index ? <Loader2 className="w-4 h-4 animate-spin" /> : "Build deck"}</Button>
           </div>
         </div>
       ))}
@@ -551,6 +593,9 @@ export default function DraftRoom() {
           <span className="text-slate-500">/</span>
           <span className="font-display font-semibold truncate min-w-0 max-w-[40vw] sm:max-w-none">{state.name}</span>
           <span className="text-xs px-2 py-0.5 rounded-full border border-slate-700 text-slate-300 capitalize">{state.status}</span>
+          {!me && state.status !== "lobby" && (
+            <span data-testid="spectating-badge" className="text-xs px-2 py-0.5 rounded-full border border-sky-400/30 text-sky-300 flex items-center gap-1"><Eye className="w-3 h-3" /> Watching</span>
+          )}
           <div className="ml-auto flex items-center gap-2">
             {state.status === "drafting" && (
               <Button size="sm" variant="outline" data-testid="mute-toggle" onClick={toggleMute} title={muted ? "Unmute turn alert" : "Mute turn alert"} className="bg-slate-900 border-slate-700 text-slate-300">{muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}</Button>
@@ -614,7 +659,11 @@ export default function DraftRoom() {
                     <Input readOnly value={shareUrl} data-testid="lobby-share-url" className="h-8 bg-slate-900 border-slate-700 text-slate-300 text-xs" />
                     <Button size="sm" data-testid="lobby-copy-link" onClick={() => { navigator.clipboard.writeText(shareUrl); toast.success("Invite link copied"); }} className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold shrink-0"><Copy className="w-4 h-4" /></Button>
                   </div>
-                  <div className="text-[11px] text-slate-500 mt-1.5">Table code: <span className="text-amber-400 font-mono" data-testid="lobby-code">{shareId}</span></div>
+                  <div className="text-[11px] text-slate-500 mt-1.5 flex items-center gap-1.5 flex-wrap">
+                    Table code: <span className="text-amber-400 font-mono text-sm tracking-widest" data-testid="lobby-code">{state.join_code || shareId}</span>
+                    {state.join_code && <button type="button" data-testid="lobby-copy-code" onClick={() => { navigator.clipboard.writeText(state.join_code); toast.success("Code copied"); }} className="text-slate-500 hover:text-amber-300" title="Copy code"><Copy className="w-3 h-3" /></button>}
+                    {state.private && <span className="ml-auto flex items-center gap-1 text-slate-400"><Lock className="w-3 h-3" /> Private</span>}
+                  </div>
                 </div>
                 <div className="mb-4" data-testid="lobby-players">
                   <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1.5">Players</div>

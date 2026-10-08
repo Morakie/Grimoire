@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, useSearchParams, Link } from "react-router-dom";
+import MyCubes from "@/components/MyCubes";
 import api from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -9,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Sparkles, Plus, MoreVertical, Copy, Trash2, Share2, Loader2, LogOut, Layers } from "lucide-react";
+import { Sparkles, Plus, MoreVertical, Copy, Trash2, Share2, Loader2, LogOut, Layers, Library, Upload } from "lucide-react";
 import { FORMATS, formatLabel, totalCount, MANA_COLORS } from "@/lib/mtg";
 import { toast } from "sonner";
 
@@ -28,6 +29,11 @@ export default function Dashboard() {
   const [format, setFormat] = useState("standard");
   const [creating, setCreating] = useState(false);
   const [deleteId, setDeleteId] = useState(null);
+  const [params, setParams] = useSearchParams();
+  const tab = params.get("tab") === "cubes" ? "cubes" : "decks";
+  const setTab = (t) => setParams(t === "cubes" ? { tab: "cubes" } : {}, { replace: true });
+  const [importOpen, setImportOpen] = useState(false);
+  const [cubeCount, setCubeCount] = useState(null);
 
   const load = async () => {
     try {
@@ -72,7 +78,7 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-[#060a14] grim-grain text-slate-100">
       <header className="border-b border-slate-800">
-        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2" data-testid="logo">
             <Sparkles className="w-5 h-5 text-amber-400" />
             <span className="font-display text-lg font-bold">Grimoire</span>
@@ -86,12 +92,26 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 py-10">
-        <div className="flex items-center justify-between mb-8">
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
+        <div className="flex flex-wrap items-end justify-between gap-4 mb-6 sm:mb-8">
           <div>
-            <h1 className="font-display text-3xl font-bold">My Decks</h1>
-            <p className="text-sm text-slate-400 mt-1">{decks ? `${decks.length} deck${decks.length === 1 ? "" : "s"}` : "Loading..."}</p>
+            <h1 className="font-display text-2xl sm:text-3xl font-bold whitespace-nowrap">{tab === "cubes" ? "My Cubes" : "My Decks"}</h1>
+            <p className="text-sm text-slate-400 mt-1">
+              {tab === "cubes"
+                ? (cubeCount == null ? "Loading..." : `${cubeCount} cube${cubeCount === 1 ? "" : "s"}`)
+                : (decks ? `${decks.length} deck${decks.length === 1 ? "" : "s"}` : "Loading...")}
+            </p>
           </div>
+          {tab === "cubes" ? (
+          <div className="flex items-center gap-2">
+            <Button data-testid="draft-link-cubes" variant="outline" onClick={() => navigate("/draft")} className="bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
+              <Plus className="w-4 h-4 mr-1" /> Cube Draft
+            </Button>
+            <Button data-testid="import-cube-btn" onClick={() => setImportOpen(true)} className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">
+              <Upload className="w-4 h-4 mr-1" /> Import cube
+            </Button>
+          </div>
+          ) : (
           <div className="flex items-center gap-2">
             <Button data-testid="draft-link" variant="outline" onClick={() => navigate("/draft")} className="bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
               <Plus className="w-4 h-4 mr-1" /> Cube Draft
@@ -100,7 +120,21 @@ export default function Dashboard() {
               <Plus className="w-4 h-4 mr-1" /> New Deck
             </Button>
           </div>
+          )}
         </div>
+
+        <div className="flex items-center gap-1 mb-6 border-b border-slate-800" role="tablist" data-testid="dashboard-tabs">
+          {[["decks", "Decks", Layers], ["cubes", "Cubes", Library]].map(([k, label, Icon]) => (
+            <button key={k} role="tab" aria-selected={tab === k} data-testid={`tab-${k}`} onClick={() => setTab(k)}
+              className={`flex items-center gap-1.5 px-3 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${tab === k ? "border-amber-400 text-amber-300" : "border-transparent text-slate-400 hover:text-slate-200"}`}>
+              <Icon className="w-4 h-4" /> {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === "cubes" ? (
+          <MyCubes importOpen={importOpen} setImportOpen={setImportOpen} onCount={setCubeCount} />
+        ) : <>
 
         {decks === null ? (
           <div className="flex justify-center py-20"><Loader2 className="w-8 h-8 text-amber-400 animate-spin" /></div>
@@ -148,6 +182,7 @@ export default function Dashboard() {
             })}
           </div>
         )}
+        </>}
       </main>
 
       <Dialog open={newOpen} onOpenChange={setNewOpen}>

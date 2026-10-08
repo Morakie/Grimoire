@@ -22,6 +22,9 @@ Notes for anyone (human or AI) changing this codebase. Start with the [README](R
 | `frontend/src/components/ExportDialog.jsx` | Per-site export formats |
 | `frontend/src/pages/DraftSetup.jsx`, `DraftRoom.jsx` | Cube import, lobby and live draft UI |
 | `frontend/src/lib/mtg.js` | Mana parsing, grouping and sorting, analytics, format list |
+| `frontend/src/components/CommanderCheck.jsx` | Commander legality + bracket panel and toolbar badge |
+| `backend/commander.py` | Commander legality rules and bracket estimate (`POST /api/commander/check`) |
+| `frontend/src/components/MyCubes.jsx`, `src/lib/cube.js` | Saved cubes (dashboard Cubes tab), cube list parsing and resolving (`/api/cubes`) |
 
 ## Conventions
 
