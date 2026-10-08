@@ -136,6 +136,21 @@ def test_missing_elo_fast_mana_is_rated_highly():
     assert idx["glee"].power > 0.95
 
 
+def test_deck_without_a_win_condition_looks_for_threats():
+    cube = synthetic_cube() + [
+        card("threat", "Big Threat", "{3}{U}", 4, "Creature — Test", "Flying", "U", 1400),
+        card("spell", "Plain Spell", "{2}{U}", 3, "Instant", "Draw two cards.", "U", 1400),
+    ]
+    idx = build_card_index(cube)
+    spells_only = [c for c in idx if c[0] in "UR" and not idx[c].is_creature][:24]
+    creatures = [c for c in idx if c[0] in "UR" and idx[c].is_creature][:8]
+    no_plan = {cid: s for s, cid, _ in score_pool(_two_seat_ctx(cube, [], spells_only, []))}
+    has_plan = {cid: s for s, cid, _ in score_pool(_two_seat_ctx(cube, [], spells_only[:16] + creatures, []))}
+    # Without a way to win, the threat clearly beats an equal-rated spell; with threats owned, the gap shrinks.
+    assert no_plan["threat"] > no_plan["spell"] * 1.15
+    assert (no_plan["threat"] / no_plan["spell"]) > (has_plan["threat"] / has_plan["spell"])
+
+
 def test_committed_bot_ignores_off_colour_cards():
     cube = synthetic_cube()
     ctx = _two_seat_ctx(cube, [], [f"U{i}" for i in range(7)] + [f"R{i}" for i in range(7)], [])

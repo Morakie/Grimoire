@@ -12,6 +12,8 @@ remaining card from a few simple ingredients:
 5. Deck style by colour pair: once committed, a light nudge towards what that pair usually does
    (e.g. white-red values cheap creatures and burn).
 6. Float risk: cards nobody else will take before the bot's next turn can wait.
+7. Win condition: from about a third of the way in, a deck with no combo line, too few threats and
+   no aggro base gets a gentle push towards on-colour threats (creatures, planeswalkers, finishers).
 
 Every number lives in TUNING so it can be explained and adjusted in one place.
 """
@@ -49,6 +51,9 @@ TUNING: Dict[str, float] = {
     "needs_start": 0.45, "needs_slope": 1.8,
     "float_base": 0.25, "float_growth": 0.3, "float_cap": 0.6,
     "power_late_drop": 0.45,
+    # win condition
+    "wincon_start": 0.3,        # share of picks made before the bot checks it has a way to win
+    "wincon_weight": 0.35,      # value of a strong threat for a deck with no win condition at all
 }
 
 LANES: List[FrozenSet[str]] = (
@@ -219,6 +224,48 @@ def needs_value(card: CardInfo, pool: List[CardInfo], persona: Persona) -> float
     return v
 
 
+# ---------------------------------------------------------------- win condition
+
+def threat_level(card: CardInfo) -> float:
+    """How much a card can win a game on its own (0..1), from its type and text only."""
+    if card.is_land:
+        return 0.0
+    if "planeswalker" in card.roles or "finisher" in card.roles:
+        return 1.0
+    if card.is_creature:
+        if card.roles & {"aggro_creature", "value_creature"} or card.cmc >= 3:
+            return 0.8
+        return 0.5
+    if "token_maker" in card.roles and card.cmc >= 2:
+        return 0.5
+    return 0.0
+
+
+def win_plan(pool: List[CardInfo], fits, owned: set, remaining: set, combos: List[Combo]) -> Tuple[float, str]:
+    """How well this pool can actually win (0..1) and by which plan.
+
+    Three ways to win, judged on cards the bot can cast:
+      - combo: a combo line that is complete, or half done with the rest still available;
+      - threats: about six creatures/planeswalkers that can take over a game (midrange, control);
+      - aggro: about ten cheap attackers.
+    The best of the three counts; a deck only needs one."""
+    on = [c for c in pool if not c.is_land and fits(c) >= 0.6]
+    threats = sum(threat_level(c) for c in on)
+    cheap_attackers = sum(1 for c in on if c.is_creature and c.cmc <= 2)
+    combo = 0.0
+    for combo_line in combos:
+        have = sum(1 for p in combo_line.pieces if p in owned)
+        if not have:
+            continue
+        missing = [p for p in combo_line.pieces if p not in owned]
+        if any(p not in remaining for p in missing):
+            continue
+        combo = max(combo, have / len(combo_line.pieces) if missing else 1.0)
+    plans = {"combo": 1.0 if combo >= 1.0 else 0.6 * combo, "threats": min(1.0, threats / 6), "aggro": min(1.0, cheap_attackers / 10)}
+    best = max(plans, key=plans.get)
+    return plans[best], best
+
+
 # ---------------------------------------------------------------- table signals
 
 def _colour_shares(pool: Iterable[CardInfo]) -> Dict[str, float]:
@@ -352,6 +399,14 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     w_float = (k("float_base") + k("float_growth") * min(1.0, 2 * t)) * p.w("float")
     w_style = k("style_weight") * progress
 
+    # Win condition: once committed and past the early picks, a deck with no way to win
+    # (no combo line, too few threats, no aggro base) leans towards on-colour threats.
+    wincon_gap, plan = 0.0, None
+    if pair and t >= k("wincon_start"):
+        plan_score, plan = win_plan(mine, lambda c: fit_of(c.id), owned, remaining, ctx.combos)
+        ramp = min(1.0, (t - k("wincon_start")) / 0.25)
+        wincon_gap = max(0.0, 1.0 - plan_score) * ramp * k("wincon_weight")
+
     rows = []
     for cid in remaining:
         card = ctx.index[cid]
@@ -364,6 +419,8 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
                 + w_combo * combo_value(card, owned, remaining, ctx.combos, fit_of)
                 + package_value(card, roles)
                 + w_needs * needs_value(card, mine, p))
+        if wincon_gap:
+            base += wincon_gap * threat_level(card) * min(1.0, 0.4 + max(card.power, 0.0))
         if pair:
             base += w_style * style_value(card, pair)
             if card.is_land and len(card.produces & pair) >= 2 and fixing_owned < k("fixing_target"):

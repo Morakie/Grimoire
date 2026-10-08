@@ -6,7 +6,7 @@ import time
 from typing import Callable, Dict, List, Optional, Sequence
 
 from .combos import Combo, attach_combos
-from .engine import BotContext, choose_pick, lane_distribution
+from .engine import BotContext, choose_pick, lane_distribution, win_plan
 from .features import CardInfo, build_card_index, castable
 from .personas import Persona, bot_names, random_persona
 
@@ -39,7 +39,8 @@ def run_draft(cube: List[dict], combos: List[Combo], order: Sequence[int], num_s
         picks[seat].append(cid)
         remaining.remove(cid)
     elapsed = time.time() - started
-    return {"picks": picks, "personas": personas, "names": names, "index": index, "seconds": elapsed}
+    return {"picks": picks, "personas": personas, "names": names, "index": index, "seconds": elapsed,
+            "remaining": remaining}
 
 
 def summarise(result: dict, combos: List[Combo]) -> List[dict]:
@@ -65,6 +66,8 @@ def summarise(result: dict, combos: List[Combo]) -> List[dict]:
             "deck_interaction": sum(1 for c in playables if c.roles & {"removal", "counter", "sweeper"}),
             "deck_avg_mv": round(sum(c.cmc for c in playables) / max(len(playables), 1), 2),
             "combos": done,
+            "win_plan": "%s %.0f%%" % (lambda s, p: (p, 100 * s))(*win_plan(
+                pool, lambda c: 1.0 if castable(c, lane) else 0.0, owned, set(result.get("remaining", [])), combos)),
             "picks": [index[c].name for c in ids],
         })
     return out
