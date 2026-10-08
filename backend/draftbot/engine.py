@@ -37,7 +37,7 @@ TUNING: Dict[str, float] = {
     "float_base": 0.25, "float_growth": 0.3, "float_cap": 0.6,
     "fixing_base": 0.08, "fixing_growth": 0.3,
     "package_unit": 0.12, "package_cap": 0.3, "package_urgency": 0.12, "package_urgency_cap": 0.45,
-    "card_openness": 0.35,         # mid-draft: how much crowding deters moving INTO a colour
+    "card_openness": 0.5,          # mid-draft: how much crowding deters moving INTO a colour
     "splash_threshold": 0.9,       # owned value in a third colour before it becomes a splash target
     "splash_fixing": 0.35,         # extra value for lands that fix the splash
     "splash_fit": 0.55,            # how "on colour" cards of the splash colour count
