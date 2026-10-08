@@ -106,8 +106,8 @@ def test_choose_pick_is_deterministic_with_seed_and_low_temperature():
 
 
 def test_float_risk_values_are_sensible():
-    cube = synthetic_cube() + [card("freeze", "Freeze", "{1}{U}", 2, "Instant", "", "U", 1350)]
+    cube = synthetic_cube() + [card("freeze", "Freeze", "{1}{G}", 2, "Instant", "", "G", 1350)]
     combos = [Combo(("freeze", "G0"), 1.0)]
-    # Rival holds G0, so Freeze completes their combo: they will very likely take it.
+    # Rival is green and holds G0, so Freeze completes their combo: they will very likely take it.
     contested = float_risk(_two_seat_ctx(cube, combos, [], ["G0", "G1"]), ["freeze"], None or set(build_card_index(cube)) - {"G0", "G1"})
     assert contested["freeze"] > 0.6

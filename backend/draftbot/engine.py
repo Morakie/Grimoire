@@ -21,7 +21,7 @@ LANES: List[FrozenSet[str]] = (
     + [frozenset(p) for p in combinations(COLORS, 2)]
     + [frozenset(t) for t in combinations(COLORS, 3)]
 )
-_LANE_SIZE_PENALTY = {1: 0.9, 2: 1.0, 3: 0.86}   # three-colour decks need more fixing
+_LANE_SIZE_PENALTY = {1: 0.9, 2: 1.0, 3: 0.74}   # a third colour has to earn its place
 
 
 @dataclass
@@ -83,8 +83,11 @@ def card_fit(card: CardInfo, dist: Dict[FrozenSet[str], float]) -> float:
 
 # ---------------------------------------------------------------- synergy
 
-def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo], dist) -> float:
-    """Value of `card` toward combos, given the pieces this seat already owns."""
+def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo], dist, index: Dict[str, CardInfo]) -> float:
+    """Value of `card` toward combos, given the pieces this seat already owns.
+
+    A line only counts as much as its pieces fit this seat's likely colours, so a bot that has
+    settled into red-white stops chasing a blue combo piece."""
     total = 0.0
     for ci in card.combos:
         combo = combos[ci]
@@ -95,7 +98,8 @@ def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo],
             continue                           # a missing piece is gone: line is dead for us
         frac = have / len(others)
         progress = 0.06 if have == 0 else frac ** 1.2
-        total += combo.weight * progress
+        fit = min(card_fit(index[p], dist) for p in combo.pieces if p in index)
+        total += combo.weight * progress * (0.25 + 0.75 * fit)
     return min(total, 1.4)
 
 
@@ -182,9 +186,9 @@ def picks_until_next_turn(ctx: BotContext) -> Dict[int, int]:
     return {"end": 1}  # no next turn: everything is "now or never"
 
 
-def _desire(card: CardInfo, owned: set, remaining: set, combos, dist, role_counts) -> float:
+def _desire(card: CardInfo, owned: set, remaining: set, combos, dist, role_counts, index) -> float:
     return (max(card.power, 0.0) * (0.3 + 0.7 * card_fit(card, dist))
-            + 0.8 * combo_value(card, owned, remaining, combos, dist)
+            + 0.8 * combo_value(card, owned, remaining, combos, dist, index)
             + package_value(card, role_counts))
 
 
@@ -201,7 +205,7 @@ def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[s
         owned = set(picks)
         dist = lane_distribution(pool, len(pool))
         roles = _role_counts(pool)
-        desires = sorted(((_desire(ctx.index[cid], owned, remaining, ctx.combos, dist, roles), cid) for cid in remaining), reverse=True)
+        desires = sorted(((_desire(ctx.index[cid], owned, remaining, ctx.combos, dist, roles, ctx.index), cid) for cid in remaining), reverse=True)
         spread = 1.0 + 0.35 * k
         for rank, (_, cid) in enumerate(desires):
             if cid in cand_set:
@@ -239,7 +243,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         card = ctx.index[cid]
         fit = card_fit(card, dist)
         base = (w_power * max(card.power, 0.0)
-                + w_combo * combo_value(card, owned, remaining, ctx.combos, dist)
+                + w_combo * combo_value(card, owned, remaining, ctx.combos, dist, ctx.index)
                 + package_value(card, roles)
                 + w_needs * needs_value(card, mine, p))
         if card.is_land and card.is_fixing:
