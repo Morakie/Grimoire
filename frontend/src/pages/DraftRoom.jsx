@@ -115,7 +115,7 @@ export default function DraftRoom() {
     const strip = seatStripRef.current;
     if (!strip || clockSeat == null || strip.scrollWidth <= strip.clientWidth) return;
     const el = strip.querySelector(`[data-testid="seat-${clockSeat}"]`);
-    if (el) strip.scrollTo({ left: el.offsetLeft - strip.clientWidth / 2 + el.clientWidth / 2, behavior: "smooth" });
+    if (el) strip.scrollLeft = el.offsetLeft - strip.clientWidth / 2 + el.clientWidth / 2;
   }, [clockSeat]);
 
   if (!draft || !state) return <div className="h-screen flex items-center justify-center bg-[#060a14]"><Loader2 className="w-8 h-8 text-amber-400 animate-spin" /></div>;
@@ -511,7 +511,7 @@ export default function DraftRoom() {
       </header>
 
       <main className={`max-w-7xl mx-auto px-3 sm:px-6 py-4 sm:py-6 ${state.status !== "lobby" ? "pb-28 lg:pb-6" : ""}`}>
-        <div ref={seatStripRef} className="flex gap-2 overflow-x-auto -mx-3 px-3 pb-1 mb-4 sm:mx-0 sm:px-0 sm:pb-0 sm:mb-6 sm:grid sm:grid-cols-2 lg:grid-cols-4 sm:gap-3 sm:overflow-visible" data-testid="seat-grid">
+        <div ref={seatStripRef} className="relative flex gap-2 overflow-x-auto -mx-3 px-3 pb-1 mb-4 sm:mx-0 sm:px-0 sm:pb-0 sm:mb-6 sm:grid sm:grid-cols-2 lg:grid-cols-4 sm:gap-3 sm:overflow-visible" data-testid="seat-grid">
           {seatsSorted.map((s) => {
             const isCurrent = state.current_seat_index === s.index;
             const mine = me?.seats?.includes(s.index);
@@ -598,11 +598,11 @@ export default function DraftRoom() {
             {state.status === "drafting" && (
               <div>
                 <div className="mb-4 flex items-center gap-3 flex-wrap">
-                  <div className={`px-4 py-2 rounded-xl font-display font-semibold ${myTurn ? "bg-amber-400 text-stone-900" : "bg-slate-900 border border-slate-700 text-slate-200"}`} data-testid="turn-indicator">
+                  <div className={`hidden lg:block px-4 py-2 rounded-xl font-display font-semibold ${myTurn ? "bg-amber-400 text-stone-900" : "bg-slate-900 border border-slate-700 text-slate-200"}`} data-testid="turn-indicator">
                     {myTurn ? `Your pick! · Seat ${state.current_seat_index + 1}` : `${currentSeatName || "…"}'s pick`} · {state.pick_index}/{state.order_len}
                   </div>
                   {viewTabs([["pick", "Pick", LayoutGrid], ["table", "Draft Table", Table2], ["decks", "Decks", Eye]])}
-                  <button data-testid="toggle-mini-table" onClick={() => setShowMiniTable((v) => !v)} className="text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 flex items-center gap-1.5"><Table2 className="w-3.5 h-3.5" /> {showMiniTable ? "Hide peek" : "Table peek"}</button>
+                  <button data-testid="toggle-mini-table" onClick={() => setShowMiniTable((v) => !v)} className="hidden lg:flex text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 items-center gap-1.5"><Table2 className="w-3.5 h-3.5" /> {showMiniTable ? "Hide peek" : "Table peek"}</button>
                 </div>
                 {view === "table" ? renderDraftTable() : view === "decks" ? renderDecks() : renderPickGrid()}
               </div>
