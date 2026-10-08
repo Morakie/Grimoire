@@ -145,6 +145,7 @@ export default function DraftRoom() {
   const [vrdList, setVrdList] = useState([]);          // cards shown in the VRD picker (top list or search results)
   const [vrdSearch, setVrdSearch] = useState("");      // the search that produced vrdList ("" = top-rated list)
   const [vrdLoading, setVrdLoading] = useState(false);
+  const [vrdWarming, setVrdWarming] = useState(false);  // bots' card pool still loading on the server
   const rememberCards = (cards) => setVrdSeen((m) => { const n = { ...m }; (cards || []).forEach((c) => { n[c.id] = c; }); return n; });
   const cubeById = useMemo(() => {
     const m = { ...vrdSeen };
@@ -178,6 +179,7 @@ export default function DraftRoom() {
 
   // VRD picker list: the highest-rated undrafted cards, or the results of a search.
   const vrdPickCount = state?.picks?.length || 0;
+  const [vrdRetry, setVrdRetry] = useState(0);
   const loadVrdList = async (search) => {
     setVrdLoading(true);
     try {
@@ -186,7 +188,11 @@ export default function DraftRoom() {
         const q = `${search.trim()} legal:vintage game:paper -t:basic`;
         ({ data: { cards } } = await api.get("/cards/search", { params: { q } }));
       } else {
-        ({ data: { cards } } = await api.get(`/drafts/${shareId}/vrd/top`, { params: { limit: 80 } }));
+        const { data } = await api.get(`/drafts/${shareId}/vrd/top`, { params: { limit: 80 } });
+        cards = data.cards;
+        setVrdWarming(!!data.warming);
+        // The first VRD table on the server builds the bots' card list (a few seconds): check back shortly.
+        if (data.warming) setTimeout(() => setVrdRetry((n) => n + 1), 5000);
       }
       rememberCards(cards);
       setVrdList(cards || []);
@@ -196,7 +202,7 @@ export default function DraftRoom() {
   useEffect(() => {
     if (isVrd && state?.status === "drafting" && !vrdSearch) loadVrdList("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isVrd, vrdPickCount, state?.status]);
+  }, [isVrd, vrdPickCount, state?.status, vrdRetry]);
 
   // Drop any queued card that has been drafted (by anyone) so auto-pick falls through to the next one.
   useEffect(() => { setQueue((q) => q.filter((id) => !pickedIds.has(id))); }, [pickedIds]);
@@ -493,7 +499,9 @@ export default function DraftRoom() {
         <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none" data-testid="hide-picked-toggle">
           <input type="checkbox" checked={hidePicked} onChange={(e) => setHidePicked(e.target.checked)} className="accent-amber-400 w-3.5 h-3.5" /> Hide picked
         </label>
-        <span className="text-xs text-slate-500 ml-auto">{isVrd ? (vrdSearch ? `${availableCount} results for "${vrdSearch}"` : "Top-rated undrafted cards. Search for anything Vintage-legal.") : `${availableCount} available`}</span>
+        <span className="text-xs text-slate-500 ml-auto">{isVrd ? (vrdSearch ? `${availableCount} results for "${vrdSearch}"`
+          : vrdWarming ? "Loading the top-rated card list (first VRD table only). Search works now; bots start in a few seconds."
+          : "Top-rated undrafted cards. Search for anything Vintage-legal.") : `${availableCount} available`}</span>
       </div>
       {hints && myTurn && suggestions.some((id) => cubeById[id] && !isTaken(cubeById[id])) && (
         <div className="mb-3 flex items-center gap-2 flex-wrap" data-testid="pick-suggestions">

@@ -2,8 +2,11 @@
 
 People pick any legal card by searching Scryfall. Bots can't weigh tens of thousands of cards on every
 pick, so they draft from a "virtual cube": the top-rated Vintage-legal cards by CubeCobra Elo (from the
-bundled data/card_elo.csv), resolved once through Scryfall and saved in Mongo (`vrd_pool`), refreshed
-monthly. Cards people pick from outside that pool still count for the bots (colours, combos).
+bundled data/card_elo.csv). That pool is only ever built when someone hosts a VRD table, in the
+background (nothing waits for it), saved in Mongo (`vrd_pool`) and kept in memory, and refreshed
+monthly. Cards people pick from outside the pool still count for the bots (colours, combos).
+
+Build cost: ~25 Scryfall collection requests (cards), then one Commander Spellbook request (combos).
 """
 from __future__ import annotations
 
@@ -19,8 +22,12 @@ log = logging.getLogger(__name__)
 POOL_SIZE = 1500
 POOL_TTL = 30 * 24 * 3600
 _ELO_CSV = Path(__file__).parent / "data" / "card_elo.csv"
-_MEM: Dict[str, Any] = {}
-_LOCK = asyncio.Lock()
+_MEM: Dict[str, Any] = {"pool": None, "task": None}
+
+
+def is_basic(raw: dict) -> bool:
+    t = (raw.get("type_line") or "").lower()
+    return "basic" in t and "land" in t
 
 
 def is_legal(raw: dict) -> bool:
@@ -30,10 +37,6 @@ def is_legal(raw: dict) -> bool:
     if "paper" not in (raw.get("games") or []):
         return False
     return not is_basic(raw)
-
-
-def is_basic(raw: dict) -> bool:
-    return "basic" in (raw.get("type_line") or "").lower() and "land" in (raw.get("type_line") or "").lower()
 
 
 def ranked_names(limit: int) -> List[str]:
@@ -57,41 +60,43 @@ def ranked_names(limit: int) -> List[str]:
     return out
 
 
-async def get_pool(db, lookup: Callable, prefer_oldest: Callable, map_card: Callable,
-                   fetch_combos: Callable, build_index: Callable, ensure_stats: Callable, draft_stats: Callable) -> dict:
-    """The bots' VRD pool: {"cards": [...], "combos": [...], "stats": {...}}. Built once, cached in Mongo
-    and memory. The heavy lifting (Scryfall, Spellbook, CubeCobra) only happens on the first VRD draft
-    and then about once a month."""
-    hit = _MEM.get("pool")
-    if hit and time.time() - hit["built_at"] < POOL_TTL:
-        return hit
-    async with _LOCK:
-        hit = _MEM.get("pool")
-        if hit and time.time() - hit["built_at"] < POOL_TTL:
-            return hit
+def peek() -> Optional[dict]:
+    """The pool if it's ready in memory, else None (never blocks)."""
+    pool = _MEM.get("pool")
+    if pool and time.time() - pool.get("built_at", 0) < POOL_TTL and pool.get("cards"):
+        return pool
+    return None
+
+
+def warm(db, lookup: Callable, map_card: Callable, fetch_combos: Callable, build_index: Callable) -> None:
+    """Make sure the pool is loading or loaded, in the background. Cheap to call often."""
+    if peek() or (_MEM.get("task") and not _MEM["task"].done()):
+        return
+    _MEM["task"] = asyncio.create_task(_load_or_build(db, lookup, map_card, fetch_combos, build_index))
+
+
+async def _load_or_build(db, lookup, map_card, fetch_combos, build_index) -> None:
+    try:
         doc = await db.vrd_pool.find_one({"key": "v1"}, {"_id": 0})
-        if doc and time.time() - doc.get("built_at", 0) < POOL_TTL and doc.get("cards"):
+        if doc and doc.get("cards") and time.time() - doc.get("built_at", 0) < POOL_TTL:
             _MEM["pool"] = doc
-            return doc
-        # Build: resolve the top-rated names, keep Vintage-legal paper cards, original printings.
+            return
+        # Phase 1: the cards (enough for bots to draft).
         names = ranked_names(int(POOL_SIZE * 1.25))
         raw = await lookup([{"name": n} for n in names])
-        legal = [c for c in raw if is_legal(c)][:POOL_SIZE]
-        try:
-            legal = await prefer_oldest(legal)
-        except Exception as exc:   # keep Scryfall's default printings
-            log.warning("VRD pool: oldest-printing lookup failed: %s", exc)
-        cards = [map_card(c) for c in legal]
-        combos = await fetch_combos(build_index(cards))
-        stats = None
-        try:
-            await ensure_stats(db, [c["name"] for c in cards], budget_s=60.0)
-            stats = await draft_stats(db, cards)
-        except Exception as exc:
-            log.warning("VRD pool: CubeCobra stats unavailable: %s", exc)
-        doc = {"key": "v1", "built_at": time.time(), "cards": cards,
-               "combos": [c.to_dict() for c in combos], "stats": stats}
-        await db.vrd_pool.update_one({"key": "v1"}, {"$set": doc}, upsert=True)
+        cards = [map_card(c) for c in raw if is_legal(c)][:POOL_SIZE]
+        doc = {"key": "v1", "built_at": time.time(), "cards": cards, "combos": [], "stats": None}
         _MEM["pool"] = doc
-        log.info("VRD pool built: %d cards, %d combos", len(cards), len(combos))
-        return doc
+        await db.vrd_pool.update_one({"key": "v1"}, {"$set": doc}, upsert=True)
+        log.info("VRD pool: %d cards", len(cards))
+        # Phase 2: combos between pool cards (bots use them once they arrive).
+        try:
+            combos = await fetch_combos(build_index(cards))
+            doc = {**doc, "combos": [c.to_dict() for c in combos]}
+            _MEM["pool"] = doc
+            await db.vrd_pool.update_one({"key": "v1"}, {"$set": {"combos": doc["combos"]}})
+            log.info("VRD pool: %d combos", len(combos))
+        except Exception as exc:
+            log.warning("VRD pool: combos unavailable: %s", exc)
+    except Exception as exc:
+        log.warning("VRD pool build failed: %s", exc)

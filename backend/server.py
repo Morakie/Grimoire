@@ -1246,7 +1246,7 @@ async def start_draft(share_id: str):
             return None
 
     if d.get("pool") == "vintage":
-        await _vrd_pool()           # bots' card knowledge lives in the shared VRD pool, not the draft
+        _warm_vrd_pool()            # bots' card knowledge lives in the shared VRD pool (loads in the background)
     else:
         # Both lookups can take several seconds for a cube the server hasn't seen before: run them together.
         combos, stats = await asyncio.gather(fetch_combos(build_card_index(d["cube"])), _stats())
@@ -1324,6 +1324,8 @@ async def vrd_top(share_id: str, limit: int = 60):
     if not d or d.get("pool") != "vintage":
         raise HTTPException(status_code=404, detail="VRD draft not found")
     cards = await _cards(share_id)
+    if not cards["pool_cards"]:
+        return {"cards": [], "warming": True}
     keep = set(_remaining_ids(d, cards))
     out = [c for c in cards["pool_cards"] if c["id"] in keep][: max(1, min(limit, 200))]
     return {"cards": out}
@@ -1473,28 +1475,13 @@ async def _draft(share_id: str) -> Optional[dict]:
     return await db.drafts.find_one({"share_id": share_id}, _HEAVY)
 
 
-async def _vrd_pool() -> dict:
-    """The shared VRD bot pool (built on first use, then cached; see vrd.py)."""
+def _warm_vrd_pool() -> None:
+    """Start loading (or, the very first time, building) the VRD bots' pool in the background.
+    Only VRD tables call this; nothing ever waits for it (see vrd.py)."""
     async def lookup(ids):
         async with httpx.AsyncClient(timeout=30.0, headers=HEADERS) as hc:
             return await _collection_lookup(hc, ids)
-
-    async def oldest(cards):
-        async with httpx.AsyncClient(timeout=30.0, headers=HEADERS) as hc:
-            return await _prefer_oldest(hc, cards)
-
-    return await vrd.get_pool(db, lookup, oldest, map_card, fetch_combos, build_card_index, ensure_stats, draft_stats)
-
-
-def _warm_vrd_pool() -> None:
-    async def run():
-        try:
-            await _vrd_pool()
-        except Exception as exc:
-            logger.warning("VRD pool build failed: %s", exc)
-    task = asyncio.create_task(run())
-    _BACKGROUND.add(task)
-    task.add_done_callback(_BACKGROUND.discard)
+    vrd.warm(db, lookup, map_card, fetch_combos, build_card_index)
 
 
 async def _vrd_rebuild(entry: dict) -> None:
@@ -1535,13 +1522,24 @@ def _remaining_ids(d: dict, cards: dict) -> List[str]:
 async def _cards(share_id: str) -> dict:
     """The draft's cube, card ids and bot card index, loaded once and cached."""
     hit = _CARDS_CACHE.get(share_id)
+    if hit and hit.get("vintage") and hit.get("pool_ref") is not vrd.peek():
+        # The VRD pool arrived (or gained its combos) since this entry was made: refresh the bot side.
+        pool = vrd.peek()
+        if pool:
+            hit.update(pool_ref=pool, pool_cards=pool["cards"], pool_ids={c["id"] for c in pool["cards"]},
+                       stats=pool.get("stats"), combo_dicts=pool.get("combos", []))
+            await _vrd_rebuild(hit)
+        return hit
     if hit:
         return hit
     doc = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "cube": 1, "bot_stats": 1, "bot_combos": 1, "status": 1, "pool": 1}) or {}
     if doc.get("pool") == "vintage":
-        pool = await _vrd_pool()
-        entry = {"vintage": True, "cube": doc.get("cube", []), "pool_cards": pool["cards"],
-                 "pool_ids": {c["id"] for c in pool["cards"]}, "stats": pool.get("stats"), "combo_dicts": pool.get("combos", [])}
+        pool = vrd.peek()
+        if not pool:
+            _warm_vrd_pool()        # bots wait (and suggestions are empty) until it's ready; people can pick
+        entry = {"vintage": True, "cube": doc.get("cube", []), "pool_ref": pool, "pool_cards": (pool or {}).get("cards", []),
+                 "pool_ids": {c["id"] for c in (pool or {}).get("cards", [])}, "stats": (pool or {}).get("stats"),
+                 "combo_dicts": (pool or {}).get("combos", [])}
         await _vrd_rebuild(entry)
         if len(_CARDS_CACHE) > 40:
             _CARDS_CACHE.clear()
@@ -1601,6 +1599,8 @@ async def _bot_pick_once(d: dict) -> dict:
         return d
 
     cards = await _cards(d["share_id"])
+    if cards.get("vintage") and not cards["pool_cards"]:
+        return d                    # VRD bots wait a moment for their card pool to load
     index, combos = cards["index"], cards["combos"]
     picks_by_seat: Dict[int, List[str]] = {s["index"]: [] for s in d["seats"]}
     for p in d["picks"]:
