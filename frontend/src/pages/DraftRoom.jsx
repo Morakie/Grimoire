@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { buildExport } from "@/components/ExportDialog";
 import { useAuth } from "@/context/AuthContext";
 import { getBasics } from "@/lib/mtg";
+import PackDraftView from "@/components/PackDraftView";
 import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock } from "lucide-react";
 import { toast } from "sonner";
 
@@ -58,7 +59,20 @@ export default function DraftRoom() {
   const { user } = useAuth();
   const [building, setBuilding] = useState(null);   // seat whose deck is being built
   const [draft, setDraft] = useState(null);
-  const [state, setState] = useState(null);
+  const [state, setRawState] = useState(null);
+  // Ignore responses older than what's on screen: a poll sent just before a pick can arrive just after
+  // it and would briefly bring back the old pack. Pack drafts number every change ("rev").
+  const revRef = useRef(-1);
+  const versionRef = useRef(null);     // last full state's version: lets pack-draft polls get a tiny "unchanged" reply
+  const setState = (next) => {
+    if (typeof next === "function") { setRawState(next); return; }
+    if (next && typeof next.rev === "number") {
+      if (next.rev < revRef.current) return;
+      revRef.current = next.rev;
+    }
+    versionRef.current = next?.mode === "packs" && next?.status === "drafting" ? next.version : null;
+    setRawState(next);
+  };
   const [me, setMe] = useState(() => { try { return JSON.parse(localStorage.getItem(storeKey(shareId))) || null; } catch { return null; } });
   const [claimName, setClaimName] = useState("");
   const [query, setQuery] = useState("");
@@ -76,7 +90,7 @@ export default function DraftRoom() {
   const [sheet, setSheet] = useState(null);            // mobile bottom sheet: "queue" | "feed" | "chat"
   const [previewCard, setPreviewCard] = useState(null); // mobile tap-to-preview
   const seatStripRef = useRef(null);
-  const [hints, setHints] = useState(() => localStorage.getItem("grim_draft_hints") !== "off");
+  const [hints, setHints] = useState(() => localStorage.getItem("grim_draft_hints") === "on");
   const [suggestions, setSuggestions] = useState([]);
   const [cardSize, setCardSize] = useState(() => localStorage.getItem("grim_draft_card_size") || "m");
   const [muted, setMuted] = useState(() => localStorage.getItem("grim_draft_muted") === "true");
@@ -91,17 +105,35 @@ export default function DraftRoom() {
   }, [shareId, navigate]);
 
   // Poll every 2s, or every second while a bot is on the clock (its pick lands on the next poll).
-  const botOnClock = !!(state && state.status === "drafting" && state.current_seat_index != null
-    && (state.players || []).some((p) => p.is_bot && p.seats.includes(state.current_seat_index)));
+  // Pack drafts poll every second while drafting (bots and other players pass packs constantly).
+  const botOnClock = !!(state && state.status === "drafting" && (state.mode === "packs" || (state.current_seat_index != null
+    && (state.players || []).some((p) => p.is_bot && p.seats.includes(state.current_seat_index)))));
+  const finished = state?.status === "complete" || state?.status === "cancelled";
+  const playerToken = me?.player_token;
   useEffect(() => {
     let active = true;
+    let inFlight = false;
     const tick = async () => {
-      try { const { data } = await api.get(`/drafts/${shareId}/state`); if (active) setState(data); } catch {}
+      if (inFlight) return;               // never stack polls on a slow connection
+      inFlight = true;
+      try {
+        // The player token lets a pack draft show you your own packs and picks (hidden from everyone else);
+        // the known version lets the server answer "unchanged" cheaply when nothing happened.
+        const headers = {};
+        if (playerToken) headers["X-Player-Token"] = playerToken;
+        if (versionRef.current) headers["X-Known-Version"] = versionRef.current;
+        const { data } = await api.get(`/drafts/${shareId}/state`, { headers, timeout: 15000 });
+        if (!active) return;
+        if (data.unchanged) setState((s) => (s ? { ...s, server_time: data.server_time } : s));
+        else setState(data);
+      } catch {} finally { inFlight = false; }
     };
     tick();
-    const iv = setInterval(tick, botOnClock ? 1000 : 2000);
+    // Finished drafts barely change (chat only): poll slowly.
+    const iv = setInterval(tick, finished ? 10000 : botOnClock ? 1000 : 2000);
     return () => { active = false; clearInterval(iv); };
-  }, [shareId, botOnClock]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shareId, botOnClock, playerToken, finished]);
 
   useEffect(() => { localStorage.setItem(`grim_draft_queue_${shareId}`, JSON.stringify(queue)); }, [queue, shareId]);
 
@@ -165,6 +197,19 @@ export default function DraftRoom() {
       <Button onClick={() => navigate("/draft")} className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">Back to drafts</Button>
     </div>
   );
+
+  if (draft.mode === "packs" && state.status === "drafting") {
+    const closeTable = async () => {
+      if (!window.confirm("Close this table for everyone? This cannot be undone.")) return;
+      try { await api.post(`/drafts/${shareId}/cancel`, { host_token: hostToken }); localStorage.removeItem(`grim_draft_host_${shareId}`); navigate("/draft"); }
+      catch (e) { toast.error(e.response?.data?.detail || "Could not close table"); }
+    };
+    return (
+      <PackDraftView shareId={shareId} draft={draft} state={state} setState={setState} me={me} hostToken={hostToken}
+        muted={muted} onToggleMute={() => setMuted((m) => { localStorage.setItem("grim_draft_muted", (!m).toString()); return !m; })}
+        onBeep={playBeep} onCancel={closeTable} shareUrl={`${window.location.origin}/draft/${shareId}`} />
+    );
+  }
 
   const claim = async () => {
     if (!claimName.trim()) { toast.error("Enter your name"); return; }
@@ -359,7 +404,7 @@ export default function DraftRoom() {
         <button data-testid="toggle-hints" onClick={() => setHints((h) => { localStorage.setItem("grim_draft_hints", h ? "off" : "on"); return !h; })}
           title={hints ? "Hide pick suggestions" : "Show pick suggestions on your turn"}
           className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border transition-colors ${hints ? "border-amber-400/60 text-amber-300" : "border-slate-700 text-slate-500 hover:text-slate-300"}`}>
-          <Lightbulb className="w-3.5 h-3.5" /> Hints
+          <Lightbulb className="w-3.5 h-3.5" /> Pick Suggestions
         </button>
         <div className="hidden lg:flex items-center gap-1" data-testid="card-size-controls">
           <span className="text-xs text-slate-500 mr-1">Size</span>
@@ -629,7 +674,7 @@ export default function DraftRoom() {
                   {s.player_name || <span className="text-slate-600">unclaimed</span>}
                 </div>
                 {isCurrent && <div className="text-[11px] text-amber-400 mt-0.5">On the clock</div>}
-                <div className="text-[11px] text-slate-500 mt-0.5 truncate" data-testid={`seat-last-${s.index}`}>{last ? <>Last: <span className="text-slate-400">{last.name}</span></> : "No picks yet"}</div>
+                <div className="text-[11px] text-slate-500 mt-0.5 truncate" data-testid={`seat-last-${s.index}`}>{state.mode === "packs" ? "" : last ? <>Last: <span className="text-slate-400">{last.name}</span></> : "No picks yet"}</div>
               </div>
             );
           })}
@@ -652,7 +697,10 @@ export default function DraftRoom() {
             {state.status === "lobby" && (
               <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 max-w-md" data-testid="lobby-panel">
                 <h2 className="font-display text-xl font-bold mb-2">Join the draft</h2>
-                <p className="text-sm text-slate-400 mb-4">Enter your name to claim your seat(s). {state.seats_per_player} seat(s) each. {state.players.length}/{state.num_players} players in.</p>
+                <p className="text-sm text-slate-400 mb-4">
+                  {state.mode === "packs" && <span className="block text-amber-300/90 mb-1" data-testid="lobby-format">Pack draft · {state.pack_count} packs of {state.pack_size}{state.timer === "off" ? " · no timer" : " · pick timer on"}</span>}
+                  Enter your name to claim your seat(s). {state.seats_per_player} seat(s) each. {state.players.length}/{state.num_players} players in.
+                </p>
                 <div className="mb-4 rounded-lg border border-slate-800 bg-slate-950 p-3">
                   <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1.5">Invite players</div>
                   <div className="flex items-center gap-2">
@@ -718,9 +766,12 @@ export default function DraftRoom() {
               <div data-testid="draft-complete">
                 <div className="mb-4 flex items-center gap-3 flex-wrap">
                   <h2 className="font-display text-2xl font-bold flex items-center gap-2">Draft complete <PartyPopper className="w-6 h-6 text-amber-400" /></h2>
-                  {viewTabs([["pick", "Results", ListChecks], ["table", "Draft Table", Table2], ["decks", "Decks", Eye]])}
+                  {/* Pack drafts never show the pick order (no draft table or pick feed), only each seat's pool. */}
+                  {viewTabs(state.mode === "packs"
+                    ? [["pick", "Results", ListChecks], ["decks", "Decks", Eye]]
+                    : [["pick", "Results", ListChecks], ["table", "Draft Table", Table2], ["decks", "Decks", Eye]])}
                 </div>
-                {view === "table" ? renderDraftTable() : view === "decks" ? renderDecks() : renderResults()}
+                {view === "table" && state.mode !== "packs" ? renderDraftTable() : view === "decks" ? renderDecks() : renderResults()}
                 <p className="text-xs text-slate-500 mt-4">Open any seat's deck in the builder to tweak and save it.</p>
               </div>
             )}
@@ -738,7 +789,7 @@ export default function DraftRoom() {
                 )}
               </div>
             )}
-            {pickFeed.length > 0 && (
+            {pickFeed.length > 0 && state.mode !== "packs" && (
               <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4" data-testid="pick-feed">
                 <h3 className="font-display font-semibold text-sm mb-3 flex items-center gap-2"><ListChecks className="w-4 h-4 text-amber-400" /> Pick feed</h3>
                 <div className="max-h-72 overflow-y-auto pr-1">{renderFeedList()}</div>
@@ -763,7 +814,7 @@ export default function DraftRoom() {
           <div className="flex">
             {[
               ...(state.status === "drafting" ? [["queue", `Queue${queue.length ? ` (${queue.length})` : ""}`, Bookmark]] : []),
-              ["feed", "Picks", ListChecks],
+              ...(state.mode === "packs" ? [] : [["feed", "Picks", ListChecks]]),
               ["chat", `Chat${(state.messages || []).length ? ` (${state.messages.length})` : ""}`, MessageSquare],
             ].map(([k, label, Icon]) => (
               <button key={k} data-testid={`mobile-${k}`} onClick={() => setSheet(k)} className="flex-1 flex flex-col items-center gap-0.5 py-2 text-[11px] text-slate-300 active:text-amber-300">
