@@ -1426,11 +1426,11 @@ async def _bot_index(share_id: str):
     return c["index"], c["combos"]
 
 
-def _bot_delay(share_id: str, pick_index: int) -> float:
-    """0.8–1.7 s (plus up to a 1 s poll), stable for a given pick so concurrent polls agree on when it's due.
-    BOT_DELAY_SCALE scales it (0 = instant, handy for test drafts on staging)."""
+def _bot_delay(share_id: str, pick_index) -> float:
+    """Bots pick instantly by default (a "thinking" pause adds up fast with several bots between turns).
+    BOT_DELAY_SCALE=1 brings back a human-like 0.8-1.7 s pause, stable per pick so concurrent polls agree."""
     try:
-        scale = float(os.environ.get("BOT_DELAY_SCALE", "1"))
+        scale = float(os.environ.get("BOT_DELAY_SCALE", "0"))
     except ValueError:
         scale = 1.0
     return scale * (0.8 + random.Random(f"{share_id}:{pick_index}").random() * 0.9)
