@@ -24,9 +24,9 @@ TUNING: Dict[str, float] = {
     "lane_penalty_three": 0.74,    # a third colour has to earn its place...
     "three_colour_fixing": 0.35,   # ...and owned fixing for it is what earns it
     "lane_temp_start": 2.6, "lane_temp_slope": 0.09, "lane_temp_min": 0.45,
-    "colour_crowding": 1.0,        # how strongly crowded colours are avoided
+    "colour_crowding": 2.0,        # how strongly crowded colours are avoided
     "colour_supply": 0.5,
-    "openness_weight": 0.9,        # colour signals feeding the lane prior
+    "openness_weight": 1.6,        # colour signals feeding the lane prior
     "arch_crowding": 1.2,          # how strongly crowded archetypes are avoided
     "arch_weight": 0.22,           # archetype bonus per unit of relevance
     "arch_lane_support": 0.5,      # how much likely archetypes pull towards their usual colours
@@ -37,6 +37,7 @@ TUNING: Dict[str, float] = {
     "float_base": 0.25, "float_growth": 0.3, "float_cap": 0.6,
     "fixing_base": 0.08, "fixing_growth": 0.3,
     "package_unit": 0.12, "package_cap": 0.3, "package_urgency": 0.12, "package_urgency_cap": 0.45,
+    "card_openness": 0.35,         # mid-draft: how much crowding deters moving INTO a colour
     "splash_threshold": 0.9,       # owned value in a third colour before it becomes a splash target
     "splash_fixing": 0.35,         # extra value for lands that fix the splash
     "splash_fit": 0.55,            # how "on colour" cards of the splash colour count
@@ -361,6 +362,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     lane_floor = min(0.95, max(k("lane_floor_min"), k("lane_floor_start") - k("lane_floor_slope") * t) / p.w("lane"))
     w_needs = max(0.0, (t - k("needs_start")) * k("needs_slope"))
     w_float = (k("float_base") + k("float_growth") * min(1.0, 2 * t)) * p.w("float")
+    entry_window = max(0.0, min(1.0, 4 * t) * (1.0 - 1.4 * t))   # strongest a quarter to half way in
 
     rows = []
     for cid in remaining:
@@ -380,6 +382,10 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
             elif not card.is_land and splash in card.need and card.need <= lane | {splash}:
                 fit = max(fit, k("splash_fit"))
         lane_mult = lane_floor + (1 - lane_floor) * fit
+        if card.need and fit < 0.7 and entry_window > 0:
+            # Moving into a new colour: crowded colours are less tempting, open ones more so.
+            signal = max(-1.5, min(1.0, sum(open_by_colour[c] for c in card.need) / len(card.need)))
+            lane_mult *= 1 + k("card_openness") * entry_window * (1 - fit) * signal
         rows.append([base * lane_mult, cid, {"fit": round(fit, 2)}])
 
     # Float risk only matters among plausible picks, so only compute it for the top of the list.
