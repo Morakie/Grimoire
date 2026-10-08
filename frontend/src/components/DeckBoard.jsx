@@ -318,7 +318,7 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
   return (
     <div className="flex-1 overflow-y-auto flex flex-col" data-testid="deck-board">
       {/* Toolbar */}
-      <div className="sticky top-0 z-20 bg-[#0a1120]/95 backdrop-blur border-b border-slate-800 px-3 sm:px-6 lg:px-10 py-2 sm:py-2.5 flex items-center gap-2 sm:gap-3 overflow-x-auto sm:flex-wrap">
+      <div className="sticky top-0 z-20 bg-[#0a1120]/95 backdrop-blur border-b border-slate-800 px-3 sm:px-6 lg:px-10 py-2 sm:py-2.5 flex items-center gap-2 sm:gap-3 overflow-x-auto sm:flex-wrap shrink-0">
         <Control label="View" value={view} onChange={setView} options={VIEW_OPTIONS} testid="view-select" />
         <Control label="Group" value={group} onChange={setGroup} options={GROUP_OPTIONS} testid="group-select" />
         <Control label="Sort" value={sort} onChange={setSort} options={SORT_OPTIONS} testid="sort-select" />
