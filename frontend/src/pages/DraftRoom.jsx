@@ -139,7 +139,64 @@ export default function DraftRoom() {
   useEffect(() => { localStorage.setItem(`grim_draft_queue_${shareId}`, JSON.stringify(queue)); }, [queue, shareId]);
 
   const pickedIds = useMemo(() => new Set((state?.picked_ids) || (state?.picks || []).map((p) => p.card_id)), [state]);
-  const cubeById = useMemo(() => { const m = {}; (draft?.cube || []).forEach((c) => (m[c.id] = c)); return m; }, [draft]);
+  // VRD: cards seen in the top list, searches and suggestions (queued ones are remembered across reloads).
+  const isVrd = draft?.pool === "vintage";
+  const [vrdSeen, setVrdSeen] = useState(() => { try { return JSON.parse(localStorage.getItem(`grim_vrd_seen_${shareId}`)) || {}; } catch { return {}; } });
+  const [vrdList, setVrdList] = useState([]);          // cards shown in the VRD picker (top list or search results)
+  const [vrdSearch, setVrdSearch] = useState("");      // the search that produced vrdList ("" = top-rated list)
+  const [vrdLoading, setVrdLoading] = useState(false);
+  const rememberCards = (cards) => setVrdSeen((m) => { const n = { ...m }; (cards || []).forEach((c) => { n[c.id] = c; }); return n; });
+  const cubeById = useMemo(() => {
+    const m = { ...vrdSeen };
+    (draft?.cube || []).forEach((c) => (m[c.id] = c));
+    return m;
+  }, [draft, vrdSeen]);
+  // Names already drafted (VRD is singleton by name across the table, whatever the printing).
+  const takenNames = useMemo(() => new Set((state?.picks || []).map((p) => cubeById[p.card_id]?.name?.toLowerCase()).filter(Boolean)), [state, cubeById]);
+  useEffect(() => {
+    if (!isVrd) return;
+    const keep = {};
+    queue.forEach((id) => { if (vrdSeen[id]) keep[id] = vrdSeen[id]; });
+    try { localStorage.setItem(`grim_vrd_seen_${shareId}`, JSON.stringify(keep)); } catch { /* storage full or blocked */ }
+  }, [queue, vrdSeen, isVrd, shareId]);
+
+  // VRD drafts add cards to the draft's list as they are picked: fetch just the new ones.
+  const cubeFetchRef = useRef(false);
+  useEffect(() => {
+    if (!isVrd || !state?.picks?.length || cubeFetchRef.current) return;
+    const have = new Set((draft?.cube || []).map((c) => c.id));
+    if (state.picks.every((p) => have.has(p.card_id))) return;
+    cubeFetchRef.current = true;
+    api.get(`/drafts/${shareId}/cube`, { params: { start: (draft?.cube || []).length } })
+      .then(({ data }) => setDraft((d) => {
+        const known = new Set((d.cube || []).map((c) => c.id));
+        return { ...d, cube: [...(d.cube || []), ...(data.cards || []).filter((c) => !known.has(c.id))] };
+      }))
+      .catch(() => {})
+      .finally(() => { cubeFetchRef.current = false; });
+  }, [isVrd, state, draft, shareId]);
+
+  // VRD picker list: the highest-rated undrafted cards, or the results of a search.
+  const vrdPickCount = state?.picks?.length || 0;
+  const loadVrdList = async (search) => {
+    setVrdLoading(true);
+    try {
+      let cards;
+      if (search.trim()) {
+        const q = `${search.trim()} legal:vintage game:paper -t:basic`;
+        ({ data: { cards } } = await api.get("/cards/search", { params: { q } }));
+      } else {
+        ({ data: { cards } } = await api.get(`/drafts/${shareId}/vrd/top`, { params: { limit: 80 } }));
+      }
+      rememberCards(cards);
+      setVrdList(cards || []);
+    } catch { toast.error("Search failed"); }
+    finally { setVrdLoading(false); }
+  };
+  useEffect(() => {
+    if (isVrd && state?.status === "drafting" && !vrdSearch) loadVrdList("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isVrd, vrdPickCount, state?.status]);
 
   // Drop any queued card that has been drafted (by anyone) so auto-pick falls through to the next one.
   useEffect(() => { setQueue((q) => q.filter((id) => !pickedIds.has(id))); }, [pickedIds]);
@@ -175,7 +232,7 @@ export default function DraftRoom() {
     if (!hints || turnSeat == null) return;
     let active = true;
     api.get(`/drafts/${shareId}/suggestions`, { params: { seat: turnSeat } })
-      .then(({ data }) => { if (active) setSuggestions(data.suggestions || []); })
+      .then(({ data }) => { if (!active) return; if (data.cards) rememberCards(data.cards); setSuggestions(data.suggestions || []); })
       .catch(() => {});
     return () => { active = false; };
   }, [hints, turnSeat, pickNo, shareId]);
@@ -261,7 +318,11 @@ export default function DraftRoom() {
     try {
       const { data } = await api.post(`/drafts/${shareId}/pick`, { player_token: me.player_token, seat_index: seat, card_id: card.id });
       setState(data);
-    } catch (e) { toast.error(e.response?.data?.detail || "Pick failed"); }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Pick failed");
+      // VRD: a queued card that's already gone (another printing) or not legal would retry forever.
+      if (isVrd && [400, 409].includes(e.response?.status)) setQueue((q) => q.filter((x) => x !== card.id));
+    }
     finally { setPicking(false); inFlightRef.current = false; }
   };
 
@@ -354,7 +415,7 @@ export default function DraftRoom() {
   autoPickRef.current = () => {
     if (inFlightRef.current) return;
     if (!(state.status === "drafting" && me && state.current_seat_index != null && me.seats.includes(state.current_seat_index))) return;
-    const next = queue.map((id) => cubeById[id]).find((c) => c && !pickedIds.has(c.id));
+    const next = queue.map((id) => cubeById[id]).find((c) => c && !pickedIds.has(c.id) && !(isVrd && takenNames.has(c.name.toLowerCase())));
     if (next) { toast.success(`Auto-picked ${next.name} from your queue`); pick(next); }
   };
 
@@ -368,12 +429,13 @@ export default function DraftRoom() {
     if (sortBy === "cmc") return (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
     return a.name.localeCompare(b.name);
   };
-  const poolCards = (draft.cube || [])
-    .filter((c) => (!query.trim() || c.name.toLowerCase().includes(query.toLowerCase())))
-    .filter((c) => !hidePicked || !pickedIds.has(c.id))
+  const isTaken = (c) => pickedIds.has(c.id) || (isVrd && takenNames.has(c.name.toLowerCase()));
+  const poolCards = (isVrd ? vrdList : (draft.cube || []))
+    .filter((c) => isVrd || !query.trim() || c.name.toLowerCase().includes(query.toLowerCase()))
+    .filter((c) => !hidePicked || !isTaken(c))
     .slice()
-    .sort(comparator);
-  const availableCount = (draft.cube || []).filter((c) => !pickedIds.has(c.id)).length;
+    .sort(isVrd && !vrdSearch && sortBy === "elo" ? () => 0 : comparator);
+  const availableCount = isVrd ? vrdList.filter((c) => !isTaken(c)).length : (draft.cube || []).filter((c) => !pickedIds.has(c.id)).length;
 
   const pickFeed = (state.picks || []).map((p) => {
     const seat = state.seats.find((s) => s.index === p.seat_index);
@@ -399,7 +461,16 @@ export default function DraftRoom() {
   const renderPickGrid = () => (
     <div>
       <div className="mb-3 flex items-center gap-3 flex-wrap">
-        <Input data-testid="cube-filter" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter cards..." className="w-full sm:w-44 h-9 bg-slate-950 border-slate-700 text-slate-100" />
+        {isVrd ? (
+          <form onSubmit={(e) => { e.preventDefault(); setVrdSearch(query); loadVrdList(query); }} className="flex items-center gap-2 w-full sm:w-auto" data-testid="vrd-search">
+            <Input data-testid="vrd-search-input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search any Vintage-legal card…"
+              className="w-full sm:w-72 h-9 bg-slate-950 border-slate-700 text-slate-100" />
+            <Button type="submit" size="sm" data-testid="vrd-search-go" className="h-9 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">{vrdLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Search"}</Button>
+            {vrdSearch && <button type="button" data-testid="vrd-search-clear" onClick={() => { setQuery(""); setVrdSearch(""); loadVrdList(""); }} className="text-xs text-slate-400 hover:text-amber-300 whitespace-nowrap">Top cards</button>}
+          </form>
+        ) : (
+          <Input data-testid="cube-filter" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter cards..." className="w-full sm:w-44 h-9 bg-slate-950 border-slate-700 text-slate-100" />
+        )}
         <div className="flex items-center gap-1" data-testid="sort-controls">
           <span className="text-xs text-slate-500 mr-1">Sort</span>
           {SORTS.map((s) => (
@@ -422,12 +493,12 @@ export default function DraftRoom() {
         <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none" data-testid="hide-picked-toggle">
           <input type="checkbox" checked={hidePicked} onChange={(e) => setHidePicked(e.target.checked)} className="accent-amber-400 w-3.5 h-3.5" /> Hide picked
         </label>
-        <span className="text-xs text-slate-500 ml-auto">{availableCount} available</span>
+        <span className="text-xs text-slate-500 ml-auto">{isVrd ? (vrdSearch ? `${availableCount} results for "${vrdSearch}"` : "Top-rated undrafted cards. Search for anything Vintage-legal.") : `${availableCount} available`}</span>
       </div>
-      {hints && myTurn && suggestions.some((id) => cubeById[id] && !pickedIds.has(id)) && (
+      {hints && myTurn && suggestions.some((id) => cubeById[id] && !isTaken(cubeById[id])) && (
         <div className="mb-3 flex items-center gap-2 flex-wrap" data-testid="pick-suggestions">
           <span className="flex items-center gap-1 text-xs text-slate-500"><Lightbulb className="w-3.5 h-3.5 text-amber-400" /> Suggested</span>
-          {suggestions.map((id) => cubeById[id]).filter((c) => c && !pickedIds.has(c.id)).map((c) => (
+          {suggestions.map((id) => cubeById[id]).filter((c) => c && !isTaken(c)).map((c) => (
             <button key={c.id} data-testid={`suggestion-${c.id}`} onClick={() => setConfirmCard(c)} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
               className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-slate-700 bg-slate-900/60 text-slate-200 hover:border-amber-400/70 hover:text-amber-200 max-w-[60vw] sm:max-w-[220px]">
               <span className={`w-2 h-2 rounded-full shrink-0 ${colorClass(c)}`} /><span className="truncate">{c.name}</span>
@@ -438,7 +509,7 @@ export default function DraftRoom() {
       <div className="lg:max-h-[calc(100vh-280px)] lg:overflow-y-auto lg:pr-1 lg:-mr-1">
         <div className={`grid grid-cols-3 sm:grid-cols-4 ${(CARD_SIZES.find((z) => z.k === cardSize) || CARD_SIZES[1]).cols} gap-2 sm:gap-3`} data-testid="available-cards">
           {poolCards.map((c) => {
-            const isPicked = pickedIds.has(c.id);
+            const isPicked = isTaken(c);
             const clickable = myTurn && !isPicked && !picking;
             const queued = queue.includes(c.id);
             return (
@@ -502,7 +573,7 @@ export default function DraftRoom() {
                     <td key={s.index} className="p-0.5 border-l border-slate-800/60">
                       {card ? (
                         <div data-testid={compact ? undefined : `table-cell-${s.index}-${r}`} onMouseEnter={hoverIn(card)} onMouseLeave={hoverOut(card)}
-                          onClick={hostToken ? () => setReassignPick({ order: pk.order, seat_index: s.index, card }) : tapPreview(card)}
+                          onClick={hostToken && !isVrd ? () => setReassignPick({ order: pk.order, seat_index: s.index, card }) : tapPreview(card)}
                           title={card.name} className={`rounded truncate ${cell} ${colorClass(card)} ${hostToken ? "cursor-pointer hover:ring-2 hover:ring-amber-300" : "cursor-default"}`}>{card.name}</div>
                       ) : <div className={`${cell} text-slate-700`}>·</div>}
                     </td>
@@ -704,6 +775,7 @@ export default function DraftRoom() {
               <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 max-w-md" data-testid="lobby-panel">
                 <h2 className="font-display text-xl font-bold mb-2">Join the draft</h2>
                 <p className="text-sm text-slate-400 mb-4">
+                  {state.pool === "vintage" && <span className="block text-amber-300/90 mb-1" data-testid="lobby-format-vrd">Vintage Rotisserie Draft · every Vintage-legal card</span>}
                   {state.mode === "packs" && <span className="block text-amber-300/90 mb-1" data-testid="lobby-format">Pack draft · {state.pack_count} packs of {state.pack_size}{state.timer === "off" ? " · no timer" : " · pick timer on"}</span>}
                   Enter your name to claim your seat(s). {state.seats_per_player} seat(s) each. {state.players.length}/{state.num_players} players in.
                 </p>
