@@ -26,7 +26,7 @@ export default function PackDraftView({ shareId, draft, state, setState, me, hos
   const pack = (mine?.pack || []).map((id) => cubeById[id]).filter(Boolean);
   const [selected, setSelected] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [hints, setHints] = useState(() => localStorage.getItem("grim_draft_hints") !== "off");
+  const [hints, setHints] = useState(() => localStorage.getItem("grim_draft_hints") === "on");
   const [suggestions, setSuggestions] = useState([]);
   const [panel, setPanel] = useState("picks");          // phones: "picks" | "chat"
   const [chatText, setChatText] = useState("");
@@ -228,9 +228,9 @@ export default function PackDraftView({ shareId, draft, state, setState, me, hos
               <>
                 <div className="flex items-center gap-2 mb-3">
                   <span className="text-xs text-slate-500">{pack.length} cards · tap a card, then Pick (or double-click)</span>
-                  <button type="button" data-testid="hints-toggle" onClick={toggleHints}
+                  <button type="button" data-testid="hints-toggle" onClick={toggleHints} title={hints ? "Hide pick suggestions" : "Show pick suggestions"}
                     className={`ml-auto text-xs px-2.5 py-1 rounded-full border flex items-center gap-1 ${hints ? "border-amber-400 text-amber-300 bg-amber-400/10" : "border-slate-700 text-slate-400"}`}>
-                    <Lightbulb className="w-3.5 h-3.5" /> Hints
+                    <Lightbulb className="w-3.5 h-3.5" /> Pick Suggestions
                   </button>
                 </div>
                 <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 2xl:grid-cols-6 gap-2 sm:gap-3" data-testid="pack-cards">

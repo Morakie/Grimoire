@@ -77,7 +77,7 @@ export default function DraftRoom() {
   const [sheet, setSheet] = useState(null);            // mobile bottom sheet: "queue" | "feed" | "chat"
   const [previewCard, setPreviewCard] = useState(null); // mobile tap-to-preview
   const seatStripRef = useRef(null);
-  const [hints, setHints] = useState(() => localStorage.getItem("grim_draft_hints") !== "off");
+  const [hints, setHints] = useState(() => localStorage.getItem("grim_draft_hints") === "on");
   const [suggestions, setSuggestions] = useState([]);
   const [cardSize, setCardSize] = useState(() => localStorage.getItem("grim_draft_card_size") || "m");
   const [muted, setMuted] = useState(() => localStorage.getItem("grim_draft_muted") === "true");
@@ -379,7 +379,7 @@ export default function DraftRoom() {
         <button data-testid="toggle-hints" onClick={() => setHints((h) => { localStorage.setItem("grim_draft_hints", h ? "off" : "on"); return !h; })}
           title={hints ? "Hide pick suggestions" : "Show pick suggestions on your turn"}
           className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border transition-colors ${hints ? "border-amber-400/60 text-amber-300" : "border-slate-700 text-slate-500 hover:text-slate-300"}`}>
-          <Lightbulb className="w-3.5 h-3.5" /> Hints
+          <Lightbulb className="w-3.5 h-3.5" /> Pick Suggestions
         </button>
         <div className="hidden lg:flex items-center gap-1" data-testid="card-size-controls">
           <span className="text-xs text-slate-500 mr-1">Size</span>
