@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Sparkles, Loader2, Shuffle, Users, RefreshCw, Plus, ArrowRight, Bot } from "lucide-react";
+import { Sparkles, Loader2, Shuffle, Users, RefreshCw, Plus, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 
 function parseList(text) {
@@ -186,7 +186,7 @@ export default function DraftSetup() {
                   <Input data-testid="draft-players" type="number" min={1} max={12} value={players} onChange={(e) => setPlayers(e.target.value)} className={`mt-1.5 bg-slate-950 border-slate-700 text-slate-100 ${seatsOk ? "" : "ring-1 ring-red-500"}`} />
                 </div>
                 <div>
-                  <Label className="text-slate-300 flex items-center gap-1.5"><Bot className="w-3.5 h-3.5 text-amber-400" /> Bots</Label>
+                  <Label className="text-slate-300">Bots</Label>
                   <Input data-testid="draft-bots" type="number" min={0} max={11} value={bots} onChange={(e) => setBots(e.target.value)} className="mt-1.5 bg-slate-950 border-slate-700 text-slate-100" />
                 </div>
                 <div>
