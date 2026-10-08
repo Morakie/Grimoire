@@ -4,6 +4,7 @@ import api from "@/lib/api";
 import CardSearchBar from "@/components/CardSearchBar";
 import DeckBoard from "@/components/DeckBoard";
 import DeckStats from "@/components/DeckStats";
+import PrimerEditor from "@/components/Primer";
 import CommanderCheck, { CommanderBadge, useCommanderCheck } from "@/components/CommanderCheck";
 import PrintingsDialog from "@/components/PrintingsDialog";
 import ImportDialog from "@/components/ImportDialog";
@@ -13,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { ArrowLeft, Share2, Save, Loader2, Check, Copy, BarChart3, Upload, Download, ListChecks } from "lucide-react";
+import { ArrowLeft, Share2, Save, Loader2, Check, Copy, BarChart3, Upload, Download, ListChecks, Layers, BookOpen } from "lucide-react";
 import { FORMATS, maxCopies, isBasicLand } from "@/lib/mtg";
 import { useAuth } from "@/context/AuthContext";
 import AuthDialog from "@/components/AuthDialog";
@@ -50,6 +51,7 @@ export default function DeckBuilder() {
   const [exportOpen, setExportOpen] = useState(false);
   const [printingCtx, setPrintingCtx] = useState(null);
   const [statsOpen, setStatsOpen] = useState(false);
+  const [pane, setPane] = useState("deck");   // "deck" | "primer"
   const sidebarRef = useRef(null);
   const skipSave = useRef(true);
   const saveTimer = useRef(null);
@@ -284,8 +286,24 @@ export default function DeckBuilder() {
       {/* Body */}
       <div className="flex-1 flex overflow-hidden">
         <div className="flex-1 flex flex-col min-w-0 bg-[#0a1120]">
-          <DeckBoard deck={deck} format={deck.format} showCommander={showCommander}
-            onQty={changeQty} onRemove={removeCard} onPrintings={openPrintings} onCardsChange={onCardsChange} />
+          <div className="flex items-center gap-1 px-3 sm:px-6 lg:px-10 pt-2 border-b border-slate-800 shrink-0" role="tablist" data-testid="deck-pane-tabs">
+            {[["deck", "Deck", Layers], ["primer", "Primer", BookOpen]].map(([k, label, Icon]) => (
+              <button key={k} role="tab" aria-selected={pane === k} data-testid={`pane-${k}`} onClick={() => setPane(k)}
+                className={`flex items-center gap-1.5 px-3 py-2 text-xs font-semibold border-b-2 -mb-px transition-colors ${pane === k ? "border-amber-400 text-amber-300" : "border-transparent text-slate-400 hover:text-slate-200"}`}>
+                <Icon className="w-3.5 h-3.5" /> {label}
+                {k === "primer" && deck.description?.trim() && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" aria-label="has primer" />}
+              </button>
+            ))}
+          </div>
+          {pane === "deck" ? (
+            <DeckBoard deck={deck} format={deck.format} showCommander={showCommander}
+              onQty={changeQty} onRemove={removeCard} onPrintings={openPrintings} onCardsChange={onCardsChange} />
+          ) : (
+            <div className="flex-1 overflow-y-auto">
+              <PrimerEditor value={deck.description || ""} onChange={(v) => setDeck((d) => ({ ...d, description: v }))}
+                deckCards={[...deck.commander, ...deck.mainboard, ...deck.sideboard]} />
+            </div>
+          )}
         </div>
         <aside ref={sidebarRef} className="w-80 border-l border-slate-800 bg-[#070c17] overflow-y-auto p-4 hidden xl:block space-y-5" data-testid="stats-sidebar">
           {showCommander && <CommanderCheck check={commanderCheck} />}

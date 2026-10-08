@@ -5,6 +5,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ManaCost } from "@/components/ManaCost";
+import DeckExtras from "@/components/DeckExtras";
 import { GripVertical, Minus, Plus, X, Images, Layers, Crown, ArrowDownToLine } from "lucide-react";
 import {
   groupKeyFor, GROUP_ORDER, sortCards, isBasicLand, maxCopies, totalCount,
@@ -383,6 +384,7 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
             ) : null}
           </DragOverlay>
         </DndContext>
+        {!isEmpty && <div className="max-w-[1500px] mx-auto"><DeckExtras deck={deck} /></div>}
       </div>
     </div>
   );

@@ -132,7 +132,7 @@ class DeckCard(BaseModel):
 class DeckInput(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     format: str = "standard"
-    description: str = ""
+    description: str = Field(default="", max_length=20000)
     mainboard: List[DeckCard] = []
     sideboard: List[DeckCard] = []
     commander: List[DeckCard] = []
@@ -411,6 +411,56 @@ async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
         found.extend(retry["resolved"].values())
         missed = [missed[int(k)] for k in range(len(missed)) if str(k) not in retry["resolved"]]
     return {"cards": found, "not_found": missed}
+
+class ExtrasInput(BaseModel):
+    ids: List[str] = Field(default=[], max_length=400)
+
+
+_EXTRAS_CACHE: Dict[str, tuple] = {}   # card id -> (fetched at, prices, token ids)
+_TOKEN_CACHE: Dict[str, dict] = {}     # token id -> mapped token card
+_EXTRAS_TTL = 6 * 3600
+
+
+@api_router.post("/cards/extras")
+async def card_extras(data: ExtrasInput):
+    """Current prices for the given Scryfall card ids, and the tokens those cards make.
+    Prices change daily, so they come from Scryfall rather than the saved deck."""
+    ids = list(dict.fromkeys(i for i in data.ids if i))
+    now = datetime.now(timezone.utc).timestamp()
+    stale = [i for i in ids if i not in _EXTRAS_CACHE or now - _EXTRAS_CACHE[i][0] > _EXTRAS_TTL]
+    async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
+        if stale:
+            for c in await _collection_lookup(hc, [{"id": i} for i in stale]):
+                tokens = [p["id"] for p in c.get("all_parts") or []
+                          if p.get("component") == "token" and p.get("id") != c["id"]]
+                pr = c.get("prices") or {}
+                _EXTRAS_CACHE[c["id"]] = (now, {"usd": pr.get("usd"), "usd_foil": pr.get("usd_foil"), "tix": pr.get("tix")}, tokens)
+        token_ids = list(dict.fromkeys(t for i in ids if i in _EXTRAS_CACHE for t in _EXTRAS_CACHE[i][2]))
+        missing = [t for t in token_ids if t not in _TOKEN_CACHE]
+        if missing:
+            await asyncio.sleep(0.1)
+            for t in await _collection_lookup(hc, [{"id": t} for t in missing]):
+                _TOKEN_CACHE[t["id"]] = map_card(t)
+    if len(_EXTRAS_CACHE) > 20000:
+        _EXTRAS_CACHE.clear()
+    if len(_TOKEN_CACHE) > 5000:
+        _TOKEN_CACHE.clear()
+    # The same token often exists in several printings: show each token name once.
+    tokens, seen = [], set()
+    for t in token_ids:
+        tok = _TOKEN_CACHE.get(t)
+        if not tok:
+            continue
+        key = (tok["name"], tok.get("oracle_text", ""), tok.get("type_line", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        makers = [i for i in ids if i in _EXTRAS_CACHE and t in _EXTRAS_CACHE[i][2]]
+        tokens.append({**{k: tok[k] for k in ("id", "name", "type_line", "oracle_text", "image", "colors")}, "made_by": makers})
+    return {
+        "prices": {i: _EXTRAS_CACHE[i][1] for i in ids if i in _EXTRAS_CACHE},
+        "tokens": tokens,
+    }
 
 @api_router.get("/cards/autocomplete")
 async def card_autocomplete(q: str = ""):
