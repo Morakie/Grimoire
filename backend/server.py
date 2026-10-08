@@ -1223,12 +1223,20 @@ async def start_draft(share_id: str):
     # Card knowledge for bots and pick suggestions: Spellbook combos plus CubeCobra ratings and
     # package partners (usually cached while the lobby filled up; bot tables wait a little for them).
     has_bots = any(p.get("is_bot") for p in d["players"])
-    update["bot_combos"] = [c.to_dict() for c in await fetch_combos(build_card_index(d["cube"]))]
-    try:
-        await ensure_stats(db, _cube_names(d["cube"]), budget_s=12.0 if has_bots else 2.0)
-        update["bot_stats"] = await draft_stats(db, d["cube"])
-    except Exception as exc:  # bots and suggestions still work without these
-        logger.warning("CubeCobra card stats unavailable: %s", exc)
+
+    async def _stats():
+        try:
+            await ensure_stats(db, _cube_names(d["cube"]), budget_s=12.0 if has_bots else 2.0)
+            return await draft_stats(db, d["cube"])
+        except Exception as exc:  # bots and suggestions still work without these
+            logger.warning("CubeCobra card stats unavailable: %s", exc)
+            return None
+
+    # Both lookups can take several seconds for a cube the server hasn't seen before: run them together.
+    combos, stats = await asyncio.gather(fetch_combos(build_card_index(d["cube"])), _stats())
+    update["bot_combos"] = [c.to_dict() for c in combos]
+    if stats is not None:
+        update["bot_stats"] = stats
     if update.get("packs"):
         # Fetching card knowledge above can take a few seconds: start the pick clocks now, not before.
         later = datetime.now(timezone.utc).isoformat()

@@ -58,6 +58,7 @@ export default function DraftRoom() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [building, setBuilding] = useState(null);   // seat whose deck is being built
+  const [starting, setStarting] = useState(false);  // Start pressed: bots' card data is being prepared
   const [draft, setDraft] = useState(null);
   const [state, setRawState] = useState(null);
   // Ignore responses older than what's on screen: a poll sent just before a pick can arrive just after
@@ -222,8 +223,13 @@ export default function DraftRoom() {
   };
 
   const start = async () => {
-    try { const { data } = await api.post(`/drafts/${shareId}/start`); setDraft((d) => ({ ...d, ...data })); toast.success("Draft started"); }
-    catch (e) { toast.error(e.response?.data?.detail || "Cannot start"); }
+    if (starting) return;
+    setStarting(true);
+    try { const { data } = await api.post(`/drafts/${shareId}/start`, null, { timeout: 90000 }); setDraft((d) => ({ ...d, ...data })); toast.success("Draft started"); }
+    catch (e) {
+      // If the request timed out, the draft may still have started: the next poll will show it.
+      toast.error(e.response?.data?.detail || (!e.response ? "Still starting… the table will switch over as soon as it's ready." : "Cannot start"));
+    } finally { setStarting(false); }
   };
 
   const addBot = async () => {
@@ -743,9 +749,12 @@ export default function DraftRoom() {
                 ) : (
                   <div className="flex items-center gap-2 text-green-400 text-sm"><Check className="w-4 h-4" /> You are <b>{me.name}</b> — seat(s) {me.seats.map((s) => s + 1).join(", ")}</div>
                 )}
-                <Button data-testid="start-draft" onClick={start} disabled={state.seats.some((s) => !s.player_name)} className="w-full mt-4 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold disabled:opacity-40">
-                  Start draft {state.seats.some((s) => !s.player_name) ? "(waiting for all seats)" : ""}
+                <Button data-testid="start-draft" onClick={start} disabled={starting || state.seats.some((s) => !s.player_name)} className="w-full mt-4 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold disabled:opacity-40">
+                  {starting
+                    ? <span className="flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Starting… getting card data for the bots</span>
+                    : <>Start draft {state.seats.some((s) => !s.player_name) ? "(waiting for all seats)" : ""}</>}
                 </Button>
+                {starting && <p className="text-[11px] text-slate-500 mt-2 text-center" data-testid="starting-note">The first draft with a new cube can take up to 30 seconds.</p>}
               </div>
             )}
 
