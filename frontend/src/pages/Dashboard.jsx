@@ -72,7 +72,7 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-[#060a14] grim-grain text-slate-100">
       <header className="border-b border-slate-800">
-        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2" data-testid="logo">
             <Sparkles className="w-5 h-5 text-amber-400" />
             <span className="font-display text-lg font-bold">Grimoire</span>
@@ -86,10 +86,10 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 py-10">
-        <div className="flex items-center justify-between mb-8">
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
+        <div className="flex flex-wrap items-end justify-between gap-4 mb-6 sm:mb-8">
           <div>
-            <h1 className="font-display text-3xl font-bold">My Decks</h1>
+            <h1 className="font-display text-2xl sm:text-3xl font-bold whitespace-nowrap">My Decks</h1>
             <p className="text-sm text-slate-400 mt-1">{decks ? `${decks.length} deck${decks.length === 1 ? "" : "s"}` : "Loading..."}</p>
           </div>
           <div className="flex items-center gap-2">

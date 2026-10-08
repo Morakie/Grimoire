@@ -229,7 +229,7 @@ export default function DeckBuilder() {
     <div className="h-screen flex flex-col bg-[#060a14] text-slate-100 overflow-hidden">
       {/* Header */}
       <header className="border-b border-slate-800 bg-[#070c17] shrink-0">
-        <div className="px-6 lg:px-10 py-3 flex items-center gap-3 flex-wrap">
+        <div className="px-3 sm:px-6 lg:px-10 py-2 sm:py-3 flex items-center gap-2 sm:gap-3 flex-wrap">
           <Button data-testid="back-btn" variant="ghost" size="icon" onClick={goBack} title="Back" className="text-slate-400 hover:text-white hover:bg-slate-800 shrink-0">
             <ArrowLeft className="w-5 h-5" />
           </Button>
@@ -276,7 +276,7 @@ export default function DeckBuilder() {
           </div>
         </div>
         {/* Find & add cards */}
-        <div className="px-6 lg:px-10 pb-3">
+        <div className="px-3 sm:px-6 lg:px-10 pb-2 sm:pb-3">
           <CardSearchBar onAdd={addCard} target={target} setTarget={setTarget} targets={targets} />
         </div>
       </header>

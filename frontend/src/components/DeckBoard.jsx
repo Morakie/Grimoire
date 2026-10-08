@@ -20,7 +20,23 @@ const CATS = [
 const parseCardId = (id) => { const p = id.split("|"); return { cat: p[1], cid: p[2] }; };
 const parseContId = (id) => { const p = id.split("|"); return { cat: p[1], grp: p[2] }; };
 
-function BoardCard({ card, category, view, format, index, readOnly, onQty, onRemove, onPrintings, onMove, commanderMode, stacked = true }) {
+// Grid card width: 168 px, or 146 px on phones so two columns fit side by side. Stacked cards
+// overlap so only the top ~46 px (name and cost) of each card below the first shows.
+const narrowScreen = () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia("(max-width: 639px)").matches;
+function useCardWidth() {
+  const [w, setW] = useState(() => (narrowScreen() ? 146 : 168));
+  useEffect(() => {
+    if (!window.matchMedia) return undefined;
+    const mq = window.matchMedia("(max-width: 639px)");
+    const on = () => setW(mq.matches ? 146 : 168);
+    mq.addEventListener ? mq.addEventListener("change", on) : mq.addListener(on);
+    return () => (mq.removeEventListener ? mq.removeEventListener("change", on) : mq.removeListener(on));
+  }, []);
+  return w;
+}
+const stackOffset = (w) => -(Math.round(w / 0.716) - 46);
+
+function BoardCard({ card, category, view, format, index, readOnly, onQty, onRemove, onPrintings, onMove, commanderMode, stacked = true, cardW = 168 }) {
   const sortId = `card|${category}|${card.id}`;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: sortId, disabled: readOnly });
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1, zIndex: isDragging ? 60 : undefined };
@@ -36,8 +52,9 @@ function BoardCard({ card, category, view, format, index, readOnly, onQty, onRem
 
   if (view === "grid") {
     return (
-      <div ref={setNodeRef} style={{ ...style, marginTop: stacked && index > 0 ? -188 : 0 }} data-testid={`deck-card-${card.id}`}
-        className="group relative rounded-lg hover:z-50 focus-within:z-50 transition-[margin] duration-150 hover:-translate-y-0 hover:mt-0">
+      // tabIndex lets a tap on a touch screen focus the card, which reveals its buttons (no hover there).
+      <div ref={setNodeRef} style={{ ...style, marginTop: stacked && index > 0 ? stackOffset(cardW) : 0 }} data-testid={`deck-card-${card.id}`} tabIndex={readOnly ? undefined : 0}
+        className="group relative rounded-lg hover:z-50 focus-within:z-50 focus:z-50 outline-none transition-[margin] duration-150 hover:-translate-y-0 hover:mt-0">
         <div {...dragProps} className={`relative rounded-lg overflow-hidden border border-slate-800 shadow-lg ${readOnly ? "" : "cursor-grab active:cursor-grabbing"}`}>
           <div className="aspect-[0.716] bg-slate-800">
             {card.image ? <img src={card.image} alt={card.name} loading="lazy" className="w-full h-full object-cover pointer-events-none" />
@@ -46,7 +63,7 @@ function BoardCard({ card, category, view, format, index, readOnly, onQty, onRem
           <span className="absolute top-1 left-1 bg-black/80 text-amber-400 text-xs font-bold rounded px-1.5 py-0.5 tabular-nums">{card.quantity}×</span>
         </div>
         {!readOnly && (
-          <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 group-focus:opacity-100 focus-within:opacity-100 transition-opacity">
             {canToggleCommander && (
               <button data-testid={`commander-toggle-${card.id}`} onClick={toggleCommander} title={commanderTitle} className="w-6 h-6 rounded bg-black/80 text-white hover:bg-amber-500 hover:text-stone-900 flex items-center justify-center"><CommanderIcon className="w-3.5 h-3.5" /></button>
             )}
@@ -167,11 +184,11 @@ function CommandZone({ cards, readOnly, handlers }) {
 
 // `wide` columns span the full board width: cards flow in rows (grid view) or newspaper-style
 // columns (text view) instead of one tall stack. Used for Lands.
-function Column({ cat, groupKey, label, count, cards, view, format, readOnly, group, handlers, wide = false }) {
+function Column({ cat, groupKey, label, count, cards, view, format, readOnly, group, handlers, wide = false, cardW = 168 }) {
   const { setNodeRef, isOver } = useDroppable({ id: `cont|${cat}|${groupKey}` });
   const items = cards.map((c) => `card|${cat}|${c.id}`);
   return (
-    <div className={`${wide ? "w-full" : view === "grid" ? "w-[168px]" : "w-full sm:w-64"} shrink-0`} data-testid={`column-${cat}-${groupKey}`}>
+    <div className={`${wide ? "w-full" : view === "grid" ? "" : "w-full sm:w-64"} shrink-0`} style={!wide && view === "grid" ? { width: cardW } : undefined} data-testid={`column-${cat}-${groupKey}`}>
       {group !== "custom" && (
         <div className="flex items-center justify-between mb-2 px-1">
           <h4 className="text-xs font-display font-semibold uppercase tracking-wide text-slate-300 truncate">{label}</h4>
@@ -186,9 +203,9 @@ function Column({ cat, groupKey, label, count, cards, view, format, readOnly, gr
             const cardEl = (
               <BoardCard key={c.id} card={c} category={cat} view={view} index={i} format={format} readOnly={readOnly}
                 onQty={handlers.onQty} onRemove={handlers.onRemove} onPrintings={handlers.onPrintings}
-                onMove={handlers.onMove} commanderMode={handlers.commanderMode} stacked={!wide} />
+                onMove={handlers.onMove} commanderMode={handlers.commanderMode} stacked={!wide} cardW={cardW} />
             );
-            return wide && view === "grid" ? <div key={c.id} className="w-[168px]">{cardEl}</div> : cardEl;
+            return wide && view === "grid" ? <div key={c.id} style={{ width: cardW }}>{cardEl}</div> : cardEl;
           })}
           {cards.length === 0 && (
             <div className="h-10 flex items-center justify-center text-[11px] text-slate-600">Drop here</div>
@@ -204,6 +221,7 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
   const [group, setGroup] = useState(() => localStorage.getItem("grim_group") || "type");
   const [sort, setSort] = useState(() => localStorage.getItem("grim_sort") || "manual");
   const [activeCard, setActiveCard] = useState(null);
+  const cardW = useCardWidth();
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
   useEffect(() => { localStorage.setItem("grim_view_v2", view); }, [view]);
@@ -300,14 +318,14 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
   return (
     <div className="flex-1 overflow-y-auto flex flex-col" data-testid="deck-board">
       {/* Toolbar */}
-      <div className="sticky top-0 z-20 bg-[#0a1120]/95 backdrop-blur border-b border-slate-800 px-6 lg:px-10 py-2.5 flex items-center gap-3 flex-wrap">
+      <div className="sticky top-0 z-20 bg-[#0a1120]/95 backdrop-blur border-b border-slate-800 px-3 sm:px-6 lg:px-10 py-2 sm:py-2.5 flex items-center gap-2 sm:gap-3 overflow-x-auto sm:flex-wrap">
         <Control label="View" value={view} onChange={setView} options={VIEW_OPTIONS} testid="view-select" />
         <Control label="Group" value={group} onChange={setGroup} options={GROUP_OPTIONS} testid="group-select" />
         <Control label="Sort" value={sort} onChange={setSort} options={SORT_OPTIONS} testid="sort-select" />
         {!readOnly && <span className="text-[11px] text-slate-500 ml-auto hidden md:block">Drag cards to reorder or move between sections</span>}
       </div>
 
-      <div className="flex-1 px-6 lg:px-10 py-6">
+      <div className="flex-1 px-3 sm:px-6 lg:px-10 py-4 sm:py-6">
         {isEmpty && (
           <div className="h-full min-h-[280px] flex flex-col items-center justify-center text-center gap-2 text-slate-500">
             <Layers className="w-10 h-10 text-slate-700" />
@@ -333,18 +351,18 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
                     <h3 className="text-sm font-display font-bold uppercase tracking-wide text-amber-400/90">{c.label}</h3>
                     <span className="text-xs text-slate-500 tabular-nums" data-testid={`count-${c.key}`}>{totalCount(deck[c.key])}</span>
                   </div>
-                  <div className="flex flex-wrap gap-x-5 gap-y-6 items-start">
+                  <div className="flex flex-wrap gap-x-3 sm:gap-x-5 gap-y-6 items-start">
                     {sectionEmpty ? (
-                      <Column cat={c.key} groupKey="__auto__" label="" count={0} cards={[]} view={view} format={format} readOnly={readOnly} group={group} handlers={handlers} />
+                      <Column cat={c.key} groupKey="__auto__" label="" count={0} cards={[]} view={view} format={format} readOnly={readOnly} group={group} handlers={handlers} cardW={cardW} />
                     ) : cols.map((col) => (
                       <Column key={col.key} cat={c.key} groupKey={col.key} label={col.key === "all" ? c.label : col.key}
-                        count={totalCount(col.cards)} cards={col.cards} view={view} format={format} readOnly={readOnly} group={group} handlers={handlers} />
+                        count={totalCount(col.cards)} cards={col.cards} view={view} format={format} readOnly={readOnly} group={group} handlers={handlers} cardW={cardW} />
                     ))}
                   </div>
                   {!sectionEmpty && landCol && (
                     <div className="mt-6">
                       <Column cat={c.key} groupKey="Lands" label="Lands" count={totalCount(landCol.cards)} cards={landCol.cards}
-                        view={view} format={format} readOnly={readOnly} group={group} handlers={handlers} wide />
+                        view={view} format={format} readOnly={readOnly} group={group} handlers={handlers} wide cardW={cardW} />
                     </div>
                   )}
                 </section>
@@ -372,10 +390,10 @@ export default function DeckBoard({ deck, format, showCommander, readOnly = fals
 
 function Control({ label, value, onChange, options, testid }) {
   return (
-    <label className="flex items-center gap-2">
+    <label className="flex items-center gap-1.5 sm:gap-2 shrink-0">
       <span className="text-xs text-slate-500">{label}</span>
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger data-testid={testid} className="h-8 w-36 bg-slate-900 border-slate-700 text-slate-200 text-xs"><SelectValue /></SelectTrigger>
+        <SelectTrigger data-testid={testid} className="h-8 w-[7.5rem] sm:w-36 bg-slate-900 border-slate-700 text-slate-200 text-xs"><SelectValue /></SelectTrigger>
         <SelectContent className="bg-slate-900 border-slate-700 text-slate-200">
           {options.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
         </SelectContent>
