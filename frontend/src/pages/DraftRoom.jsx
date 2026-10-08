@@ -15,6 +15,12 @@ function storeKey(sid) { return `grim_draft_${sid}`; }
 
 const COLOR_ORDER = { W: 0, U: 1, B: 2, R: 3, G: 4 };
 const TYPE_RANK = ["Creature", "Planeswalker", "Instant", "Sorcery", "Artifact", "Enchantment", "Battle", "Land"];
+// Desktop card sizes: columns in the card pool at large widths.
+const CARD_SIZES = [
+  { k: "s", label: "S", cols: "lg:grid-cols-6 2xl:grid-cols-7" },
+  { k: "m", label: "M", cols: "lg:grid-cols-5" },
+  { k: "l", label: "L", cols: "lg:grid-cols-4" },
+];
 const SORTS = [{ k: "elo", label: "Rank" }, { k: "name", label: "Name" }, { k: "color", label: "Color" }, { k: "type", label: "Type" }, { k: "cmc", label: "CMC" }];
 const cardCols = (c) => (c?.colors?.length ? c.colors : (c?.color_identity || []));
 const colorKey = (c) => { const cols = cardCols(c); if (!cols.length) return 99; if (cols.length > 1) return 50 + cols.length; return COLOR_ORDER[cols[0]] ?? 90; };
@@ -66,6 +72,7 @@ export default function DraftRoom() {
   const [sheet, setSheet] = useState(null);            // mobile bottom sheet: "queue" | "feed" | "chat"
   const [previewCard, setPreviewCard] = useState(null); // mobile tap-to-preview
   const seatStripRef = useRef(null);
+  const [cardSize, setCardSize] = useState(() => localStorage.getItem("grim_draft_card_size") || "m");
   const [muted, setMuted] = useState(() => localStorage.getItem("grim_draft_muted") === "true");
   const [queue, setQueue] = useState(() => { try { return JSON.parse(localStorage.getItem(`grim_draft_queue_${shareId}`)) || []; } catch { return []; } });
   const hostToken = useMemo(() => { try { return localStorage.getItem(`grim_draft_host_${shareId}`); } catch { return null; } }, [shareId]);
@@ -108,6 +115,17 @@ export default function DraftRoom() {
   // Auto-pick from the queue whenever it's our turn — re-runs on every state/queue change so
   // it keeps picking across consecutive turns, wheel-backs and multi-seat players.
   useEffect(() => { if (state && me) autoPickRef.current(); }, [state, me, queue]);
+
+  // Seats are shuffled when the draft starts: keep our stored seat list in sync with the server's.
+  useEffect(() => {
+    if (!me || !state) return;
+    const p = (state.players || []).find((x) => x.id === me.player_id);
+    if (p && JSON.stringify(p.seats) !== JSON.stringify(me.seats)) {
+      const next = { ...me, seats: p.seats };
+      localStorage.setItem(storeKey(shareId), JSON.stringify(next));
+      setMe(next);
+    }
+  }, [state, me, shareId]);
 
   // Phones: keep the seat on the clock centred in the sideways-scrolling seat strip.
   const clockSeat = state?.current_seat_index;
@@ -280,13 +298,20 @@ export default function DraftRoom() {
               className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${sortBy === s.k ? "border-amber-400 text-amber-300 bg-amber-400/10" : "border-slate-700 text-slate-400 hover:text-slate-200"}`}>{s.label}</button>
           ))}
         </div>
+        <div className="hidden lg:flex items-center gap-1" data-testid="card-size-controls">
+          <span className="text-xs text-slate-500 mr-1">Size</span>
+          {CARD_SIZES.map((z) => (
+            <button key={z.k} data-testid={`card-size-${z.k}`} onClick={() => { setCardSize(z.k); localStorage.setItem("grim_draft_card_size", z.k); }}
+              className={`text-xs w-7 py-1 rounded-full border transition-colors ${cardSize === z.k ? "border-amber-400 text-amber-300 bg-amber-400/10" : "border-slate-700 text-slate-400 hover:text-slate-200"}`}>{z.label}</button>
+          ))}
+        </div>
         <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none" data-testid="hide-picked-toggle">
           <input type="checkbox" checked={hidePicked} onChange={(e) => setHidePicked(e.target.checked)} className="accent-amber-400 w-3.5 h-3.5" /> Hide picked
         </label>
         <span className="text-xs text-slate-500 ml-auto">{availableCount} available</span>
       </div>
       <div className="lg:max-h-[calc(100vh-280px)] lg:overflow-y-auto lg:pr-1 lg:-mr-1">
-        <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3" data-testid="available-cards">
+        <div className={`grid grid-cols-3 sm:grid-cols-4 ${(CARD_SIZES.find((z) => z.k === cardSize) || CARD_SIZES[1]).cols} gap-2 sm:gap-3`} data-testid="available-cards">
           {poolCards.map((c) => {
             const isPicked = pickedIds.has(c.id);
             const clickable = myTurn && !isPicked && !picking;
@@ -329,7 +354,7 @@ export default function DraftRoom() {
           {fit && <colgroup><col className="w-8" /><col className="w-5" />{seatsSorted.map((s) => <col key={s.index} />)}</colgroup>}
           <thead className="sticky top-0 z-10">
             <tr className="bg-[#0b111e]">
-              <th className="px-2 py-1.5 text-left text-slate-500 w-8 text-xs">#</th>
+              <th className="px-2 py-1.5 text-left text-slate-500 w-8 text-xs sticky left-0 z-10 bg-[#0b111e]">#</th>
               <th className="w-6 bg-[#0b111e]"></th>
               {seatsSorted.map((s) => (
                 <th key={s.index} title={s.player_name || ""} className={`${dense ? "px-1.5" : "px-3"} py-1.5 text-left font-display text-slate-100 border-l border-slate-800 truncate ${dense ? "text-[11px]" : "text-xs sm:text-sm min-w-[112px] sm:min-w-[160px]"} ${compact ? "min-w-[96px]" : ""}`}>
@@ -343,7 +368,7 @@ export default function DraftRoom() {
               <tr><td colSpan={seatsSorted.length + 2} className="px-4 py-6 text-center text-sm text-slate-500">No picks yet.</td></tr>
             ) : Array.from({ length: maxRows }).map((_, r) => (
               <tr key={r} className="border-t border-slate-800/60">
-                <td className="px-2 py-0.5 text-slate-500 tabular-nums text-xs">{r + 1}</td>
+                <td className="px-2 py-0.5 text-slate-500 tabular-nums text-xs sticky left-0 bg-[#0b111e]">{r + 1}</td>
                 <td className="px-1 text-slate-600 text-center text-xs">{r % 2 === 0 ? "→" : "←"}</td>
                 {seatsSorted.map((s, ci) => {
                   const pk = perSeat[ci][r];
@@ -489,7 +514,7 @@ export default function DraftRoom() {
   return (
     <div className="min-h-screen bg-[#060a14] text-slate-100 grim-grain">
       <header className="sticky top-0 z-30 border-b border-slate-800 bg-[#070c17]">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 py-3 flex items-center gap-2 sm:gap-3 flex-wrap">
+        <div className="max-w-7xl 2xl:max-w-[1760px] mx-auto px-3 sm:px-6 py-3 flex items-center gap-2 sm:gap-3 flex-wrap">
           <Link to="/" className="flex items-center gap-2"><Sparkles className="w-5 h-5 text-amber-400" /><span className="font-display text-lg font-bold">Grimoire</span></Link>
           <span className="text-slate-500">/</span>
           <span className="font-display font-semibold truncate min-w-0 max-w-[40vw] sm:max-w-none">{state.name}</span>
@@ -510,7 +535,7 @@ export default function DraftRoom() {
         </div>
       </header>
 
-      <main className={`max-w-7xl mx-auto px-3 sm:px-6 py-4 sm:py-6 ${state.status !== "lobby" ? "pb-28 lg:pb-6" : ""}`}>
+      <main className={`max-w-7xl 2xl:max-w-[1760px] mx-auto px-3 sm:px-6 py-4 sm:py-6 ${state.status !== "lobby" ? "pb-28 lg:pb-6" : ""}`}>
         <div ref={seatStripRef} className="relative flex gap-2 overflow-x-auto -mx-3 px-3 pb-1 mb-4 sm:mx-0 sm:px-0 sm:pb-0 sm:mb-6 sm:grid sm:grid-cols-2 lg:grid-cols-4 sm:gap-3 sm:overflow-visible" data-testid="seat-grid">
           {seatsSorted.map((s) => {
             const isCurrent = state.current_seat_index === s.index;
@@ -533,7 +558,7 @@ export default function DraftRoom() {
           })}
         </div>
 
-        <div className={`grid gap-6 items-start ${state.status === "drafting" ? "lg:grid-cols-[220px_minmax(0,1fr)_340px]" : "lg:grid-cols-[minmax(0,1fr)_340px]"}`}>
+        <div className={`grid gap-6 items-start ${state.status === "drafting" ? "lg:grid-cols-[220px_minmax(0,1fr)_340px] 2xl:grid-cols-[260px_minmax(0,1fr)_420px]" : "lg:grid-cols-[minmax(0,1fr)_340px] 2xl:grid-cols-[minmax(0,1fr)_420px]"}`}>
           {state.status === "drafting" && (
             <aside className="hidden lg:flex lg:sticky lg:top-20 self-start flex-col max-h-[calc(100vh-110px)] bg-[#0b111e] border border-slate-800 rounded-lg" data-testid="queue-panel">
               <div className="flex items-center gap-1.5 px-3 py-2 border-b border-slate-800 shrink-0">
@@ -622,7 +647,7 @@ export default function DraftRoom() {
 
           <aside className={`space-y-4 lg:sticky lg:top-20 self-start ${state.status === "lobby" ? "" : "hidden lg:block"}`} data-testid="draft-sidebar">
             {state.status !== "lobby" && (
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-2 h-[300px] flex items-center justify-center overflow-hidden" data-testid="card-preview">
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-2 h-[300px] 2xl:h-[440px] flex items-center justify-center overflow-hidden" data-testid="card-preview">
                 {hoverCard ? (
                   (hoverCard.image || hoverCard.art_crop)
                     ? <img src={hoverCard.image || hoverCard.art_crop} alt={hoverCard.name} className="max-h-full w-auto rounded-lg" />
@@ -712,7 +737,7 @@ export default function DraftRoom() {
               <span className="text-sm font-display font-semibold flex items-center gap-2"><Table2 className="w-4 h-4 text-amber-400" /> Draft table — quick glance</span>
               <button data-testid="mini-table-close" onClick={() => setShowMiniTable(false)} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
             </div>
-            <div className="overflow-auto p-3">{renderDraftTable(false, true)}</div>
+            <div className="overflow-auto p-3">{renderDraftTable(false, window.innerWidth >= 768)}</div>
           </div>
         </div>
       )}

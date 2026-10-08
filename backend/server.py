@@ -292,7 +292,40 @@ async def _collection_lookup(hc: httpx.AsyncClient, identifiers: List[dict]) -> 
             out.extend(r.json().get("data", []))
     return out
 
-async def _resolve_entries(entries: List[CollectionEntry]) -> Dict[str, Any]:
+_OLDEST_CACHE: Dict[str, dict] = {}   # oracle_id -> oldest paper printing (raw Scryfall card)
+
+
+async def _prefer_oldest(hc: httpx.AsyncClient, cards: List[dict]) -> List[dict]:
+    """Swap each card for its first paper printing (original art), when Scryfall has one.
+    Used wherever a list names cards without pinning a printing."""
+    wanted = list(dict.fromkeys(c["oracle_id"] for c in cards if c.get("oracle_id") and c["oracle_id"] not in _OLDEST_CACHE))
+    for i in range(0, len(wanted), 20):
+        await asyncio.sleep(0.1)
+        query = "(" + " or ".join(f"oracleid:{o}" for o in wanted[i:i + 20]) + ") not:reprint game:paper"
+        url, params, best = f"{SCRYFALL}/cards/search", {"q": query, "unique": "prints", "order": "released", "dir": "asc"}, {}
+        for _ in range(4):   # at most a few pages
+            r = await hc.get(url, params=params)
+            if r.status_code != 200:
+                break
+            payload = r.json()
+            for c in payload.get("data", []):
+                o = c.get("oracle_id")
+                cur = best.get(o)
+                # earliest release wins; a regular printing beats a promo from the same moment
+                if cur is None or (cur.get("promo") and not c.get("promo") and c.get("released_at") == cur.get("released_at")):
+                    best[o] = c
+            if not payload.get("has_more"):
+                break
+            url, params = payload["next_page"], None
+            await asyncio.sleep(0.1)
+        for o in wanted[i:i + 20]:
+            _OLDEST_CACHE[o] = best.get(o) or {}
+    if len(_OLDEST_CACHE) > 20000:
+        _OLDEST_CACHE.clear()
+    return [(_OLDEST_CACHE.get(c.get("oracle_id")) or c) for c in cards]
+
+
+async def _resolve_entries(entries: List[CollectionEntry], oldest: bool = True) -> Dict[str, Any]:
     """Resolve import entries in three passes: exact printing, exact name, fuzzy name."""
     entries = entries[:400]
     resolved: Dict[str, dict] = {}
@@ -328,6 +361,17 @@ async def _resolve_entries(entries: List[CollectionEntry]) -> Dict[str, Any]:
             if r.status_code == 200:
                 resolved[e.key] = r.json()
 
+        # Entries that didn't pin a printing get the original art.
+        if oldest:
+            pinned_keys = {e.key for e in entries if e.set and e.collector_number and e.key in resolved}
+            loose = [k for k in resolved if k not in pinned_keys]
+            if loose:
+                try:
+                    swapped = await _prefer_oldest(hc, [resolved[k] for k in loose])
+                    resolved.update(zip(loose, swapped))
+                except httpx.HTTPError as exc:   # keep Scryfall's default printings
+                    logger.warning("Oldest-printing lookup failed: %s", exc)
+
     return {
         "resolved": {k: map_card(c) for k, c in resolved.items()},
         "not_found": [e.name for e in entries if e.key not in resolved],
@@ -340,10 +384,10 @@ async def card_collection(data: CollectionInput):
     return await _collection_by_names(data.names)
 
 async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
-    """Resolve card names (e.g. a cube list). Misses get a second chance through the front face
-    and fuzzy matching, which catches split cards such as "Life // Death"."""
+    """Resolve card names (e.g. a cube list), using each card's original printing. Misses get a
+    second chance through the front face and fuzzy matching (e.g. split cards like "Life // Death")."""
     names = [n for n in names if n and n.strip()][:800]
-    found = []
+    raw = []
     missed = []
     async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
         for i in range(0, len(names), 75):
@@ -353,8 +397,13 @@ async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
             if r.status_code != 200:
                 continue
             payload = r.json()
-            found.extend(map_card(c) for c in payload.get("data", []))
+            raw.extend(payload.get("data", []))
             missed.extend(nf["name"] for nf in payload.get("not_found", []) if nf.get("name"))
+        try:
+            raw = await _prefer_oldest(hc, raw)
+        except httpx.HTTPError as exc:   # keep Scryfall's default printings
+            logger.warning("Oldest-printing lookup failed: %s", exc)
+    found = [map_card(c) for c in raw]
     if missed:
         retry = await _resolve_entries([CollectionEntry(key=str(i), name=n.split("//")[0].strip()) for i, n in enumerate(missed)])
         found.extend(retry["resolved"].values())
@@ -685,6 +734,18 @@ async def claim_seats(share_id: str, data: ClaimInput):
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": d["players"], "updated_at": datetime.now(timezone.utc).isoformat()}})
     return {"player_token": token, "player_id": pid, "name": name, "seats": assigned}
 
+def _shuffle_seats(d: dict) -> None:
+    """Randomise who sits where when the draft starts (seats stay spread around the snake)."""
+    slots = list(range(d["num_players"]))
+    random.shuffle(slots)
+    for slot, p in zip(slots, d["players"]):
+        p["seats"] = sorted(s["index"] for s in d["seats"] if s["index"] % d["num_players"] == slot)
+    for s in d["seats"]:
+        owner = next((p for p in d["players"] if s["index"] in p["seats"]), None)
+        s["player_id"] = owner["id"] if owner else None
+        s["player_name"] = owner["name"] if owner else None
+
+
 @api_router.post("/drafts/{share_id}/start")
 async def start_draft(share_id: str):
     d = await db.drafts.find_one({"share_id": share_id})
@@ -694,9 +755,11 @@ async def start_draft(share_id: str):
         raise HTTPException(status_code=400, detail="Already started")
     if any(s["player_id"] is None for s in d["seats"]):
         raise HTTPException(status_code=400, detail="Not all seats are claimed yet")
+    _shuffle_seats(d)
     order = compute_pick_order(d["num_seats"], d["double_draft_after"], d["pick_cap"], len(d["cube"]))
     now = datetime.now(timezone.utc).isoformat()
-    update = {"status": "drafting", "order": order, "started_at": now, "updated_at": now}
+    update = {"status": "drafting", "order": order, "started_at": now, "updated_at": now,
+              "seats": d["seats"], "players": d["players"]}
     if any(p.get("is_bot") for p in d["players"]):
         update["bot_combos"] = [c.to_dict() for c in await fetch_combos(build_card_index(d["cube"]))]
         # CubeCobra ratings and package partners (usually already cached while the lobby filled up).
