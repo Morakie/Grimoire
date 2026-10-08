@@ -97,11 +97,20 @@ def suggest_deck(pool: List[dict], index: Dict[str, CardInfo], size: int = 40) -
             if sum(basics.values()) >= n_basics:
                 break
             basics[col] += 1
-        if splash and basics.get(splash, 0) == 0 and not any(splash in l.produces for l in nonbasics):
-            donor = max(pair, key=lambda k: basics.get(k, 0))
-            if basics.get(donor, 0) > 1:
+        # Every colour the spells need gets at least 3 sources (2 for a splash), counting non-basic
+        # lands that make it; the extra basics come from the colour with the most.
+        for col, v in pips.items():
+            if v <= 0:
+                continue
+            floor = 2 if col == splash else 3
+            sources = basics.get(col, 0) + sum(1 for l in nonbasics if col in l.produces)
+            while sources < floor:
+                donor = max((k for k in basics if k != col), key=lambda k: basics[k], default=None)
+                if donor is None or basics[donor] <= floor:
+                    break
                 basics[donor] -= 1
-                basics[splash] = 1
+                basics[col] = basics.get(col, 0) + 1
+                sources += 1
     elif n_basics:
         basics = {"C": n_basics}                # colourless pool: Wastes
     basics = {k: v for k, v in basics.items() if v > 0}

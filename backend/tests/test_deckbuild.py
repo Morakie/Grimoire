@@ -42,3 +42,13 @@ def test_custom_cards_never_in_main():
     index = build_card_index(cube)
     out = suggest_deck(_pool(cube, ["custom-x"] + [f"U{i}" for i in range(20)]), index)
     assert "custom-x" not in out["main"]
+
+
+def test_minor_colour_gets_at_least_three_sources():
+    cube = synthetic_cube()
+    index = build_card_index(cube)
+    ids = [f"W{i}" for i in range(22)] + ["U1", "U2"]
+    out = suggest_deck(_pool(cube, ids), index)
+    if "U" in out["colors"]:
+        assert out["basics"].get("U", 0) >= 3
+    assert len(out["main"]) + sum(out["basics"].values()) == 40
