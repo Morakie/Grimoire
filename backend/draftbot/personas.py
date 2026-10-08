@@ -54,6 +54,7 @@ def random_persona(rng: random.Random) -> Persona:
 
 
 def bot_names(rng: random.Random, count: int, taken: List[str] = ()) -> List[str]:
-    pool = [n for n in _NAMES if n.lower() not in {t.lower() for t in taken}]
+    used = {t.lower().replace(" (bot)", "").strip() for t in taken}
+    pool = [n for n in _NAMES if n.lower() not in used]
     rng.shuffle(pool)
     return [f"{n} (bot)" for n in pool[:count]]

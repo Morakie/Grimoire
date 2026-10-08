@@ -124,7 +124,8 @@ def build_card_index(cube: Iterable[dict]) -> Dict[str, CardInfo]:
         text = (c.get("oracle_text") or "").lower()
         types = _types(c.get("type_line", ""))
         elo = float(c.get("elo") or mid)
-        power = min(1.15, max(-0.15, (elo - lo) / span))  # ~0..1, outliers slightly beyond
+        x = (elo - lo) / span                      # ~0 at the 5th percentile, 1 at the 95th
+        power = max(-0.15, x if x <= 1 else 1 + 0.7 * (x - 1))   # bombs keep standing out, gently compressed
         need = _cost_colors(c.get("mana_cost", ""))
         if "land" in types:
             need = frozenset()

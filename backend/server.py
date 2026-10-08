@@ -567,6 +567,7 @@ def draft_state(d: dict, light: bool = False) -> dict:
     }
     if not light:
         base["cube"] = d.get("cube", [])
+        base["bot_combos"] = [c["pieces"] for c in d.get("bot_combos", [])]
     else:
         base["picked_ids"] = picked_ids
     return base
@@ -817,8 +818,8 @@ def _bot_index(d: dict):
 
 
 def _bot_delay(share_id: str, pick_index: int) -> float:
-    """1.2–2.4 s, stable for a given pick so concurrent polls agree on when it's due."""
-    return 1.2 + random.Random(f"{share_id}:{pick_index}").random() * 1.2
+    """0.8–1.7 s (plus up to a 1 s poll), stable for a given pick so concurrent polls agree on when it's due."""
+    return 0.8 + random.Random(f"{share_id}:{pick_index}").random() * 0.9
 
 
 async def maybe_bot_pick(d: dict) -> dict:

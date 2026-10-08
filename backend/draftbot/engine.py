@@ -230,7 +230,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
 
     w_power = (1.0 - 0.45 * t) * p.w("power")
     w_combo = (0.35 + 0.45 * min(1.0, 2 * t)) * p.w("combo")
-    lane_floor = max(0.12, 0.8 - 1.4 * t) / p.w("lane")
+    lane_floor = min(0.95, max(0.12, 0.9 - 1.5 * t) / p.w("lane"))
     w_needs = max(0.0, (t - 0.45) * 1.8)
     w_float = (0.25 + 0.3 * min(1.0, 2 * t)) * p.w("float")
 
