@@ -819,6 +819,7 @@ def draft_state(d: dict, light: bool = False) -> dict:
         "current_seat_index": (d["order"][len(d.get("picks", []))] if d["status"] == "drafting" and len(d.get("picks", [])) < len(d.get("order", [])) else None),
         "messages": d.get("messages", [])[-50:],
         "mode": d.get("mode", "rotisserie"),
+        "rev": d.get("rev", 0),
     }
     if d.get("mode") == "packs":
         base.update({"pack_count": d.get("pack_count"), "pack_size": d.get("pack_size"), "timer": d.get("timer"),
@@ -986,14 +987,14 @@ async def list_open_drafts():
 
 @api_router.get("/drafts/{share_id}")
 async def get_draft(share_id: str):
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "bot_stats": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
     return draft_state(d)
 
 @api_router.get("/drafts/{share_id}/state")
 async def get_draft_state(share_id: str, x_player_token: Optional[str] = Header(default=None)):
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
     if d.get("mode") == "packs":
@@ -1037,9 +1038,8 @@ async def _save_pack_draft(d: dict) -> bool:
     return False
 
 
-def _auto_choice(d: dict, seat: int, rng: random.Random) -> str:
+def _auto_choice(d: dict, seat: int, rng: random.Random, index, combos) -> str:
     """The card a bot (or the timer) takes for `seat`: the bot engine's pick from that seat's pack."""
-    index, combos = _bot_index(d)
     st = d["packs"]
     owned = [p["card_id"] for p in d["picks"] if p["seat_index"] == seat]
     pack = pd.pack_for(st, seat)
@@ -1077,13 +1077,14 @@ async def pack_auto_actions(d: dict) -> dict:
             else:
                 continue
             rng = random.Random(f"{d['share_id']}:{seat}:{len(d['picks'])}")
-            card = await run_in_threadpool(_auto_choice, d, seat, rng)
+            index, combos = await _bot_index(d["share_id"])
+            card = await run_in_threadpool(_auto_choice, d, seat, rng, index, combos)
             pd.apply_pick(d, seat, card, now.isoformat(), **flags)
             acted = changed = True
         if not acted:
             break
     if changed and not await _save_pack_draft(d):
-        return await db.drafts.find_one({"share_id": d["share_id"]})
+        return await _draft(d["share_id"])
     return d
 
 
@@ -1096,14 +1097,15 @@ class PackAutopickInput(BaseModel):
 async def pack_autopick(share_id: str, data: PackAutopickInput):
     """Host: make the pick for a seat that's holding things up (e.g. someone left with the timer off)."""
     for _ in range(6):
-        d = await db.drafts.find_one({"share_id": share_id})
+        d = await _draft(share_id)
         if not d or d.get("mode") != "packs":
             raise HTTPException(status_code=404, detail="Pack draft not found")
         if d.get("host_token") != data.host_token:
             raise HTTPException(status_code=403, detail="Only the host can pick for a seat")
         if d["status"] != "drafting" or not pd.pack_for(d["packs"], data.seat_index):
             raise HTTPException(status_code=400, detail="That seat has no pack waiting")
-        card = await run_in_threadpool(_auto_choice, d, data.seat_index, random.Random())
+        index, combos = await _bot_index(share_id)
+        card = await run_in_threadpool(_auto_choice, d, data.seat_index, random.Random(), index, combos)
         pd.apply_pick(d, data.seat_index, card, auto=True)
         if await _save_pack_draft(d):
             return draft_state(d, light=True)
@@ -1112,7 +1114,7 @@ async def pack_autopick(share_id: str, data: PackAutopickInput):
 
 async def _pack_pick(share_id: str, data: "PickInput") -> dict:
     for _ in range(8):   # retry on concurrent writes (other players picking at the same moment)
-        d = await db.drafts.find_one({"share_id": share_id})
+        d = await _draft(share_id)
         if d["status"] != "drafting":
             raise HTTPException(status_code=400, detail="Draft is not active")
         player = _player_by_token(d, data.player_token)
@@ -1128,7 +1130,7 @@ async def _pack_pick(share_id: str, data: "PickInput") -> dict:
 
 @api_router.post("/drafts/{share_id}/claim")
 async def claim_seats(share_id: str, data: ClaimInput):
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
     if d["status"] != "lobby":
@@ -1168,7 +1170,7 @@ def _shuffle_seats(d: dict) -> None:
 
 @api_router.post("/drafts/{share_id}/start")
 async def start_draft(share_id: str):
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "bot_stats": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
     if d["status"] != "lobby":
@@ -1203,12 +1205,13 @@ async def start_draft(share_id: str):
         update["packs"]["since"] = {k: later for k in update["packs"]["since"]}
         update["started_at"] = update["updated_at"] = later
     await db.drafts.update_one({"share_id": share_id}, {"$set": update})
-    d = await db.drafts.find_one({"share_id": share_id})
+    _CARDS_CACHE.pop(share_id, None)      # rebuild the bots' card index with the fresh stats
+    d = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "bot_stats": 0})
     return draft_state(d)
 
 @api_router.post("/drafts/{share_id}/cancel")
 async def cancel_draft(share_id: str, data: CancelInput):
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
     if d.get("host_token") != data.host_token:
@@ -1219,7 +1222,7 @@ async def cancel_draft(share_id: str, data: CancelInput):
 @api_router.get("/drafts/{share_id}/build")
 async def build_from_pool(share_id: str, seat: int, size: int = 40, x_player_token: Optional[str] = Header(default=None)):
     """Suggested deck for one seat's picks: main deck card ids plus basic land counts by colour."""
-    d = await db.drafts.find_one({"share_id": share_id}, {"_id": 0})
+    d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
     if d.get("mode") == "packs" and d["status"] != "complete":
@@ -1228,13 +1231,14 @@ async def build_from_pool(share_id: str, seat: int, size: int = 40, x_player_tok
             raise HTTPException(status_code=403, detail="Picks are hidden until the draft ends")
     size = max(20, min(size, 100))
     picked = {p["card_id"] for p in d.get("picks", []) if p["seat_index"] == seat}
-    pool = [c for c in d["cube"] if c["id"] in picked and not c.get("is_custom")]
-    index, _ = _bot_index(d)
+    cards = await _cards(share_id)
+    pool = [c for c in cards["cube"] if c["id"] in picked and not c.get("is_custom")]
+    index = cards["index"]
     return await run_in_threadpool(suggest_deck, pool, index, size)
 
 @api_router.post("/drafts/{share_id}/pick")
 async def make_pick(share_id: str, data: PickInput):
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
     if d.get("mode") == "packs":
@@ -1253,18 +1257,18 @@ async def make_pick(share_id: str, data: PickInput):
     picked_ids = {p["card_id"] for p in d["picks"]}
     if data.card_id in picked_ids:
         raise HTTPException(status_code=409, detail="Card already taken")
-    if not any(c["id"] == data.card_id for c in d["cube"]):
+    if data.card_id not in (await _cards(share_id))["ids"]:
         raise HTTPException(status_code=400, detail="Card not in cube")
     d["picks"].append({"order": pick_index, "seat_index": data.seat_index, "card_id": data.card_id, "ts": datetime.now(timezone.utc).isoformat()})
     new_status = "complete" if len(d["picks"]) >= len(d["order"]) else "drafting"
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"picks": d["picks"], "status": new_status, "updated_at": datetime.now(timezone.utc).isoformat()}})
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await _draft(share_id)
     return draft_state(d, light=True)
 
 
 @api_router.post("/drafts/{share_id}/undo")
 async def undo_pick(share_id: str, data: CancelInput):
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
     if d.get("host_token") != data.host_token:
@@ -1275,13 +1279,13 @@ async def undo_pick(share_id: str, data: CancelInput):
         raise HTTPException(status_code=400, detail="No picks to undo")
     picks = d["picks"][:-1]
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"picks": picks, "status": "drafting", "updated_at": datetime.now(timezone.utc).isoformat()}})
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await _draft(share_id)
     return draft_state(d, light=True)
 
 
 @api_router.post("/drafts/{share_id}/reassign")
 async def reassign_pick(share_id: str, data: AdminPickInput):
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
     if d.get("host_token") != data.host_token:
@@ -1291,19 +1295,19 @@ async def reassign_pick(share_id: str, data: AdminPickInput):
     pk = next((p for p in d.get("picks", []) if p["order"] == data.order), None)
     if not pk:
         raise HTTPException(status_code=404, detail="Pick not found")
-    if not any(c["id"] == data.card_id for c in d["cube"]):
+    if data.card_id not in (await _cards(share_id))["ids"]:
         raise HTTPException(status_code=400, detail="Card not in cube")
     if any(p["card_id"] == data.card_id for p in d["picks"] if p["order"] != data.order):
         raise HTTPException(status_code=409, detail="Card already drafted")
     pk["card_id"] = data.card_id
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"picks": d["picks"], "updated_at": datetime.now(timezone.utc).isoformat()}})
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await _draft(share_id)
     return draft_state(d, light=True)
 
 
 @api_router.post("/drafts/{share_id}/chat")
 async def post_chat(share_id: str, data: ChatInput):
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
     player = next((p for p in d.get("players", []) if p["token"] == data.player_token), None)
@@ -1317,7 +1321,7 @@ async def post_chat(share_id: str, data: ChatInput):
     messages.append(msg)
     messages = messages[-200:]
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"messages": messages, "updated_at": datetime.now(timezone.utc).isoformat()}})
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await _draft(share_id)
     return draft_state(d, light=True)
 
 
@@ -1349,20 +1353,39 @@ def _warm_card_stats(cube: List[dict]) -> None:
     task.add_done_callback(_BACKGROUND.discard)
 
 
-_BOT_INDEX_CACHE: Dict[str, Any] = {}   # share_id -> (cube size, card index, combos)
+# Draft documents carry the whole cube plus CubeCobra stats (often over a megabyte). Polls and picks
+# load drafts WITHOUT those heavy fields; the cube and the bots' card index are loaded once per draft
+# and kept in memory (the cube never changes after the draft is created).
+_HEAVY = {"_id": 0, "cube": 0, "bot_stats": 0, "bot_combos": 0}
+_CARDS_CACHE: Dict[str, dict] = {}   # share_id -> {"cube", "ids", "index", "combos"}
 
 
-def _bot_index(d: dict):
-    cached = _BOT_INDEX_CACHE.get(d["share_id"])
-    if cached and cached[0] == len(d["cube"]):
-        return cached[1], cached[2]
-    index = build_card_index(d["cube"], d.get("bot_stats"))
-    combos = combos_from_dicts(d.get("bot_combos", []))
+async def _draft(share_id: str) -> Optional[dict]:
+    """A draft without its cube and card stats (what polls, picks and lobby actions need)."""
+    return await db.drafts.find_one({"share_id": share_id}, _HEAVY)
+
+
+async def _cards(share_id: str) -> dict:
+    """The draft's cube, card ids and bot card index, loaded once and cached."""
+    hit = _CARDS_CACHE.get(share_id)
+    if hit:
+        return hit
+    doc = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "cube": 1, "bot_stats": 1, "bot_combos": 1, "status": 1}) or {}
+    cube = doc.get("cube", [])
+    index = await run_in_threadpool(build_card_index, cube, doc.get("bot_stats"))
+    combos = combos_from_dicts(doc.get("bot_combos", []))
     attach_combos(index, combos)
-    if len(_BOT_INDEX_CACHE) > 50:
-        _BOT_INDEX_CACHE.clear()
-    _BOT_INDEX_CACHE[d["share_id"]] = (len(d["cube"]), index, combos)
-    return index, combos
+    entry = {"cube": cube, "ids": {c["id"] for c in cube}, "index": index, "combos": combos}
+    if doc.get("status") in ("drafting", "complete"):   # card stats are only final once the draft starts
+        if len(_CARDS_CACHE) > 40:
+            _CARDS_CACHE.clear()
+        _CARDS_CACHE[share_id] = entry
+    return entry
+
+
+async def _bot_index(share_id: str):
+    c = await _cards(share_id)
+    return c["index"], c["combos"]
 
 
 def _bot_delay(share_id: str, pick_index: int) -> float:
@@ -1401,7 +1424,7 @@ async def _bot_pick_once(d: dict) -> dict:
     if datetime.now(timezone.utc) < due:
         return d
 
-    index, combos = _bot_index(d)
+    index, combos = await _bot_index(d["share_id"])
     picks_by_seat: Dict[int, List[str]] = {s["index"]: [] for s in d["seats"]}
     for p in d["picks"]:
         picks_by_seat.setdefault(p["seat_index"], []).append(p["card_id"])
@@ -1414,7 +1437,7 @@ async def _bot_pick_once(d: dict) -> dict:
         card_id = await run_in_threadpool(choose_pick, ctx, rng)
     else:
         # Bots ignore custom cards, but if those are all that's left they take one so the draft can finish.
-        leftovers = [c["id"] for c in d["cube"] if c["id"] not in taken]
+        leftovers = [c["id"] for c in (await _cards(d["share_id"]))["cube"] if c["id"] not in taken]
         if not leftovers:
             return d
         card_id = rng.choice(leftovers)
@@ -1426,7 +1449,7 @@ async def _bot_pick_once(d: dict) -> dict:
         {"share_id": d["share_id"], "status": "drafting", "picks": {"$size": pick_index}},
         {"$push": {"picks": pick}, "$set": {"status": status, "updated_at": pick["ts"]}},
     )
-    return await db.drafts.find_one({"share_id": d["share_id"]})
+    return await _draft(d["share_id"])
 
 
 _SUGGEST_CACHE: Dict[tuple, list] = {}
@@ -1436,7 +1459,7 @@ _SUGGEST_CACHE: Dict[tuple, list] = {}
 async def pick_suggestions(share_id: str, seat: int, x_player_token: Optional[str] = Header(default=None)):
     """Two or three good picks for a seat right now, from the same engine the bots use.
     Rotisserie: uses only public information. Pack drafts: only the seat's own player may ask."""
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
     if d["status"] != "drafting" or not any(s["index"] == seat for s in d["seats"]):
@@ -1448,7 +1471,7 @@ async def pick_suggestions(share_id: str, seat: int, x_player_token: Optional[st
         pack = pd.pack_for(d["packs"], seat)
         if not pack:
             return {"suggestions": []}
-        index, combos = _bot_index(d)
+        index, combos = await _bot_index(share_id)
         owned = [p["card_id"] for p in d["picks"] if p["seat_index"] == seat]
         ranked = await run_in_threadpool(rank_pack, index, owned, pack, d["pick_cap"], combos)
         best = ranked[0][0] if ranked else 0
@@ -1456,7 +1479,7 @@ async def pick_suggestions(share_id: str, seat: int, x_player_token: Optional[st
     pick_index = len(d.get("picks", []))
     key = (share_id, pick_index, seat)
     if key not in _SUGGEST_CACHE:
-        index, combos = _bot_index(d)
+        index, combos = await _bot_index(share_id)
         picks_by_seat: Dict[int, List[str]] = {s["index"]: [] for s in d["seats"]}
         for p in d["picks"]:
             picks_by_seat.setdefault(p["seat_index"], []).append(p["card_id"])
@@ -1491,7 +1514,7 @@ def _seat_bot(d: dict, rng: random.Random) -> None:
 
 @api_router.post("/drafts/{share_id}/bots")
 async def add_bot(share_id: str, data: BotInput):
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
     if d.get("host_token") != data.host_token:
@@ -1502,13 +1525,13 @@ async def add_bot(share_id: str, data: BotInput):
         raise HTTPException(status_code=400, detail="All player slots are taken")
     _seat_bot(d, random.Random())
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": d["players"], "updated_at": datetime.now(timezone.utc).isoformat()}})
-    _warm_card_stats(d["cube"])
+    _warm_card_stats((await _cards(share_id))["cube"])
     return draft_state(d, light=True)
 
 
 @api_router.post("/drafts/{share_id}/bots/remove")
 async def remove_bot(share_id: str, data: BotRemoveInput):
-    d = await db.drafts.find_one({"share_id": share_id})
+    d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
     if d.get("host_token") != data.host_token:

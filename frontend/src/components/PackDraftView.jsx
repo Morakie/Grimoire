@@ -74,11 +74,13 @@ export default function PackDraftView({ shareId, draft, state, setState, me, hos
     if (!me || seat == null || busy || !card) return;
     setBusy(true);
     try {
-      const { data } = await api.post(`/drafts/${shareId}/pick`, { player_token: me.player_token, seat_index: seat, card_id: card.id });
+      const { data } = await api.post(`/drafts/${shareId}/pick`, { player_token: me.player_token, seat_index: seat, card_id: card.id }, { timeout: 15000 });
       setState(data);
       setSelected(null);
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Pick failed");
+      // 409 with "isn't in your pack" usually means the pick already went through on a slow connection.
+      toast.error(e.code === "ECONNABORTED" ? "The server is slow to answer. Your pick may still go through; try again if the pack doesn't change."
+        : (e.response?.data?.detail || "Pick failed"));
     } finally { setBusy(false); }
   };
 
@@ -218,6 +220,11 @@ export default function PackDraftView({ shareId, draft, state, setState, me, hos
             {!me ? (
               <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-8 text-center text-sm text-slate-400">
                 You're watching. Packs and picks are hidden until the draft ends.
+              </div>
+            ) : busy ? (
+              <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/30 p-10 text-center" data-testid="sending-pick">
+                <Loader2 className="w-6 h-6 text-amber-400 animate-spin mx-auto mb-3" />
+                <p className="text-sm text-slate-300">Taking {selected?.name || "your pick"} and passing the pack…</p>
               </div>
             ) : pack.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/30 p-10 text-center" data-testid="waiting-for-pack">

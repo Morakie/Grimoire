@@ -59,7 +59,18 @@ export default function DraftRoom() {
   const { user } = useAuth();
   const [building, setBuilding] = useState(null);   // seat whose deck is being built
   const [draft, setDraft] = useState(null);
-  const [state, setState] = useState(null);
+  const [state, setRawState] = useState(null);
+  // Ignore responses older than what's on screen: a poll sent just before a pick can arrive just after
+  // it and would briefly bring back the old pack. Pack drafts number every change ("rev").
+  const revRef = useRef(-1);
+  const setState = (next) => {
+    if (typeof next === "function") { setRawState(next); return; }
+    if (next && typeof next.rev === "number") {
+      if (next.rev < revRef.current) return;
+      revRef.current = next.rev;
+    }
+    setRawState(next);
+  };
   const [me, setMe] = useState(() => { try { return JSON.parse(localStorage.getItem(storeKey(shareId))) || null; } catch { return null; } });
   const [claimName, setClaimName] = useState("");
   const [query, setQuery] = useState("");
