@@ -60,7 +60,10 @@ def summarise(result: dict, combos: List[Combo]) -> List[dict]:
             "lane": "".join(sorted(lane, key="WUBRG".index)),
             "on_lane_pct": round(100 * len(on_lane) / max(len(spells), 1)),
             "avg_elo_top23": round(sum(c.elo for c in playables) / max(len(playables), 1)),
-            "lands_fixing": sum(1 for c in pool if c.is_land and c.is_fixing),
+            "lands_fixing": sum(1 for c in pool if c.is_land and c.is_fixing and len(c.produces & lane) >= 2),
+            "deck_creatures": sum(1 for c in playables if c.is_creature),
+            "deck_interaction": sum(1 for c in playables if c.roles & {"removal", "counter", "sweeper"}),
+            "deck_avg_mv": round(sum(c.cmc for c in playables) / max(len(playables), 1), 2),
             "combos": done,
             "picks": [index[c].name for c in ids],
         })
