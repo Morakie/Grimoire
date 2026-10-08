@@ -1058,13 +1058,14 @@ async def _save_pack_draft(d: dict) -> bool:
     rev = d.get("rev", 0)
     status = "complete" if pd.is_complete(d["packs"]) else "drafting"
     d["status"] = status
+    stamp = datetime.now(timezone.utc).isoformat()
     res = await db.drafts.update_one(
         {"share_id": d["share_id"], "rev": rev},
-        {"$set": {"packs": d["packs"], "picks": d["picks"], "status": status, "rev": rev + 1,
-                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        {"$set": {"packs": d["packs"], "picks": d["picks"], "status": status, "rev": rev + 1, "updated_at": stamp}},
     )
     if res.modified_count:
         d["rev"] = rev + 1
+        d["updated_at"] = stamp       # keep the version we report in step with the database
         return True
     return False
 
