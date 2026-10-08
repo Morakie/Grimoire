@@ -1,83 +1,81 @@
 # Draft bots: design
 
 Bots fill seats in a rotisserie cube draft. The host adds them in the lobby, and they pick on their own turns.
-The goal is picks that look like a competent human's: strong cards early, a coherent lane, real combo
-packages, and some variety from draft to draft without erratic choices.
+The goal is picks that look like a competent human's: strong cards early, two committed colours, real combo
+packages, a way to win, and some variety from draft to draft without erratic choices.
 
-The approach borrows CubeCobra's idea of several independent "oracles" whose scores are blended with weights
-that shift over the draft. Unlike CubeCobra, which simulates hidden booster packs, a rotisserie draft shows every
-remaining card and every player's picks. So these bots evaluate the whole remaining pool directly and treat
-other drafters' picks as signals.
+A rotisserie draft is one big face-up pack: every remaining card and every player's picks are visible. So bots
+score the whole remaining pool each pick and read other drafters' picks as signals. Nothing is tied to a specific
+cube: no card names are hard-coded, and custom cards (`is_custom`) are ignored.
 
 ## How bots join and pick
 
-- **Adding a bot:** in the lobby, the host can click **Add bot** to fill an empty player slot. A bot takes
-  seats exactly like a human (spread around the snake). It gets a name from a fixed list; names have no
-  connection to the hidden personality.
-- **Taking a turn:** picks run on the server. When the seat on the clock belongs to a bot, the next state poll
-  after a short, randomised delay (about 1–2.5 s after the previous pick) makes the pick. A guard on the pick
-  count makes this safe when several clients poll at once. While a bot is on the clock, clients poll a little faster.
+- **Adding a bot:** in the lobby, the host clicks **Add bot** to fill an empty player slot. A bot takes seats
+  exactly like a human (spread around the snake) and gets a name with no connection to its hidden personality.
+- **Taking a turn:** picks run on the server. When a bot is on the clock, the next state poll after a short,
+  randomised delay (0.8–1.7 s, scaled by `BOT_DELAY_SCALE`; set it to `0` on staging for instant test drafts)
+  makes the pick. A guard on the pick count makes this safe when several clients poll at once.
 - Bot picks appear in the pick feed like anyone else's. Host undo / reassign work on bot picks too.
 
-## Card knowledge (built once, when the draft starts)
+## Card knowledge
 
-1. **Features per card:** colors / color identity, mana value, types, CubeCobra Elo, and role tags from its rules
-   text (removal, counterspell, sweeper, ramp, fixing, card draw, tutor, threat/finisher, cheap interaction…).
-2. **Combo lines:** the cube list is checked against [Commander Spellbook](https://commanderspellbook.com),
-   a community database of real MTG combos (MIT-licensed, public API). Every combo whose pieces are all in the cube
-   is stored on the draft, e.g. *Underworld Breach + Lion's Eye Diamond + Brainstorm* or *Kiki-Jiki + Pestermite*.
-3. **Packages:** a small, curated list of enabler → payoff relationships that aren't strict combos, for example
-   reanimation (discard/self-mill outlets + reanimation spells → big creatures), cheat-into-play (Sneak Attack /
-   Show and Tell → fatties), artifact payoffs (Tinker / Urza → artifacts), and sacrifice outlets → death payoffs.
-   Membership comes from role tags plus an explicit card list, so it stays about *what the deck does*, not
-   creature types.
+Built when the draft starts and stored on the draft:
 
-## Scoring: the oracles
+1. **Features per card** (`features.py`): colours needed to cast (hybrid/Phyrexian are optional), colours a land
+   or rock produces, types, mana value, and role tags from rules text (removal, counter, ramp, burn, finisher,
+   aggro creature, reanimate, cheat, sac outlet, …).
+2. **Power:** CubeCobra Elo normalised to the cube (5th–95th percentile → 0–1, bombs above 1, gently compressed).
+   Cards with no Elo get the cube median, except fast mana (0–1 mana non-creature that taps for mana), which is
+   rated like the cube's best cards.
+3. **CubeCobra card stats** (`cardstats.py`): each card's CubeCobra page gives its current Elo (replaces the CSV
+   value) and the cards it is most often **drafted with** and **synergistic** with. These become in-cube
+   "package partners". Stats are cached in Mongo (`card_stats`, refreshed monthly), warmed in the background when
+   a bot joins the lobby, and turned into per-draft data at start (`bot_stats` on the draft). Missing stats just
+   fall back to the CSV.
+4. **Combos** (`combos.py`): the cube list is checked against [Commander Spellbook](https://commanderspellbook.com)
+   (MIT-licensed). Every combo fully contained in the cube is stored, weighted 0.6–1.0 by popularity.
+5. **Role packages:** a few enabler ↔ payoff pairs by role (reanimate/self-mill ↔ fatties, sac outlets ↔ death
+   payoffs, …).
 
-Each candidate card in the remaining pool gets a blended score:
+## Scoring each pick (`engine.py`)
 
-| Oracle | What it measures |
-|--------|------------------|
-| **Power** | Normalised CubeCobra Elo. |
-| **Lane fit** | How well the card fits the bot's best 2–3 colour lane. Lanes are re-evaluated every pick by scoring the bot's pool under each colour combination, so commitment grows naturally and is never hard-coded. |
-| **Combo & package** | For each combo line, the value of completing it, scaled by how many pieces the bot already holds and whether the missing pieces are still in the pool. One piece of a three-card combo is a mild nudge; two pieces makes the third a priority. A lone piece is never valued above its standalone power until the combo is realistically live. |
-| **Openness** | Colours and lines that other drafters are not taking (read from their picks and remaining supply) get a bonus; contested ones a penalty. |
-| **Float risk** | Rotisserie-specific: estimates whether the card will still be there at the bot's next turn, given how many picks happen in between and what the other drafters' lanes want. Cards nobody else wants can be safely taken later, so the bot takes the contested card now. |
-| **Needs** | Late in the draft: curve gaps, enough playables, removal count, and fixing for its colours. |
+1. **Power**, weighted a little less late in the draft. Dual/fetch lands count at half power at pick 1 (spells first).
+2. **Colours:** flexible for the first few picks (table "openness" signals help choose), committed to two colours
+   by about pick 10. After that off-colour cards keep only 10% of their value. A third colour is only a deliberate
+   splash: strong owned cards need it, and the bot then values fixing for it.
+3. **Combos and packages:** a combo piece is worth more as more of its line is owned (one piece is a nudge, two of
+   three makes the third a priority), scaled by how well all pieces fit the bot's colours. CubeCobra partners add
+   value for cards that go with what the bot already owns; role packages add a little more.
+4. **Fixing:** on-colour duals/fetches gain value from mid-draft, more if the bot has few.
+5. **Deck style:** once committed, a light nudge towards what that colour pair usually does.
+6. **Win condition:** from about a third of the way in, the bot checks it can win: a live, reasonably popular
+   combo line, about 6 threats (creatures/planeswalkers/finishers), or about 10 cheap attackers. The bigger the
+   gap, the more on-colour threats are worth. Decks that already have a plan are barely affected.
+7. **Late needs:** interaction, creatures and cheap spells if short; a penalty for too many expensive cards.
+8. **Float risk:** for the top candidates, each rival who picks before the bot's next turn ranks cards by their own
+   colours, combos and packages. Cards unlikely to be taken can wait, so a contested card is taken first.
 
-Weights shift by phase (as a fraction of the bot's total picks):
+The final pick is sampled among the top cards within 90% of the best score (low temperature), so bots usually
+take their best card and occasionally a close second. Hidden personalities nudge a few weights by about ±5%.
 
-- **Early:** mostly Power, light Lane fit, and Openness to stay flexible.
-- **Middle:** Lane fit, Combo & package and Float risk take over.
-- **Late:** Needs and Lane fit dominate, and new lanes are no longer explored.
-
-## Variety without instability
-
-- **Hidden personalities** nudge oracle weights by roughly ±10–15% (e.g. a bit more combo-minded, a bit more
-  aggressive-curve, a bit more signal-driven). They never add or remove oracles, so every bot remains a sound drafter.
-- **Choice noise:** the final pick is sampled from the top few cards with a low-temperature softmax, so the bot
-  usually takes its best card and occasionally a close second. Cards far behind the leader are never picked.
+All numbers live in `TUNING` in `engine.py`.
 
 ## Code layout
 
 ```
 backend/draftbot/
-  features.py    card features and role tags
-  combos.py      Commander Spellbook lookup and curated packages
-  engine.py      oracles, phase weights, lane evaluation, pick selection
-  personas.py    hidden personality profiles and bot names
+  features.py    card features, role tags, power
+  cardstats.py   CubeCobra ratings and package partners (fetch + cache)
+  combos.py      Commander Spellbook lookup and role packages
+  engine.py      scoring and pick selection
+  personas.py    hidden personalities and bot names
   simulate.py    bot-only draft simulation and metrics
 ```
 
-The engine is pure Python with no database access, so it is unit-tested directly.
+The engine is pure Python with no database access, so it is unit-tested directly (`backend/tests/test_draftbot.py`).
 
 ## Validation
 
-A simulation runs complete bot-only drafts on a real cube and reports:
-
-- lane coherence (share of each bot's picks that are castable in its final colours),
-- pick quality versus an Elo-greedy baseline,
-- combo lines completed,
-- how much outcomes vary between runs with different random seeds.
-
-Weights are tuned against these numbers before bots go to staging for a real test draft.
+`POST /api/bots/simulate` (only when `ENABLE_BOT_SIM=true`; staging only) runs a full bot-only draft of a CubeCobra
+cube and reports per seat: colours, share of spells on colour, win plan, creatures, fixing, combos completed and
+the pick list. `tuning` overrides any `TUNING` value for that run.
