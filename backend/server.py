@@ -820,6 +820,7 @@ def draft_state(d: dict, light: bool = False) -> dict:
         "messages": d.get("messages", [])[-50:],
         "mode": d.get("mode", "rotisserie"),
         "rev": d.get("rev", 0),
+        "version": f'{d.get("rev", 0)}|{d.get("updated_at")}',   # changes on every write (picks, chat, seats)
     }
     if d.get("mode") == "packs":
         base.update({"pack_count": d.get("pack_count"), "pack_size": d.get("pack_size"), "timer": d.get("timer"),
@@ -993,7 +994,15 @@ async def get_draft(share_id: str):
     return draft_state(d)
 
 @api_router.get("/drafts/{share_id}/state")
-async def get_draft_state(share_id: str, x_player_token: Optional[str] = Header(default=None)):
+async def get_draft_state(share_id: str, x_player_token: Optional[str] = Header(default=None),
+                          x_known_version: Optional[str] = Header(default=None)):
+    # Pack drafts poll every second or so. If nothing changed since the caller's last response and no
+    # bot or timer is due to act, answer from a ~2 KB summary instead of loading the whole draft.
+    if x_known_version:
+        probe = await db.drafts.find_one({"share_id": share_id}, _PACK_PROBE)
+        if probe and probe.get("mode") == "packs" and probe.get("status") == "drafting" \
+                and f'{probe.get("rev", 0)}|{probe.get("updated_at")}' == x_known_version and not _pack_action_due(probe):
+            return {"unchanged": True, "version": x_known_version, "server_time": datetime.now(timezone.utc).isoformat()}
     d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
@@ -1005,6 +1014,28 @@ async def get_draft_state(share_id: str, x_player_token: Optional[str] = Header(
 
 
 # ===================== Pack drafts =====================
+
+_PACK_PROBE = {"_id": 0, "share_id": 1, "rev": 1, "updated_at": 1, "status": 1, "mode": 1,
+               "packs.queues": 1, "packs.since": 1, "packs.contents": 1, "packs.timer": 1,
+               "players.seats": 1, "players.is_bot": 1}
+
+
+def _bot_due(share_id: str, seat: int, since: Optional[str], now: datetime) -> bool:
+    """A bot picks once its thinking time (seeded by when the pack arrived) has passed."""
+    return bool(since) and datetime.fromisoformat(since) + timedelta(seconds=_bot_delay(share_id, f"{seat}:{since}")) <= now
+
+
+def _pack_action_due(d: dict) -> bool:
+    """Whether a bot or an expired timer should pick right now (works on the small probe document)."""
+    st = d.get("packs") or {}
+    if not st.get("queues"):
+        return False
+    now = datetime.now(timezone.utc)
+    bots = {s for p in d.get("players", []) if p.get("is_bot") for s in p.get("seats", [])}
+    for s in pd.seats_waiting(st):
+        if s in bots and _bot_due(d["share_id"], s, st["since"].get(str(s)), now):
+            return True
+    return bool(pd.overdue(st, now.isoformat()))
 
 def _player_by_token(d: dict, token: Optional[str]) -> Optional[dict]:
     if not token:
@@ -1067,9 +1098,7 @@ async def pack_auto_actions(d: dict) -> dict:
         for seat in pd.seats_waiting(d["packs"]):
             since = d["packs"]["since"].get(str(seat))
             if seat in bot_seats:
-                n_picks = sum(1 for p in d["picks"] if p["seat_index"] == seat)
-                due = since and datetime.fromisoformat(since) + timedelta(seconds=_bot_delay(d["share_id"], seat * 1000 + n_picks)) <= now
-                if not due:
+                if not _bot_due(d["share_id"], seat, since, now):
                     continue
                 flags = {"bot": True}
             elif seat in overdue:

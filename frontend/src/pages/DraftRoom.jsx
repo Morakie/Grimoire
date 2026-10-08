@@ -63,12 +63,14 @@ export default function DraftRoom() {
   // Ignore responses older than what's on screen: a poll sent just before a pick can arrive just after
   // it and would briefly bring back the old pack. Pack drafts number every change ("rev").
   const revRef = useRef(-1);
+  const versionRef = useRef(null);     // last full state's version: lets pack-draft polls get a tiny "unchanged" reply
   const setState = (next) => {
     if (typeof next === "function") { setRawState(next); return; }
     if (next && typeof next.rev === "number") {
       if (next.rev < revRef.current) return;
       revRef.current = next.rev;
     }
+    versionRef.current = next?.mode === "packs" && next?.status === "drafting" ? next.version : null;
     setRawState(next);
   };
   const [me, setMe] = useState(() => { try { return JSON.parse(localStorage.getItem(storeKey(shareId))) || null; } catch { return null; } });
@@ -106,20 +108,32 @@ export default function DraftRoom() {
   // Pack drafts poll every second while drafting (bots and other players pass packs constantly).
   const botOnClock = !!(state && state.status === "drafting" && (state.mode === "packs" || (state.current_seat_index != null
     && (state.players || []).some((p) => p.is_bot && p.seats.includes(state.current_seat_index)))));
+  const finished = state?.status === "complete" || state?.status === "cancelled";
   const playerToken = me?.player_token;
   useEffect(() => {
     let active = true;
+    let inFlight = false;
     const tick = async () => {
+      if (inFlight) return;               // never stack polls on a slow connection
+      inFlight = true;
       try {
-        // The player token lets a pack draft show you your own packs and picks (hidden from everyone else).
-        const { data } = await api.get(`/drafts/${shareId}/state`, playerToken ? { headers: { "X-Player-Token": playerToken } } : undefined);
-        if (active) setState(data);
-      } catch {}
+        // The player token lets a pack draft show you your own packs and picks (hidden from everyone else);
+        // the known version lets the server answer "unchanged" cheaply when nothing happened.
+        const headers = {};
+        if (playerToken) headers["X-Player-Token"] = playerToken;
+        if (versionRef.current) headers["X-Known-Version"] = versionRef.current;
+        const { data } = await api.get(`/drafts/${shareId}/state`, { headers, timeout: 15000 });
+        if (!active) return;
+        if (data.unchanged) setState((s) => (s ? { ...s, server_time: data.server_time } : s));
+        else setState(data);
+      } catch {} finally { inFlight = false; }
     };
     tick();
-    const iv = setInterval(tick, botOnClock ? 1000 : 2000);
+    // Finished drafts barely change (chat only): poll slowly.
+    const iv = setInterval(tick, finished ? 10000 : botOnClock ? 1000 : 2000);
     return () => { active = false; clearInterval(iv); };
-  }, [shareId, botOnClock, playerToken]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shareId, botOnClock, playerToken, finished]);
 
   useEffect(() => { localStorage.setItem(`grim_draft_queue_${shareId}`, JSON.stringify(queue)); }, [queue, shareId]);
 
@@ -660,7 +674,7 @@ export default function DraftRoom() {
                   {s.player_name || <span className="text-slate-600">unclaimed</span>}
                 </div>
                 {isCurrent && <div className="text-[11px] text-amber-400 mt-0.5">On the clock</div>}
-                <div className="text-[11px] text-slate-500 mt-0.5 truncate" data-testid={`seat-last-${s.index}`}>{last ? <>Last: <span className="text-slate-400">{last.name}</span></> : "No picks yet"}</div>
+                <div className="text-[11px] text-slate-500 mt-0.5 truncate" data-testid={`seat-last-${s.index}`}>{state.mode === "packs" ? "" : last ? <>Last: <span className="text-slate-400">{last.name}</span></> : "No picks yet"}</div>
               </div>
             );
           })}
@@ -752,9 +766,12 @@ export default function DraftRoom() {
               <div data-testid="draft-complete">
                 <div className="mb-4 flex items-center gap-3 flex-wrap">
                   <h2 className="font-display text-2xl font-bold flex items-center gap-2">Draft complete <PartyPopper className="w-6 h-6 text-amber-400" /></h2>
-                  {viewTabs([["pick", "Results", ListChecks], ["table", "Draft Table", Table2], ["decks", "Decks", Eye]])}
+                  {/* Pack drafts never show the pick order (no draft table or pick feed), only each seat's pool. */}
+                  {viewTabs(state.mode === "packs"
+                    ? [["pick", "Results", ListChecks], ["decks", "Decks", Eye]]
+                    : [["pick", "Results", ListChecks], ["table", "Draft Table", Table2], ["decks", "Decks", Eye]])}
                 </div>
-                {view === "table" ? renderDraftTable() : view === "decks" ? renderDecks() : renderResults()}
+                {view === "table" && state.mode !== "packs" ? renderDraftTable() : view === "decks" ? renderDecks() : renderResults()}
                 <p className="text-xs text-slate-500 mt-4">Open any seat's deck in the builder to tweak and save it.</p>
               </div>
             )}
@@ -772,7 +789,7 @@ export default function DraftRoom() {
                 )}
               </div>
             )}
-            {pickFeed.length > 0 && (
+            {pickFeed.length > 0 && state.mode !== "packs" && (
               <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4" data-testid="pick-feed">
                 <h3 className="font-display font-semibold text-sm mb-3 flex items-center gap-2"><ListChecks className="w-4 h-4 text-amber-400" /> Pick feed</h3>
                 <div className="max-h-72 overflow-y-auto pr-1">{renderFeedList()}</div>
@@ -797,7 +814,7 @@ export default function DraftRoom() {
           <div className="flex">
             {[
               ...(state.status === "drafting" ? [["queue", `Queue${queue.length ? ` (${queue.length})` : ""}`, Bookmark]] : []),
-              ["feed", "Picks", ListChecks],
+              ...(state.mode === "packs" ? [] : [["feed", "Picks", ListChecks]]),
               ["chat", `Chat${(state.messages || []).length ? ` (${state.messages.length})` : ""}`, MessageSquare],
             ].map(([k, label, Icon]) => (
               <button key={k} data-testid={`mobile-${k}`} onClick={() => setSheet(k)} className="flex-1 flex flex-col items-center gap-0.5 py-2 text-[11px] text-slate-300 active:text-amber-300">
