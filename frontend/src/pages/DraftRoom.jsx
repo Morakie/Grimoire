@@ -180,7 +180,9 @@ export default function DraftRoom() {
   // VRD picker list: the highest-rated undrafted cards, or the results of a search.
   const vrdPickCount = state?.picks?.length || 0;
   const [vrdRetry, setVrdRetry] = useState(0);
+  const vrdSeq = useRef(0);   // only the latest list request may update the list (no stale overwrites)
   const loadVrdList = async (search) => {
+    const mine = ++vrdSeq.current;
     setVrdLoading(true);
     try {
       let cards;
@@ -194,10 +196,11 @@ export default function DraftRoom() {
         // The first VRD table on the server builds the bots' card list (a few seconds): check back shortly.
         if (data.warming) setTimeout(() => setVrdRetry((n) => n + 1), 5000);
       }
+      if (mine !== vrdSeq.current) return;
       rememberCards(cards);
       setVrdList(cards || []);
-    } catch { toast.error("Search failed"); }
-    finally { setVrdLoading(false); }
+    } catch { if (mine === vrdSeq.current) toast.error("Search failed"); }
+    finally { if (mine === vrdSeq.current) setVrdLoading(false); }
   };
   useEffect(() => {
     if (isVrd && state?.status === "drafting" && !vrdSearch) loadVrdList("");
