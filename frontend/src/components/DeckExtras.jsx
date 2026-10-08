@@ -71,7 +71,7 @@ export default function DeckExtras({ deck }) {
         <span>Deck price <span className="text-slate-300 tabular-nums">{money(main.usd)}</span>
           {main.tix > 0 && <span className="tabular-nums"> · {main.tix.toFixed(1)} TIX</span>}</span>
         {side.usd > 0 && <span>Sideboard <span className="text-slate-300 tabular-nums">{money(side.usd)}</span></span>}
-        <span className="text-slate-600">Scryfall prices for these printings{main.missing ? `, ${main.missing} without a price` : ""}</span>
+        <span className="text-slate-600">Typical Scryfall prices{main.missing ? `, ${main.missing} without a price` : ""}</span>
       </div>
     </div>
   );

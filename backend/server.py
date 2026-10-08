@@ -430,11 +430,21 @@ async def card_extras(data: ExtrasInput):
     stale = [i for i in ids if i not in _EXTRAS_CACHE or now - _EXTRAS_CACHE[i][0] > _EXTRAS_TTL]
     async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
         if stale:
-            for c in await _collection_lookup(hc, [{"id": i} for i in stale]):
+            printings = await _collection_lookup(hc, [{"id": i} for i in stale])
+            # Price each card by Scryfall's default (usually current, in-print) printing: decks default
+            # to original art, and an Alpha or promo price says little about what the deck costs.
+            await asyncio.sleep(0.1)
+            names = list(dict.fromkeys(c["name"] for c in printings))
+            default_price = {}
+            for c in await _collection_lookup(hc, [{"name": n} for n in names]):
+                default_price[c["name"]] = c.get("prices") or {}
+            for c in printings:
                 tokens = [p["id"] for p in c.get("all_parts") or []
                           if p.get("component") == "token" and p.get("id") != c["id"]]
-                pr = c.get("prices") or {}
-                _EXTRAS_CACHE[c["id"]] = (now, {"usd": pr.get("usd"), "usd_foil": pr.get("usd_foil"), "tix": pr.get("tix")}, tokens)
+                own = c.get("prices") or {}
+                pr = default_price.get(c["name"]) or own
+                _EXTRAS_CACHE[c["id"]] = (now, {"usd": pr.get("usd") or own.get("usd"), "usd_foil": pr.get("usd_foil") or own.get("usd_foil"),
+                                               "tix": pr.get("tix") or own.get("tix")}, tokens)
         token_ids = list(dict.fromkeys(t for i in ids if i in _EXTRAS_CACHE for t in _EXTRAS_CACHE[i][2]))
         missing = [t for t in token_ids if t not in _TOKEN_CACHE]
         if missing:
