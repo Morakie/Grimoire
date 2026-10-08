@@ -40,10 +40,18 @@ export async function resolveCube({ cubeCobra = "", text = "", keep = [] }) {
     names = parseList(text);
   }
   const uniq = Array.from(new Set(names));
-  const kept = new Map(keep.filter((c) => !c.is_custom).map((c) => [c.name.toLowerCase(), c]));
+  // Match kept cards by full name and by front face: CubeCobra lists "Brazen Borrower", while the
+  // saved card is "Brazen Borrower // Petty Theft".
+  const front = (n) => n.toLowerCase().split("//")[0].trim();
+  const kept = new Map();
+  keep.filter((c) => !c.is_custom).forEach((c) => { kept.set(c.name.toLowerCase(), c); if (!kept.has(front(c.name))) kept.set(front(c.name), c); });
   const reuse = [];
   const lookup = [];
-  uniq.forEach((n) => { const k = kept.get(n.toLowerCase()); if (k) reuse.push(k); else lookup.push(n); });
+  const used = new Set();
+  uniq.forEach((n) => {
+    const k = kept.get(n.toLowerCase()) || kept.get(front(n));
+    if (k && !used.has(k.id)) { reuse.push(k); used.add(k.id); } else if (!k) lookup.push(n);
+  });
   let found = [];
   let notFound = [];
   if (lookup.length) {

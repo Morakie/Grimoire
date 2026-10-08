@@ -284,14 +284,27 @@ def _name_keys(c: Dict[str, Any]) -> List[str]:
     keys += [f.get("name", "") for f in c.get("card_faces") or []]
     return [k.strip().lower() for k in keys if k]
 
+async def _scryfall_post(hc: httpx.AsyncClient, path: str, body: dict) -> httpx.Response:
+    """POST to Scryfall, retrying briefly when it is busy (429 / 5xx). Raises a 502 if it still fails,
+    so a Scryfall hiccup is reported instead of silently dropping cards."""
+    for attempt in range(3):
+        r = await hc.post(f"{SCRYFALL}{path}", json=body)
+        if r.status_code == 200:
+            return r
+        if r.status_code not in (429, 500, 502, 503, 504):
+            break
+        await asyncio.sleep(1.0 * (attempt + 1))
+    logger.warning("Scryfall %s failed: %s", path, r.status_code)
+    raise HTTPException(status_code=502, detail="Scryfall is busy, please try again in a moment")
+
+
 async def _collection_lookup(hc: httpx.AsyncClient, identifiers: List[dict]) -> List[dict]:
     out = []
     for i in range(0, len(identifiers), 75):
         if i:
             await asyncio.sleep(0.1)
-        r = await hc.post(f"{SCRYFALL}/cards/collection", json={"identifiers": identifiers[i:i + 75]})
-        if r.status_code == 200:
-            out.extend(r.json().get("data", []))
+        r = await _scryfall_post(hc, "/cards/collection", {"identifiers": identifiers[i:i + 75]})
+        out.extend(r.json().get("data", []))
     return out
 
 _OLDEST_CACHE: Dict[str, dict] = {}   # oracle_id -> oldest paper printing (raw Scryfall card)
@@ -395,9 +408,7 @@ async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
         for i in range(0, len(names), 75):
             if i:
                 await asyncio.sleep(0.1)
-            r = await hc.post(f"{SCRYFALL}/cards/collection", json={"identifiers": [{"name": n} for n in names[i:i + 75]]})
-            if r.status_code != 200:
-                continue
+            r = await _scryfall_post(hc, "/cards/collection", {"identifiers": [{"name": n} for n in names[i:i + 75]]})
             payload = r.json()
             raw.extend(payload.get("data", []))
             missed.extend(nf["name"] for nf in payload.get("not_found", []) if nf.get("name"))
