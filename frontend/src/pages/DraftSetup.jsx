@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Sparkles, Loader2, Shuffle, Users, RefreshCw, Plus, ArrowRight, Eye, Lock, KeyRound, Library } from "lucide-react";
+import { Sparkles, Loader2, Shuffle, Users, RefreshCw, Plus, ArrowRight, Eye, Lock, KeyRound, Library, Info } from "lucide-react";
 import { toast } from "sonner";
 
 export default function DraftSetup() {
@@ -28,7 +28,8 @@ export default function DraftSetup() {
   const [name, setName] = useState("Cube Draft");
   const [players, setPlayers] = useState(4);       // people
   const [bots, setBots] = useState(0);
-  const [seatsEach, setSeatsEach] = useState(2);
+  const [seatsEach, setSeatsEach] = useState(1);
+  const [doubleHelp, setDoubleHelp] = useState(false);
   const [pickCap, setPickCap] = useState(45);
   const [doubleAfter, setDoubleAfter] = useState(0);
   const [cubeText, setCubeText] = useState("");
@@ -267,7 +268,21 @@ export default function DraftSetup() {
                   <Input data-testid="draft-cap" type="number" min={1} value={pickCap} onChange={(e) => setPickCap(e.target.value)} className="mt-1.5 bg-slate-950 border-slate-700 text-slate-100" />
                 </div>
                 <div>
-                  <Label className="text-slate-300">Double after</Label>
+                  <div className="relative flex items-center gap-1.5">
+                    <Label className="text-slate-300">Double after</Label>
+                    <button type="button" data-testid="draft-double-info" aria-label="What is Double after?" aria-expanded={doubleHelp}
+                      title="Picks are doubled after this pick number"
+                      onClick={() => setDoubleHelp((v) => !v)} onBlur={() => setDoubleHelp(false)}
+                      className="text-slate-500 hover:text-amber-300 focus-visible:text-amber-300 outline-none">
+                      <Info className="w-3.5 h-3.5" />
+                    </button>
+                    {doubleHelp && (
+                      <div role="tooltip" data-testid="draft-double-help"
+                        className="absolute right-0 sm:right-auto sm:left-0 top-6 z-20 w-64 rounded-lg border border-slate-700 bg-slate-900 p-3 text-xs text-slate-300 shadow-xl leading-relaxed">
+                        Picks are doubled after pick #{Number(doubleAfter) > 0 ? Number(doubleAfter) : "N"}. Each seat makes that many single picks, then every turn takes <span className="text-amber-300">2 cards</span>. The seats at each end of the table get 4 in a row as the order turns around. <span className="text-slate-400">0 = never double.</span>
+                      </div>
+                    )}
+                  </div>
                   <Input data-testid="draft-double" type="number" min={0} value={doubleAfter} onChange={(e) => setDoubleAfter(e.target.value)} className="mt-1.5 bg-slate-950 border-slate-700 text-slate-100" />
                 </div>
               </div>
@@ -275,7 +290,7 @@ export default function DraftSetup() {
                 {seatsOk
                   ? <><span className="text-slate-300" data-testid="draft-seat-summary">{nPeople} {nPeople === 1 ? "player" : "players"}{nBots ? ` + ${nBots} ${nBots === 1 ? "bot" : "bots"}` : ""} · {totalSeats} seats ({nEach} each).</span> </>
                   : <span className="text-red-400">Need at least 1 player, at most 12 players + bots, and 64 seats in total. </span>}
-                Bots are seated automatically and pick on their own turns. “Double after” = single picks per seat before each turn grants 2 (0 = off). Boundary seats get 4 in a row during the double phase.
+                Bots are seated automatically and pick on their own turns.{Number(doubleAfter) > 0 ? ` Picks double after pick #${Number(doubleAfter)}.` : ""}
               </p>
 
               {user && cubes.length > 0 && (
