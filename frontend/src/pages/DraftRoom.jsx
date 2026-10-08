@@ -4,7 +4,7 @@ import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { buildExport } from "@/components/ExportDialog";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2 } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -72,15 +72,18 @@ export default function DraftRoom() {
     api.get(`/drafts/${shareId}`).then(({ data }) => setDraft(data)).catch(() => { toast.error("Draft not found"); navigate("/draft"); });
   }, [shareId, navigate]);
 
+  // Poll every 2s, or every second while a bot is on the clock (its pick lands on the next poll).
+  const botOnClock = !!(state && state.status === "drafting" && state.current_seat_index != null
+    && (state.players || []).some((p) => p.is_bot && p.seats.includes(state.current_seat_index)));
   useEffect(() => {
     let active = true;
     const tick = async () => {
       try { const { data } = await api.get(`/drafts/${shareId}/state`); if (active) setState(data); } catch {}
     };
     tick();
-    const iv = setInterval(tick, 2000);
+    const iv = setInterval(tick, botOnClock ? 1000 : 2000);
     return () => { active = false; clearInterval(iv); };
-  }, [shareId]);
+  }, [shareId, botOnClock]);
 
   useEffect(() => { localStorage.setItem(`grim_draft_queue_${shareId}`, JSON.stringify(queue)); }, [queue, shareId]);
 
@@ -124,6 +127,16 @@ export default function DraftRoom() {
   const start = async () => {
     try { const { data } = await api.post(`/drafts/${shareId}/start`); setDraft((d) => ({ ...d, ...data })); toast.success("Draft started"); }
     catch (e) { toast.error(e.response?.data?.detail || "Cannot start"); }
+  };
+
+  const addBot = async () => {
+    try { const { data } = await api.post(`/drafts/${shareId}/bots`, { host_token: hostToken }); setState((s) => ({ ...s, ...data })); }
+    catch (e) { toast.error(e.response?.data?.detail || "Could not add a bot"); }
+  };
+
+  const removeBot = async (playerId) => {
+    try { const { data } = await api.post(`/drafts/${shareId}/bots/remove`, { host_token: hostToken, player_id: playerId }); setState((s) => ({ ...s, ...data })); }
+    catch (e) { toast.error(e.response?.data?.detail || "Could not remove the bot"); }
   };
 
   const cancelTable = async () => {
@@ -175,6 +188,7 @@ export default function DraftRoom() {
   };
 
   const seatsSorted = [...state.seats].sort((a, b) => a.index - b.index);
+  const isBotSeat = (seatIdx) => (state.players || []).some((p) => p.is_bot && p.seats.includes(seatIdx));
   const seatLabel = (seatIdx) => { const s = state.seats.find((x) => x.index === seatIdx); return `${s?.player_name || "Seat"} (Seat ${seatIdx + 1})`; };
   const seatPicks = (seatIdx) => (state.picks || []).filter((p) => p.seat_index === seatIdx).sort((a, b) => a.order - b.order).map((p) => cubeById[p.card_id]).filter(Boolean);
   const deckForSeat = (seatIdx) => {
@@ -428,7 +442,10 @@ export default function DraftRoom() {
                   <span className="text-xs text-slate-500">Seat {s.index + 1}{mine ? " · you" : ""}</span>
                   <span className="text-xs text-amber-400 tabular-nums">{seatPicks(s.index).length}/{state.pick_cap}</span>
                 </div>
-                <div className="font-display font-semibold truncate">{s.player_name || <span className="text-slate-600">unclaimed</span>}</div>
+                <div className="font-display font-semibold truncate flex items-center gap-1.5">
+                  {isBotSeat(s.index) && <Bot className="w-3.5 h-3.5 text-amber-400 shrink-0" aria-label="Bot" />}
+                  {s.player_name || <span className="text-slate-600">unclaimed</span>}
+                </div>
                 {isCurrent && <div className="text-[11px] text-amber-400 mt-0.5">On the clock</div>}
                 <div className="text-[11px] text-slate-500 mt-0.5 truncate" data-testid={`seat-last-${s.index}`}>{last ? <>Last: <span className="text-slate-400">{last.name}</span></> : "No picks yet"}</div>
               </div>
@@ -477,6 +494,28 @@ export default function DraftRoom() {
                     <Button size="sm" data-testid="lobby-copy-link" onClick={() => { navigator.clipboard.writeText(shareUrl); toast.success("Invite link copied"); }} className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold shrink-0"><Copy className="w-4 h-4" /></Button>
                   </div>
                   <div className="text-[11px] text-slate-500 mt-1.5">Table code: <span className="text-amber-400 font-mono" data-testid="lobby-code">{shareId}</span></div>
+                </div>
+                <div className="mb-4" data-testid="lobby-players">
+                  <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1.5">Players</div>
+                  <ul className="space-y-1">
+                    {state.players.map((p) => (
+                      <li key={p.id} className="flex items-center gap-2 text-sm text-slate-200" data-testid={`lobby-player-${p.id}`}>
+                        {p.is_bot && <Bot className="w-3.5 h-3.5 text-amber-400" aria-label="Bot" />}
+                        <span className="truncate">{p.name}</span>
+                        <span className="text-[11px] text-slate-500">seat {p.seats.map((s) => s + 1).join(", ")}</span>
+                        {p.is_bot && hostToken && (
+                          <button data-testid={`remove-bot-${p.id}`} onClick={() => removeBot(p.id)} title="Remove bot" className="ml-auto text-slate-500 hover:text-red-400"><X className="w-3.5 h-3.5" /></button>
+                        )}
+                      </li>
+                    ))}
+                    {state.players.length === 0 && <li className="text-sm text-slate-600">No one yet</li>}
+                  </ul>
+                  {hostToken && state.players.length < state.num_players && (
+                    <Button size="sm" variant="outline" data-testid="add-bot" onClick={addBot}
+                      className="mt-2 bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
+                      <Plus className="w-3.5 h-3.5 mr-1" /> Add bot
+                    </Button>
+                  )}
                 </div>
                 {!me ? (
                   <div className="flex gap-2">

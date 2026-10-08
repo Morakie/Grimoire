@@ -3,6 +3,7 @@ import sys
 print(f"grimoire python {sys.version}", file=sys.stderr, flush=True)
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request
+from starlette.concurrency import run_in_threadpool
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -20,6 +21,11 @@ from pathlib import Path
 from pydantic import BaseModel, EmailStr, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
+
+from draftbot import BotContext, build_card_index, choose_pick, combos_from_dicts, fetch_combos, random_persona, bot_names
+from draftbot.combos import attach_combos
+from draftbot.personas import Persona
+from draftbot.simulate import run_draft, summarise
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -330,23 +336,29 @@ async def _resolve_entries(entries: List[CollectionEntry]) -> Dict[str, Any]:
 async def card_collection(data: CollectionInput):
     if data.entries:
         return await _resolve_entries(data.entries)
-    names = [n for n in data.names if n and n.strip()][:400]
+    return await _collection_by_names(data.names)
+
+async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
+    """Resolve card names (e.g. a cube list). Misses get a second chance through the front face
+    and fuzzy matching, which catches split cards such as "Life // Death"."""
+    names = [n for n in names if n and n.strip()][:800]
     found = []
-    not_found = []
+    missed = []
     async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
         for i in range(0, len(names), 75):
-            chunk = names[i:i + 75]
-            identifiers = [{"name": n} for n in chunk]
-            r = await hc.post(f"{SCRYFALL}/cards/collection", json={"identifiers": identifiers})
+            if i:
+                await asyncio.sleep(0.1)
+            r = await hc.post(f"{SCRYFALL}/cards/collection", json={"identifiers": [{"name": n} for n in names[i:i + 75]]})
             if r.status_code != 200:
                 continue
             payload = r.json()
-            for c in payload.get("data", []):
-                found.append(map_card(c))
-            for nf in payload.get("not_found", []):
-                if nf.get("name"):
-                    not_found.append(nf["name"])
-    return {"cards": found, "not_found": not_found}
+            found.extend(map_card(c) for c in payload.get("data", []))
+            missed.extend(nf["name"] for nf in payload.get("not_found", []) if nf.get("name"))
+    if missed:
+        retry = await _resolve_entries([CollectionEntry(key=str(i), name=n.split("//")[0].strip()) for i, n in enumerate(missed)])
+        found.extend(retry["resolved"].values())
+        missed = [missed[int(k)] for k in range(len(missed)) if str(k) not in retry["resolved"]]
+    return {"cards": found, "not_found": missed}
 
 @api_router.get("/cards/autocomplete")
 async def card_autocomplete(q: str = ""):
@@ -546,7 +558,7 @@ def draft_state(d: dict, light: bool = False) -> dict:
         "double_draft_after": d["double_draft_after"],
         "pick_cap": d["pick_cap"],
         "seats": d["seats"],
-        "players": [{"id": p["id"], "name": p["name"], "seats": p["seats"]} for p in d.get("players", [])],
+        "players": [{"id": p["id"], "name": p["name"], "seats": p["seats"], "is_bot": bool(p.get("is_bot"))} for p in d.get("players", [])],
         "picks": d.get("picks", []),
         "pick_index": len(d.get("picks", [])),
         "order_len": len(d.get("order", [])),
@@ -632,6 +644,7 @@ async def get_draft_state(share_id: str):
     d = await db.drafts.find_one({"share_id": share_id})
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
+    d = await maybe_bot_pick(d)
     return draft_state(d, light=True)
 
 @api_router.post("/drafts/{share_id}/claim")
@@ -672,7 +685,11 @@ async def start_draft(share_id: str):
     if any(s["player_id"] is None for s in d["seats"]):
         raise HTTPException(status_code=400, detail="Not all seats are claimed yet")
     order = compute_pick_order(d["num_seats"], d["double_draft_after"], d["pick_cap"], len(d["cube"]))
-    await db.drafts.update_one({"share_id": share_id}, {"$set": {"status": "drafting", "order": order, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    now = datetime.now(timezone.utc).isoformat()
+    update = {"status": "drafting", "order": order, "started_at": now, "updated_at": now}
+    if any(p.get("is_bot") for p in d["players"]):
+        update["bot_combos"] = [c.to_dict() for c in await fetch_combos(build_card_index(d["cube"]))]
+    await db.drafts.update_one({"share_id": share_id}, {"$set": update})
     d = await db.drafts.find_one({"share_id": share_id})
     return draft_state(d)
 
@@ -770,6 +787,158 @@ async def post_chat(share_id: str, data: ChatInput):
 
 
 # ----------------------- Startup -----------------------
+
+
+# ===================== Draft bots =====================
+# Bots fill player slots chosen by the host. Their picks are made here on the server, lazily, by
+# whichever state poll arrives after a short human-like delay. See docs/DRAFT_BOTS.md.
+
+class BotInput(BaseModel):
+    host_token: str
+
+class BotRemoveInput(BaseModel):
+    host_token: str
+    player_id: str
+
+_BOT_INDEX_CACHE: Dict[str, Any] = {}   # share_id -> (cube size, card index, combos)
+
+
+def _bot_index(d: dict):
+    cached = _BOT_INDEX_CACHE.get(d["share_id"])
+    if cached and cached[0] == len(d["cube"]):
+        return cached[1], cached[2]
+    index = build_card_index(d["cube"])
+    combos = combos_from_dicts(d.get("bot_combos", []))
+    attach_combos(index, combos)
+    if len(_BOT_INDEX_CACHE) > 50:
+        _BOT_INDEX_CACHE.clear()
+    _BOT_INDEX_CACHE[d["share_id"]] = (len(d["cube"]), index, combos)
+    return index, combos
+
+
+def _bot_delay(share_id: str, pick_index: int) -> float:
+    """1.2–2.4 s, stable for a given pick so concurrent polls agree on when it's due."""
+    return 1.2 + random.Random(f"{share_id}:{pick_index}").random() * 1.2
+
+
+async def maybe_bot_pick(d: dict) -> dict:
+    """If a bot is on the clock and its delay has passed, make its pick. Returns the fresh draft."""
+    if d.get("status") != "drafting":
+        return d
+    pick_index = len(d.get("picks", []))
+    if pick_index >= len(d.get("order", [])):
+        return d
+    seat = d["order"][pick_index]
+    bot = next((p for p in d["players"] if p.get("is_bot") and seat in p["seats"]), None)
+    if not bot:
+        return d
+    last = d["picks"][-1]["ts"] if d.get("picks") else d.get("started_at") or d["updated_at"]
+    due = datetime.fromisoformat(last) + timedelta(seconds=_bot_delay(d["share_id"], pick_index))
+    if datetime.now(timezone.utc) < due:
+        return d
+
+    index, combos = _bot_index(d)
+    picks_by_seat: Dict[int, List[str]] = {s["index"]: [] for s in d["seats"]}
+    for p in d["picks"]:
+        picks_by_seat.setdefault(p["seat_index"], []).append(p["card_id"])
+    taken = {p["card_id"] for p in d["picks"]}
+    remaining = [cid for cid in index if cid not in taken]
+    if not remaining:
+        return d
+    ctx = BotContext(index, combos, remaining, picks_by_seat, seat, d["order"], pick_index,
+                     d["pick_cap"], Persona.from_dict(bot.get("persona", {})))
+    rng = random.Random(f"{d['share_id']}:{pick_index}:{bot['id']}")
+    card_id = await run_in_threadpool(choose_pick, ctx, rng)
+
+    pick = {"order": pick_index, "seat_index": seat, "card_id": card_id, "ts": datetime.now(timezone.utc).isoformat(), "bot": True}
+    status = "complete" if pick_index + 1 >= len(d["order"]) else "drafting"
+    # Only succeeds if nobody else picked in the meantime (another poll, an undo, a reassign).
+    await db.drafts.update_one(
+        {"share_id": d["share_id"], "status": "drafting", "picks": {"$size": pick_index}},
+        {"$push": {"picks": pick}, "$set": {"status": status, "updated_at": pick["ts"]}},
+    )
+    return await db.drafts.find_one({"share_id": d["share_id"]})
+
+
+@api_router.post("/drafts/{share_id}/bots")
+async def add_bot(share_id: str, data: BotInput):
+    d = await db.drafts.find_one({"share_id": share_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("host_token") != data.host_token:
+        raise HTTPException(status_code=403, detail="Only the host can add bots")
+    if d["status"] != "lobby":
+        raise HTTPException(status_code=400, detail="Draft already started")
+    if len(d["players"]) >= d["num_players"]:
+        raise HTTPException(status_code=400, detail="All player slots are taken")
+    rng = random.Random()
+    name = bot_names(rng, 1, [p["name"] for p in d["players"]])[0]
+    j = len(d["players"])
+    assigned = sorted(s["index"] for s in d["seats"] if s["index"] % d["num_players"] == j)
+    pid = str(uuid.uuid4())
+    for s in d["seats"]:
+        if s["index"] in assigned:
+            s["player_id"] = pid
+            s["player_name"] = name
+    d["players"].append({"id": pid, "token": str(uuid.uuid4()), "name": name, "seats": assigned,
+                         "is_bot": True, "persona": random_persona(rng).to_dict()})
+    await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": d["players"], "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return draft_state(d, light=True)
+
+
+@api_router.post("/drafts/{share_id}/bots/remove")
+async def remove_bot(share_id: str, data: BotRemoveInput):
+    d = await db.drafts.find_one({"share_id": share_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("host_token") != data.host_token:
+        raise HTTPException(status_code=403, detail="Only the host can remove bots")
+    if d["status"] != "lobby":
+        raise HTTPException(status_code=400, detail="Draft already started")
+    if not any(p["id"] == data.player_id and p.get("is_bot") for p in d["players"]):
+        raise HTTPException(status_code=404, detail="Bot not found")
+    # Rebuild seat assignments in join order so seat spreading stays correct.
+    players = [p for p in d["players"] if p["id"] != data.player_id]
+    for s in d["seats"]:
+        s["player_id"] = None
+        s["player_name"] = None
+    for j, p in enumerate(players):
+        p["seats"] = sorted(s["index"] for s in d["seats"] if s["index"] % d["num_players"] == j)
+        for s in d["seats"]:
+            if s["index"] in p["seats"]:
+                s["player_id"] = p["id"]
+                s["player_name"] = p["name"]
+    d["players"] = players
+    await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": players, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return draft_state(d, light=True)
+
+
+class SimulateInput(BaseModel):
+    cube_id: str
+    seats: int = Field(8, ge=2, le=12)
+    picks_per_seat: int = Field(45, ge=5, le=90)
+    seed: int = 0
+
+
+@api_router.post("/bots/simulate")
+async def simulate_bots(data: SimulateInput):
+    """Bot-only draft for tuning. Disabled unless ENABLE_BOT_SIM=true (set it on staging only)."""
+    if os.environ.get("ENABLE_BOT_SIM", "").lower() != "true":
+        raise HTTPException(status_code=404, detail="Not found")
+    names = (await cubecobra_fetch(data.cube_id))["names"]
+    resolved = await _collection_by_names(list(dict.fromkeys(names)))
+    cube = resolved["cards"]
+    index = build_card_index(cube)
+    combos = await fetch_combos(index)
+    order = compute_pick_order(data.seats, 0, data.picks_per_seat, len(cube))
+    bots = await run_in_threadpool(run_draft, cube, combos, order, data.seats, data.picks_per_seat, data.seed, (), index)
+    greedy = await run_in_threadpool(run_draft, cube, combos, order, data.seats, data.picks_per_seat, data.seed, tuple(range(data.seats)))
+    return {
+        "cube_size": len(cube), "not_found": resolved["not_found"], "combos_in_cube": len(combos),
+        "seconds": round(bots["seconds"], 1),
+        "bots": summarise(bots, combos),
+        "elo_greedy_baseline": [{k: s[k] for k in ("seat", "lane", "on_lane_pct", "avg_elo_top23")} for s in summarise(greedy, combos)],
+    }
 
 @app.on_event("startup")
 async def startup():
