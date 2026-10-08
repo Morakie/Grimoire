@@ -133,6 +133,25 @@ def _roles(card: dict, types: FrozenSet[str], text: str) -> FrozenSet[str]:
     return frozenset(roles)
 
 
+def _estimate_elo(card: dict, types: FrozenSet[str], text: str, elos: List[float], mid: float) -> float:
+    """Rating for a card with no CubeCobra Elo (new or rarely-cubed cards).
+
+    Defaults to the cube median, except for fast mana: a 0–1 mana non-creature that taps for mana
+    (a "Mox") is one of the strongest card types in any cube, so it is rated like the cube's best
+    cards instead of an average one."""
+    ranked = sorted(elos)
+    def pct(q):
+        return ranked[min(len(ranked) - 1, int(len(ranked) * q))] if ranked else mid
+    cmc = card.get("cmc") or 0
+    taps_for_mana = re.search(r"\{t\}[^.]*: add", text) is not None
+    if "creature" not in types and "land" not in types and taps_for_mana:
+        if cmc == 0:
+            return pct(0.99)
+        if cmc == 1:
+            return pct(0.95)
+    return mid
+
+
 def build_card_index(cube: Iterable[dict]) -> Dict[str, CardInfo]:
     """Build CardInfo for every non-custom card in a cube (cube entries are draft card dicts)."""
     cards = [c for c in cube if not c.get("is_custom")]
@@ -146,7 +165,7 @@ def build_card_index(cube: Iterable[dict]) -> Dict[str, CardInfo]:
     for c in cards:
         text = (c.get("oracle_text") or "").lower()
         types = _types(c.get("type_line", ""))
-        elo = float(c.get("elo") or mid)
+        elo = float(c.get("elo") or _estimate_elo(c, types, text, elos, mid))
         x = (elo - lo) / span                      # ~0 at the 5th percentile, 1 at the 95th
         power = max(-0.15, x if x <= 1 else 1 + 0.7 * (x - 1))   # bombs keep standing out, gently compressed
         need = _cost_colors(c.get("mana_cost", ""))

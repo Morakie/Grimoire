@@ -1,10 +1,19 @@
-"""The pick engine: several oracles blended with phase-dependent weights.
+"""The pick engine.
 
-Rotisserie drafts are fully open: every remaining card and every seat's picks are visible. Instead of
-simulating hidden packs, each pick scores the whole remaining pool and models what the other seats are
-likely to take before this seat's next turn ("float risk").
+A rotisserie draft is one big face-up pack passed back and forth. Each pick, a bot scores every
+remaining card from a few simple ingredients:
 
-All tunable numbers live in TUNING so they can be adjusted (and tested in simulations) in one place.
+1. Power: CubeCobra Elo, normalised to the cube.
+2. Colours: flexible for the first few picks, committed to two colours by about pick 10. After that,
+   off-colour cards are mostly ignored. A third colour is allowed only as a deliberate splash: the bot
+   already owns strong cards in it AND has (or takes) fixing for it.
+3. Combos and packages: Commander Spellbook combos plus simple enabler/payoff pairs.
+4. Fixing timing: spells first; dual/fetch lands for the bot's colours from mid-draft, urgently if short.
+5. Deck style by colour pair: once committed, a light nudge towards what that pair usually does
+   (e.g. white-red values cheap creatures and burn).
+6. Float risk: cards nobody else will take before the bot's next turn can wait.
+
+Every number lives in TUNING so it can be explained and adjusted in one place.
 """
 from __future__ import annotations
 
@@ -14,34 +23,32 @@ from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 
-from . import archetypes as arch
 from .combos import PACKAGES, Combo
 from .features import COLORS, CardInfo
 from .personas import Persona
 
 TUNING: Dict[str, float] = {
-    "lane_penalty_mono": 0.9,
-    "lane_penalty_three": 0.74,    # a third colour has to earn its place...
-    "three_colour_fixing": 0.35,   # ...and owned fixing for it is what earns it
-    "lane_temp_start": 2.6, "lane_temp_slope": 0.09, "lane_temp_min": 0.45,
-    "colour_crowding": 2.0,        # how strongly crowded colours are avoided
-    "colour_supply": 0.5,
-    "openness_weight": 1.6,        # colour signals feeding the lane prior
-    "arch_crowding": 1.2,          # how strongly crowded archetypes are avoided
-    "arch_weight": 0.22,           # archetype bonus per unit of relevance
-    "arch_lane_support": 0.5,      # how much likely archetypes pull towards their usual colours
-    "power_late_drop": 0.45,
+    # colours
+    "commit_start": 4,          # picks before colour preference starts to matter
+    "commit_pick": 10,          # by this pick the bot is committed to two colours
+    "flex_floor": 0.9,          # off-colour cards keep this share of their value while flexible...
+    "committed_floor": 0.1,     # ...and this share once committed
+    "openness_weight": 0.6,     # colour signals from the table (early picks only)
+    # splash
+    "splash_min_value": 1.2,    # owned power in the third colour before a splash is considered
+    "splash_fit": 0.6,          # how on-colour splash cards count once the splash is real
+    "splash_fixing_bonus": 0.3, # value of a land that fixes the splash
+    # fixing
+    "early_fixing_damp": 0.5,   # dual/fetch lands count at 50% power at pick 1, full by mid-draft
+    "fixing_bonus": 0.25,       # late-draft value of an on-colour dual/fetch
+    "fixing_target": 5,         # duals/fetches a deck would like
+    # synergy
     "combo_base": 0.35, "combo_growth": 0.45,
-    "lane_floor_start": 0.9, "lane_floor_slope": 1.5, "lane_floor_min": 0.12,
+    "style_weight": 1.0,        # colour-pair deck style nudge (after committing)
+    # late needs / floating
     "needs_start": 0.45, "needs_slope": 1.8,
     "float_base": 0.25, "float_growth": 0.3, "float_cap": 0.6,
-    "fixing_base": 0.08, "fixing_growth": 0.3,
-    "early_fixing_damp": 0.55,     # dual/fetch lands' power counts this much at pick 1, rising to full by mid-draft
-    "package_unit": 0.12, "package_cap": 0.3, "package_urgency": 0.12, "package_urgency_cap": 0.45,
-    "card_openness": 0.5,          # mid-draft: how much crowding deters moving INTO a colour
-    "splash_threshold": 0.9,       # owned value in a third colour before it becomes a splash target
-    "splash_fixing": 0.35,         # extra value for lands that fix the splash
-    "splash_fit": 0.55,            # how "on colour" cards of the splash colour count
+    "power_late_drop": 0.45,
 }
 
 LANES: List[FrozenSet[str]] = (
@@ -49,6 +56,21 @@ LANES: List[FrozenSet[str]] = (
     + [frozenset(p) for p in combinations(COLORS, 2)]
     + [frozenset(t) for t in combinations(COLORS, 3)]
 )
+PAIRS: List[FrozenSet[str]] = [frozenset(p) for p in combinations(COLORS, 2)]
+
+# What each colour pair usually wants (role -> small bonus). A nudge, not a rulebook.
+PAIR_STYLE: Dict[FrozenSet[str], Dict[str, float]] = {
+    frozenset("WR"): {"aggro_creature": 0.15, "burn": 0.12, "equipment": 0.06, "cheap_threat": 0.05},
+    frozenset("WU"): {"counter": 0.08, "sweeper": 0.1, "removal": 0.06, "planeswalker": 0.08, "draw": 0.05},
+    frozenset("UB"): {"counter": 0.07, "reanimate": 0.1, "fatty": 0.08, "removal": 0.06, "draw": 0.05},
+    frozenset("UR"): {"cantrip": 0.08, "spells_payoff": 0.12, "artifact_payoff": 0.08, "burn": 0.06, "counter": 0.05},
+    frozenset("BR"): {"cheat": 0.12, "fatty": 0.08, "removal": 0.07, "aggro_creature": 0.06, "reanimate": 0.06},
+    frozenset("RG"): {"ramp": 0.1, "finisher": 0.08, "aggro_creature": 0.08, "fatty": 0.05},
+    frozenset("UG"): {"ramp": 0.1, "value_creature": 0.08, "draw": 0.06, "finisher": 0.05},
+    frozenset("WB"): {"token_maker": 0.08, "sac_outlet": 0.1, "death_payoff": 0.1, "removal": 0.06, "aggro_creature": 0.06},
+    frozenset("WG"): {"aggro_creature": 0.1, "token_maker": 0.07, "ramp": 0.06, "anthem": 0.06},
+    frozenset("BG"): {"reanimate": 0.07, "self_mill": 0.06, "value_creature": 0.07, "removal": 0.07},
+}
 
 
 @dataclass
@@ -70,7 +92,7 @@ class BotContext:
         return TUNING[key]
 
 
-# ---------------------------------------------------------------- lanes
+# ---------------------------------------------------------------- colours
 
 def _lane_fit(card: CardInfo, lane: FrozenSet[str]) -> float:
     if card.is_land:
@@ -96,79 +118,51 @@ def card_fit(card: CardInfo, dist: Dict[FrozenSet[str], float]) -> float:
     return sum(p * vec[i] for i, p in enumerate(dist.values()) if p > 0.003)
 
 
-def lane_distribution(pool: Iterable[CardInfo], n_picks: int, prior: Optional[Dict[FrozenSet[str], float]] = None,
-                      k=TUNING.get) -> Dict[FrozenSet[str], float]:
-    """Probability over colour lanes given a pool. Starts nearly flat and sharpens as picks grow.
-
-    Three-colour lanes are discounted unless the pool owns fixing for them, so a third colour is
-    something a bot builds towards deliberately rather than drifts into for one card."""
-    pool = list(pool)
-    spells = [c for c in pool if not c.is_land]
-    fixers = [c for c in pool if c.is_fixing]
+def lane_distribution(pool: Iterable[CardInfo], n_picks: int, prior: Optional[Dict[FrozenSet[str], float]] = None) -> Dict[FrozenSet[str], float]:
+    """Probability over colour lanes given a pool (used to judge flexibility and rivals' colours)."""
+    pool = [c for c in pool if not c.is_land]
     scores = {}
     for lane in LANES:
-        s = sum(max(c.power, 0.05) for c in spells if c.need and c.need <= lane)
-        s += 0.4 * sum(max(c.power, 0.05) for c in spells if not c.need)  # colourless fits everywhere
-        if len(lane) == 1:
-            s *= k("lane_penalty_mono")
-        elif len(lane) == 3:
-            s *= k("lane_penalty_three")
-            # Only fixing that actually produces the splash colour (the lane colour with the least
-            # spell support) helps a three-colour plan; an on-colour dual for the main pair doesn't.
-            support = {c: sum(1 for sp in spells if c in sp.need) for c in lane}
-            splash = min(lane, key=lambda c: (support[c], c))
-            backing = sum(1 for f in fixers if splash in f.produces and len(f.produces & lane) >= 2)
-            s += k("three_colour_fixing") * min(backing, 4)
+        s = sum(max(c.power, 0.05) for c in pool if c.need and c.need <= lane)
+        s += 0.4 * sum(max(c.power, 0.05) for c in pool if not c.need)
+        s *= {1: 0.9, 2: 1.0, 3: 0.74}[len(lane)]
         if prior:
             s += prior.get(lane, 0.0)
         scores[lane] = s
-    temp = max(k("lane_temp_min"), k("lane_temp_start") - k("lane_temp_slope") * n_picks)
+    temp = max(0.45, 2.6 - 0.09 * n_picks)
     top = max(scores.values())
     exps = {lane: math.exp((s - top) / temp) for lane, s in scores.items()}
     total = sum(exps.values())
     return {lane: e / total for lane, e in exps.items()}
 
 
-def main_lane(pool: Iterable[CardInfo]) -> FrozenSet[str]:
-    pool = list(pool)
-    dist = lane_distribution(pool, len(pool))
-    return max(dist, key=dist.get)
+def best_pair(pool: Iterable[CardInfo], prior: Optional[Dict[FrozenSet[str], float]] = None) -> FrozenSet[str]:
+    """The two colours this pool is best at (the commitment)."""
+    pool = [c for c in pool if not c.is_land]
+
+    def value(pair):
+        v = sum(max(c.power, 0.05) for c in pool if c.need and c.need <= pair)
+        v += 0.3 * sum(max(c.power, 0.05) for c in pool if not c.need)
+        return v + (prior or {}).get(pair, 0.0)
+    return max(PAIRS, key=value)
 
 
-def splash_target(mine: List[CardInfo], lane: FrozenSet[str], owned: set, combos: List[Combo],
-                  index: Dict[str, CardInfo], k=TUNING.get) -> Tuple[Optional[str], float]:
-    """Is there a third colour worth splashing? Returns (colour, strength) or (None, 0).
-
-    Value comes from owned spells that need exactly one colour beyond the main pair, plus combo
-    lines that need that colour. A third colour is never ruled out: it becomes a target when enough
-    of the pool depends on it, and from then on the bot looks for fixing to support it."""
-    if len(lane) != 2:
-        return None, 0.0
+def splash_colour(pool: List[CardInfo], pair: FrozenSet[str], k) -> Optional[str]:
+    """A third colour is a real splash only if strong owned cards need it (and nothing beyond it)."""
     best, best_v = None, 0.0
     for col in COLORS:
-        if col in lane:
+        if col in pair:
             continue
-        wider = lane | {col}
-        v = sum(max(c.power, 0.0) for c in mine if not c.is_land and col in c.need and c.need <= wider)
-        for c in mine:
-            for ci in c.combos:
-                pieces = [index[p] for p in combos[ci].pieces if p in index]
-                if any(col in pc.need for pc in pieces) and all(pc.need <= wider for pc in pieces):
-                    v += 0.5 * combos[ci].weight
+        v = sum(max(c.power, 0.0) for c in pool if not c.is_land and col in c.need and c.need <= pair | {col})
         if v > best_v:
             best, best_v = col, v
-    if best_v < k("splash_threshold"):
-        return None, 0.0
-    return best, best_v
+    return best if best_v >= k("splash_min_value") else None
 
 
 # ---------------------------------------------------------------- synergy
 
-def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo], dist, index: Dict[str, CardInfo]) -> float:
-    """Value of `card` toward combos, given the pieces this seat already owns.
-
-    A line only counts as much as its pieces fit this seat's likely colours, so a bot that has
-    settled into red-white stops chasing a blue combo piece."""
+def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo], fit_of) -> float:
+    """Value toward combos given owned pieces; a line counts only as much as its pieces fit our colours."""
     total = 0.0
     for ci in card.combos:
         combo = combos[ci]
@@ -176,28 +170,21 @@ def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo],
         have = sum(1 for p in others if p in owned)
         missing = [p for p in others if p not in owned]
         if any(p not in remaining for p in missing):
-            continue                           # a missing piece is gone: line is dead for us
-        frac = have / len(others)
-        progress = 0.06 if have == 0 else frac ** 1.2
-        fit = min(card_fit(index[p], dist) for p in combo.pieces if p in index)
+            continue
+        progress = 0.06 if have == 0 else (have / len(others)) ** 1.2
+        fit = min(fit_of(p) for p in combo.pieces)
         total += combo.weight * progress * (0.25 + 0.75 * fit)
     return min(total, 1.4)
 
 
-def package_value(card: CardInfo, role_counts: Dict[str, int], k=TUNING.get) -> float:
-    """Enabler/payoff packages. A pool that is heavy on one side makes the other side urgent:
-    five reanimation spells and no big creature means the next fatty matters a lot."""
+def package_value(card: CardInfo, role_counts: Dict[str, int]) -> float:
     total = 0.0
     for _, enablers, payoffs in PACKAGES:
-        n_en = sum(role_counts.get(r, 0) for r in enablers)
-        n_pay = sum(role_counts.get(r, 0) for r in payoffs)
         if card.roles & set(enablers):
-            total += k("package_unit") * min(n_pay, 3) / 3
-            total += min(k("package_urgency_cap"), k("package_urgency") * max(0, n_pay - 2 * n_en))
+            total += 0.12 * min(sum(role_counts.get(r, 0) for r in payoffs), 3) / 3
         if card.roles & set(payoffs):
-            total += k("package_unit") * min(n_en, 3) / 3
-            total += min(k("package_urgency_cap"), k("package_urgency") * max(0, n_en - 2 * n_pay))
-    return min(total, k("package_cap") + k("package_urgency_cap"))
+            total += 0.12 * min(sum(role_counts.get(r, 0) for r in enablers), 3) / 3
+    return min(total, 0.3)
 
 
 def _role_counts(pool: Iterable[CardInfo]) -> Dict[str, int]:
@@ -208,14 +195,18 @@ def _role_counts(pool: Iterable[CardInfo]) -> Dict[str, int]:
     return counts
 
 
-# ---------------------------------------------------------------- needs (late draft)
+def style_value(card: CardInfo, pair: FrozenSet[str]) -> float:
+    style = PAIR_STYLE.get(pair, {})
+    return min(0.25, sum(v for role, v in style.items() if role in card.roles))
 
-def needs_value(card: CardInfo, pool: List[CardInfo], persona: Persona, lane: FrozenSet[str]) -> float:
+
+# ---------------------------------------------------------------- late needs
+
+def needs_value(card: CardInfo, pool: List[CardInfo], persona: Persona) -> float:
     spells = [c for c in pool if not c.is_land]
     interaction = sum(1 for c in spells if c.roles & {"removal", "counter", "sweeper"})
     creatures = sum(1 for c in spells if c.is_creature)
     cheap = sum(1 for c in spells if c.cmc <= 2)
-    fixing = sum(1 for c in pool if c.is_land and len(c.produces & lane) >= 2)
     v = 0.0
     if card.roles & {"removal", "counter"} and interaction < 6:
         v += 0.14 * persona.w("interaction")
@@ -224,13 +215,11 @@ def needs_value(card: CardInfo, pool: List[CardInfo], persona: Persona, lane: Fr
     if not card.is_land and card.cmc <= 2 and cheap < 9:
         v += 0.07 * persona.w("curve")
     if not card.is_land and card.cmc >= 6 and sum(1 for c in spells if c.cmc >= 6) >= 3:
-        v -= 0.12                               # top-heavy enough already
-    if card.is_land and len(card.produces & lane) >= 2 and fixing < 5:
-        v += 0.18                               # mana for our colours
+        v -= 0.12
     return v
 
 
-# ---------------------------------------------------------------- signals
+# ---------------------------------------------------------------- table signals
 
 def _colour_shares(pool: Iterable[CardInfo]) -> Dict[str, float]:
     counts = {c: 0.0 for c in COLORS}
@@ -245,10 +234,7 @@ def _colour_shares(pool: Iterable[CardInfo]) -> Dict[str, float]:
 
 
 def openness(ctx: BotContext, rivals: List[int]) -> Dict[str, float]:
-    """Positive for colours with plenty of good cards left and few rivals in them.
-
-    Contest is measured in *drafters*: each rival counts towards the colours they are clearly in
-    (weighted by how settled they are), so seven blue drafters read as very crowded."""
+    """Positive for colours with good cards left and few rivals in them (rivals counted as drafters)."""
     supply = {c: 0.0 for c in COLORS}
     for cid in ctx.remaining:
         card = ctx.index[cid]
@@ -258,45 +244,23 @@ def openness(ctx: BotContext, rivals: List[int]) -> Dict[str, float]:
     contest = {c: 0.0 for c in COLORS}
     for seat in rivals:
         pool = [ctx.index[p] for p in ctx.picks_by_seat.get(seat, []) if p in ctx.index]
-        coloured = sum(1 for c in pool if c.need and not c.is_land)
-        settled = min(1.0, coloured / 8)
+        settled = min(1.0, sum(1 for c in pool if c.need and not c.is_land) / 8)
         for col, share in _colour_shares(pool).items():
-            contest[col] += settled * min(1.0, share * 2.2)   # ~45%+ of their spells = "in" that colour
+            contest[col] += settled * min(1.0, share * 2.2)
     expected = max(sum(contest.values()) / 5, 0.5)
-    return {c: ctx.k("colour_supply") * (supply[c] / mean_supply - 1) - ctx.k("colour_crowding") * (contest[c] / expected - 1)
-            for c in COLORS}
-
-
-def archetype_crowding(ctx: BotContext, rivals: List[int]) -> Dict[str, float]:
-    crowd = {name: 0.0 for name in arch.NAMES}
-    for seat in rivals:
-        pool = [ctx.index[p] for p in ctx.picks_by_seat.get(seat, []) if p in ctx.index]
-        if len(pool) < 6:
-            continue
-        for name, p in arch.archetype_distribution(pool, len(pool)).items():
-            crowd[name] += p
-    expected = max(sum(crowd.values()) / len(crowd), 0.3)
-    return {name: ctx.k("arch_crowding") * (v / expected - 1) for name, v in crowd.items()}
+    return {c: 0.5 * (supply[c] / mean_supply - 1) - (contest[c] / expected - 1) for c in COLORS}
 
 
 # ---------------------------------------------------------------- float risk
 
 def picks_until_next_turn(ctx: BotContext) -> Dict[int, int]:
-    """How many picks each other seat makes before this seat's next turn."""
     counts: Dict[int, int] = {}
     for slot in range(ctx.pick_index + 1, len(ctx.order)):
         seat = ctx.order[slot]
         if seat == ctx.seat:
             return counts
         counts[seat] = counts.get(seat, 0) + 1
-    return {"end": 1}  # no next turn: everything is "now or never"
-
-
-def _desire(card: CardInfo, owned: set, remaining: set, combos, dist, role_counts, index, adist) -> float:
-    return (max(card.power, 0.0) * (0.3 + 0.7 * card_fit(card, dist))
-            + 0.8 * combo_value(card, owned, remaining, combos, dist, index)
-            + package_value(card, role_counts)
-            + 0.15 * arch.card_archetype_bonus(card, adist))
+    return {"end": 1}
 
 
 def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[str, float]:
@@ -306,28 +270,41 @@ def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[s
         return {cid: 1.0 for cid in candidates}
     risk_keep = {cid: 1.0 for cid in candidates}
     cand_set = set(candidates)
-    # Rivals rank only plausible cards: the strongest remaining cards plus our candidates and any
-    # card that touches a combo. Far weaker cards can't push a candidate's rank down meaningfully.
     strongest = sorted(remaining, key=lambda c: -ctx.index[c].power)[:120]
     plausible = set(strongest) | cand_set | {c for c in remaining if ctx.index[c].combos}
-    for seat, k in window.items():
+    for seat, n_picks in window.items():
         picks = [p for p in ctx.picks_by_seat.get(seat, []) if p in ctx.index]
         pool = [ctx.index[p] for p in picks]
         owned = set(picks)
         dist = lane_distribution(pool, len(pool))
-        adist = arch.archetype_distribution(pool, len(pool))
         roles = _role_counts(pool)
-        desires = sorted(((_desire(ctx.index[cid], owned, remaining, ctx.combos, dist, roles, ctx.index, adist), cid)
-                          for cid in plausible), reverse=True)
-        spread = 1.0 + 0.35 * k
+
+        def fit_of(cid, d=dist):
+            return card_fit(ctx.index[cid], d) if cid in ctx.index else 0.0
+        desires = sorted(((max(ctx.index[cid].power, 0.0) * (0.3 + 0.7 * card_fit(ctx.index[cid], dist))
+                           + 0.8 * combo_value(ctx.index[cid], owned, remaining, ctx.combos, fit_of)
+                           + package_value(ctx.index[cid], roles), cid) for cid in plausible), reverse=True)
+        spread = 1.0 + 0.35 * n_picks
         for rank, (_, cid) in enumerate(desires):
             if cid in cand_set:
-                p_take = 1.0 / (1.0 + math.exp((rank + 1 - k - 0.5) / spread))
-                risk_keep[cid] *= (1.0 - p_take)
+                risk_keep[cid] *= 1.0 - 1.0 / (1.0 + math.exp((rank + 1 - n_picks - 0.5) / spread))
     return {cid: 1.0 - keep for cid, keep in risk_keep.items()}
 
 
 # ---------------------------------------------------------------- the pick
+
+def colour_state(ctx: BotContext, mine: List[CardInfo], n: int, rivals: List[int]):
+    """Where the bot stands on colours: (lane distribution, committed pair or None, splash colour)."""
+    k = ctx.k
+    t_open = 1 - min(1.0, n / max(ctx.picks_per_seat, 1)) * 1.6
+    open_by_colour = openness(ctx, rivals)
+    prior = {lane: k("openness_weight") * max(t_open, 0.0) * ctx.persona.w("openness")
+             * sum(open_by_colour[c] for c in lane) / len(lane) for lane in LANES}
+    dist = lane_distribution(mine, n, prior)
+    pair = best_pair(mine, prior) if n >= k("commit_start") else None
+    splash = splash_colour(mine, pair, k) if pair else None
+    return dist, pair, splash
+
 
 def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     """Score every remaining card for this seat. Returns (score, card_id, breakdown), best first."""
@@ -338,62 +315,64 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     owned = set(my_ids)
     remaining = set(c for c in ctx.remaining if c in ctx.index)
     n = len(mine)
-    t = min(1.0, n / max(ctx.picks_per_seat, 1))          # draft phase 0..1
+    t = min(1.0, n / max(ctx.picks_per_seat, 1))
 
     rivals = [s for s in ctx.picks_by_seat if s != ctx.seat]
-    crowd = {a: v * p.w("plan_crowding") for a, v in archetype_crowding(ctx, rivals).items()}
-    # A preferred plan (forcers have a strong one) pulls hardest early and fades as the pool speaks.
-    bias = {a: 4.0 * (p.w("arch_" + a) - 1) * (1.6 - t) for a in arch.NAMES}
-    adist = arch.archetype_distribution(mine, n, crowd, bias)
-    support = arch.lane_support(adist)
-    open_by_colour = openness(ctx, rivals)
-    prior = {}
-    for lane in LANES:
-        signal = sum(open_by_colour[c] for c in lane) / len(lane)
-        prior[lane] = (k("openness_weight") * (1 - 0.6 * t) * p.w("openness") * signal
-                       + k("arch_lane_support") * support.get(lane, 0.0))
-    dist = lane_distribution(mine, n, prior, k)
-    lane = max(dist, key=dist.get)
-    roles = _role_counts(mine)
-    splash, splash_strength = splash_target(mine, lane, owned, ctx.combos, ctx.index, k)
+    dist, pair, splash = colour_state(ctx, mine, n, rivals)
 
+    # How much off-colour cards are discounted: generous early, strict once committed.
+    span = max(1.0, k("commit_pick") - k("commit_start"))
+    progress = min(1.0, max(0.0, (n - k("commit_start")) / span))
+    floor = k("flex_floor") + (k("committed_floor") - k("flex_floor")) * progress
+    fixing_owned = sum(1 for c in mine if c.is_land and pair and len(c.produces & pair) >= 2)
+
+    def fit_of_card(card: CardInfo) -> float:
+        flexible = card_fit(card, dist) if (pair is None or progress < 1.0) else 0.0
+        if pair is None:
+            return flexible
+        committed = _lane_fit(card, pair)
+        if splash and committed < 1.0:
+            if card.is_land and splash in card.produces and card.produces & pair:
+                committed = 1.0
+            elif not card.is_land and card.need <= pair | {splash}:
+                committed = k("splash_fit")
+        return committed if progress >= 1.0 else (1 - progress) * flexible + progress * committed
+
+    fit_cache: Dict[str, float] = {}
+
+    def fit_of(cid: str) -> float:
+        if cid not in fit_cache:
+            fit_cache[cid] = fit_of_card(ctx.index[cid]) if cid in ctx.index else 0.0
+        return fit_cache[cid]
+
+    roles = _role_counts(mine)
     w_power = (1.0 - k("power_late_drop") * t) * p.w("power")
     w_combo = (k("combo_base") + k("combo_growth") * min(1.0, 2 * t)) * p.w("combo")
-    w_arch = k("arch_weight") * min(1.0, 0.3 + 1.4 * t)
-    lane_floor = min(0.95, max(k("lane_floor_min"), k("lane_floor_start") - k("lane_floor_slope") * t) / p.w("lane"))
     w_needs = max(0.0, (t - k("needs_start")) * k("needs_slope"))
     w_float = (k("float_base") + k("float_growth") * min(1.0, 2 * t)) * p.w("float")
-    entry_window = max(0.0, min(1.0, 4 * t) * (1.0 - 1.4 * t))   # strongest a quarter to half way in
+    w_style = k("style_weight") * progress
 
     rows = []
     for cid in remaining:
         card = ctx.index[cid]
-        fit = card_fit(card, dist)
+        fit = fit_of(cid)
         power = max(card.power, 0.0)
-        if card.is_fixing and card.is_land:
-            damp = k("early_fixing_damp")
-            power *= damp + (1 - damp) * min(1.0, 2 * t)   # people take spells first and fix later
-        base = (w_power * power
-                + w_combo * combo_value(card, owned, remaining, ctx.combos, dist, ctx.index)
-                + package_value(card, roles, k)
-                + w_arch * arch.card_archetype_bonus(card, adist)
-                + w_needs * needs_value(card, mine, p, lane))
         if card.is_land and card.is_fixing:
-            base += (k("fixing_base") + k("fixing_growth") * t) * fit   # duals in our colours matter more as we settle
-        if splash:
-            if card.is_land and splash in card.produces and card.produces & lane:
-                base += k("splash_fixing") * min(1.5, splash_strength / k("splash_threshold"))
-                fit = max(fit, 0.8)
-            elif not card.is_land and splash in card.need and card.need <= lane | {splash}:
-                fit = max(fit, k("splash_fit"))
-        lane_mult = lane_floor + (1 - lane_floor) * fit
-        if card.need and fit < 0.7 and entry_window > 0:
-            # Moving into a new colour: crowded colours are less tempting, open ones more so.
-            signal = max(-1.5, min(1.0, sum(open_by_colour[c] for c in card.need) / len(card.need)))
-            lane_mult *= 1 + k("card_openness") * entry_window * (1 - fit) * signal
+            damp = k("early_fixing_damp")
+            power *= damp + (1 - damp) * min(1.0, 2 * t)    # spells first, fixing later
+        base = (w_power * power
+                + w_combo * combo_value(card, owned, remaining, ctx.combos, fit_of)
+                + package_value(card, roles)
+                + w_needs * needs_value(card, mine, p))
+        if pair:
+            base += w_style * style_value(card, pair)
+            if card.is_land and len(card.produces & pair) >= 2 and fixing_owned < k("fixing_target"):
+                base += k("fixing_bonus") * t * (1.5 if fixing_owned < 2 and t > 0.5 else 1.0)
+            if splash and card.is_land and splash in card.produces and card.produces & pair:
+                base += k("splash_fixing_bonus")
+        lane_mult = floor + (1 - floor) * fit
         rows.append([base * lane_mult, cid, {"fit": round(fit, 2)}])
 
-    # Float risk only matters among plausible picks, so only compute it for the top of the list.
     rows.sort(reverse=True)
     top = rows[:30]
     risk = float_risk(ctx, [r[1] for r in top], remaining)
@@ -420,5 +399,5 @@ def choose_pick(ctx: BotContext, rng: Optional[random.Random] = None) -> str:
 
 
 def suggest_picks(ctx: BotContext, n: int = 3) -> List[Tuple[str, float]]:
-    """Top-n cards for a seat (used later for the player pick helper)."""
+    """Top-n cards for a seat (for a future player pick helper)."""
     return [(cid, s) for s, cid, _ in score_pool(ctx)[:n]]

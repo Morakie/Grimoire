@@ -113,8 +113,8 @@ def test_float_risk_values_are_sensible():
     assert contested["freeze"] > 0.5
 
 
-def test_third_colour_becomes_a_splash_target_and_values_fixing():
-    from draftbot.engine import splash_target
+def test_splash_needs_real_value_and_values_its_fixing():
+    from draftbot.engine import splash_colour, TUNING
     cube = synthetic_cube() + [
         card("bomb", "Splash Bomb", "{2}{G}", 3, "Creature — Test", "", "G", 1750),
         card("bomb2", "Splash Bomb 2", "{1}{G}", 2, "Instant", "", "G", 1700),
@@ -122,10 +122,22 @@ def test_third_colour_becomes_a_splash_target_and_values_fixing():
     ]
     idx = build_card_index(cube)
     ur = [f"U{i}" for i in range(8)] + [f"R{i}" for i in range(8)]
-    mine = [idx[c] for c in ur + ["bomb", "bomb2"]]
-    colour, strength = splash_target(mine, frozenset("UR"), set(), [], idx)
-    assert colour == "G" and strength > 0
-    # With the splash target, the U/G dual should outrank an off-colour dual it would otherwise ignore.
+    # One middling green card is not a splash; two strong ones are.
+    assert splash_colour([idx[c] for c in ur + ["G0"]], frozenset("UR"), TUNING.get) is None
+    assert splash_colour([idx[c] for c in ur + ["bomb", "bomb2"]], frozenset("UR"), TUNING.get) == "G"
     ctx = _two_seat_ctx(cube, [], ur + ["bomb", "bomb2"], [])
     scores = {cid: s for s, cid, _ in score_pool(ctx)}
     assert scores["dual"] > scores["land1"]   # land1 is the UB dual: no splash help
+
+
+def test_missing_elo_fast_mana_is_rated_highly():
+    cube = synthetic_cube() + [dict(card("glee", "Gleemox", "{0}", 0, "Artifact", "{T}: Add one mana of any color.", ""), elo=None)]
+    idx = build_card_index(cube)
+    assert idx["glee"].power > 0.95
+
+
+def test_committed_bot_ignores_off_colour_cards():
+    cube = synthetic_cube()
+    ctx = _two_seat_ctx(cube, [], [f"U{i}" for i in range(7)] + [f"R{i}" for i in range(7)], [])
+    top5 = [cid for _, cid, _ in score_pool(ctx)[:5]]
+    assert all(cid[0] in "UR" or cid.startswith("land") for cid in top5), top5
