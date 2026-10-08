@@ -111,7 +111,12 @@ def lane_distribution(pool: Iterable[CardInfo], n_picks: int, prior: Optional[Di
             s *= k("lane_penalty_mono")
         elif len(lane) == 3:
             s *= k("lane_penalty_three")
-            s += k("three_colour_fixing") * sum(1 for f in fixers if len(f.produces & lane) >= 2)
+            # Only fixing that actually produces the splash colour (the lane colour with the least
+            # spell support) helps a three-colour plan; an on-colour dual for the main pair doesn't.
+            support = {c: sum(1 for sp in spells if c in sp.need) for c in lane}
+            splash = min(lane, key=lambda c: (support[c], c))
+            backing = sum(1 for f in fixers if splash in f.produces and len(f.produces & lane) >= 2)
+            s += k("three_colour_fixing") * min(backing, 4)
         if prior:
             s += prior.get(lane, 0.0)
         scores[lane] = s

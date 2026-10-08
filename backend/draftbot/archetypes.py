@@ -18,7 +18,7 @@ ARCHETYPES: Dict[str, tuple] = {
     "cheat":       (("R", "BR", "UR", "RG"), {"cheat": 2.0, "fatty": 1.4}),
     "reanimator":  (("B", "UB", "BR", "WB"), {"reanimate": 2.0, "fatty": 1.4, "self_mill": 0.9, "discard_outlet": 0.7}),
     "aggro":       (("R", "W", "WR", "BR", "RG"), {"aggro_creature": 1.4, "burn": 1.1, "equipment": 0.8, "anthem": 0.8, "cheap_threat": 0.6}),
-    "control":     (("UW", "UB", "U", "UBR", "WUB"), {"counter": 1.2, "sweeper": 1.4, "removal": 0.8, "draw": 0.8, "planeswalker": 1.0, "finisher": 0.5}),
+    "control":     (("UW", "UB", "U", "UR"), {"counter": 1.2, "sweeper": 1.4, "removal": 0.8, "draw": 0.8, "planeswalker": 1.0, "finisher": 0.5}),
     "aristocrats": (("W", "WB", "B", "BR"), {"sac_outlet": 1.6, "death_payoff": 1.6, "token_maker": 1.1}),
     "spells":      (("UR", "U", "R"), {"spells_payoff": 1.8, "cantrip": 1.0, "burn": 0.7, "ritual": 0.6, "draw": 0.5}),
     "midrange":    (("UG", "BG", "RG", "G"), {"ramp": 1.2, "value_creature": 1.1, "finisher": 0.9, "planeswalker": 0.8}),
