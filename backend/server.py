@@ -26,6 +26,7 @@ from draftbot import BotContext, build_card_index, choose_pick, combos_from_dict
 from draftbot.combos import attach_combos
 from draftbot.cardstats import draft_stats, ensure_stats
 from draftbot.personas import Persona
+from draftbot.engine import suggest_picks
 from draftbot.simulate import run_draft, summarise
 
 ROOT_DIR = Path(__file__).parent
@@ -669,7 +670,7 @@ async def create_draft(data: DraftCreate):
         rng = random.Random()
         for _ in range(data.num_bots):
             _seat_bot(draft, rng)
-        _warm_card_stats(draft["cube"])
+    _warm_card_stats(draft["cube"])
     await db.drafts.insert_one(draft)
     return {**draft_state(draft), "host_token": draft["host_token"]}
 
@@ -760,14 +761,15 @@ async def start_draft(share_id: str):
     now = datetime.now(timezone.utc).isoformat()
     update = {"status": "drafting", "order": order, "started_at": now, "updated_at": now,
               "seats": d["seats"], "players": d["players"]}
-    if any(p.get("is_bot") for p in d["players"]):
-        update["bot_combos"] = [c.to_dict() for c in await fetch_combos(build_card_index(d["cube"]))]
-        # CubeCobra ratings and package partners (usually already cached while the lobby filled up).
-        try:
-            await ensure_stats(db, _cube_names(d["cube"]), budget_s=12.0)
-            update["bot_stats"] = await draft_stats(db, d["cube"])
-        except Exception as exc:  # bots still work without these
-            logger.warning("CubeCobra card stats unavailable: %s", exc)
+    # Card knowledge for bots and pick suggestions: Spellbook combos plus CubeCobra ratings and
+    # package partners (usually cached while the lobby filled up; bot tables wait a little for them).
+    has_bots = any(p.get("is_bot") for p in d["players"])
+    update["bot_combos"] = [c.to_dict() for c in await fetch_combos(build_card_index(d["cube"]))]
+    try:
+        await ensure_stats(db, _cube_names(d["cube"]), budget_s=12.0 if has_bots else 2.0)
+        update["bot_stats"] = await draft_stats(db, d["cube"])
+    except Exception as exc:  # bots and suggestions still work without these
+        logger.warning("CubeCobra card stats unavailable: %s", exc)
     await db.drafts.update_one({"share_id": share_id}, {"$set": update})
     d = await db.drafts.find_one({"share_id": share_id})
     return draft_state(d)
@@ -966,6 +968,40 @@ async def _bot_pick_once(d: dict) -> dict:
         {"$push": {"picks": pick}, "$set": {"status": status, "updated_at": pick["ts"]}},
     )
     return await db.drafts.find_one({"share_id": d["share_id"]})
+
+
+_SUGGEST_CACHE: Dict[tuple, list] = {}
+
+
+@api_router.get("/drafts/{share_id}/suggestions")
+async def pick_suggestions(share_id: str, seat: int):
+    """Two or three good picks for a seat right now, from the same engine the bots use.
+    Uses only public information (the remaining pool and everyone's picks)."""
+    d = await db.drafts.find_one({"share_id": share_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d["status"] != "drafting" or not any(s["index"] == seat for s in d["seats"]):
+        return {"suggestions": []}
+    pick_index = len(d.get("picks", []))
+    key = (share_id, pick_index, seat)
+    if key not in _SUGGEST_CACHE:
+        index, combos = _bot_index(d)
+        picks_by_seat: Dict[int, List[str]] = {s["index"]: [] for s in d["seats"]}
+        for p in d["picks"]:
+            picks_by_seat.setdefault(p["seat_index"], []).append(p["card_id"])
+        taken = {p["card_id"] for p in d["picks"]}
+        remaining = [cid for cid in index if cid not in taken]
+        if not remaining:
+            return {"suggestions": []}
+        ctx = BotContext(index, combos, remaining, picks_by_seat, seat, d["order"], min(pick_index, len(d["order"]) - 1),
+                         d["pick_cap"], Persona("steady"))
+        top = await run_in_threadpool(suggest_picks, ctx, 3)
+        if len(_SUGGEST_CACHE) > 500:
+            _SUGGEST_CACHE.clear()
+        # Keep suggestions that are reasonably close to the best one.
+        best = top[0][1] if top else 0
+        _SUGGEST_CACHE[key] = [cid for cid, sc in top if best <= 0 or sc >= 0.7 * best]
+    return {"suggestions": _SUGGEST_CACHE[key]}
 
 
 def _seat_bot(d: dict, rng: random.Random) -> None:

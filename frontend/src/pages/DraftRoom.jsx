@@ -4,7 +4,7 @@ import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { buildExport } from "@/components/ExportDialog";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -72,6 +72,8 @@ export default function DraftRoom() {
   const [sheet, setSheet] = useState(null);            // mobile bottom sheet: "queue" | "feed" | "chat"
   const [previewCard, setPreviewCard] = useState(null); // mobile tap-to-preview
   const seatStripRef = useRef(null);
+  const [hints, setHints] = useState(() => localStorage.getItem("grim_draft_hints") !== "off");
+  const [suggestions, setSuggestions] = useState([]);
   const [cardSize, setCardSize] = useState(() => localStorage.getItem("grim_draft_card_size") || "m");
   const [muted, setMuted] = useState(() => localStorage.getItem("grim_draft_muted") === "true");
   const [queue, setQueue] = useState(() => { try { return JSON.parse(localStorage.getItem(`grim_draft_queue_${shareId}`)) || []; } catch { return []; } });
@@ -126,6 +128,20 @@ export default function DraftRoom() {
       setMe(next);
     }
   }, [state, me, shareId]);
+
+  // Pick suggestions (same engine as the bots) when it's our turn and hints are on.
+  const turnSeat = state && me && state.status === "drafting" && state.current_seat_index != null
+    && me.seats.includes(state.current_seat_index) ? state.current_seat_index : null;
+  const pickNo = state?.pick_index;
+  useEffect(() => {
+    setSuggestions([]);
+    if (!hints || turnSeat == null) return;
+    let active = true;
+    api.get(`/drafts/${shareId}/suggestions`, { params: { seat: turnSeat } })
+      .then(({ data }) => { if (active) setSuggestions(data.suggestions || []); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [hints, turnSeat, pickNo, shareId]);
 
   // Phones: keep the seat on the clock centred in the sideways-scrolling seat strip.
   const clockSeat = state?.current_seat_index;
@@ -298,6 +314,11 @@ export default function DraftRoom() {
               className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${sortBy === s.k ? "border-amber-400 text-amber-300 bg-amber-400/10" : "border-slate-700 text-slate-400 hover:text-slate-200"}`}>{s.label}</button>
           ))}
         </div>
+        <button data-testid="toggle-hints" onClick={() => setHints((h) => { localStorage.setItem("grim_draft_hints", h ? "off" : "on"); return !h; })}
+          title={hints ? "Hide pick suggestions" : "Show pick suggestions on your turn"}
+          className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border transition-colors ${hints ? "border-amber-400/60 text-amber-300" : "border-slate-700 text-slate-500 hover:text-slate-300"}`}>
+          <Lightbulb className="w-3.5 h-3.5" /> Hints
+        </button>
         <div className="hidden lg:flex items-center gap-1" data-testid="card-size-controls">
           <span className="text-xs text-slate-500 mr-1">Size</span>
           {CARD_SIZES.map((z) => (
@@ -310,6 +331,17 @@ export default function DraftRoom() {
         </label>
         <span className="text-xs text-slate-500 ml-auto">{availableCount} available</span>
       </div>
+      {hints && myTurn && suggestions.some((id) => cubeById[id] && !pickedIds.has(id)) && (
+        <div className="mb-3 flex items-center gap-2 flex-wrap" data-testid="pick-suggestions">
+          <span className="flex items-center gap-1 text-xs text-slate-500"><Lightbulb className="w-3.5 h-3.5 text-amber-400" /> Suggested</span>
+          {suggestions.map((id) => cubeById[id]).filter((c) => c && !pickedIds.has(c.id)).map((c) => (
+            <button key={c.id} data-testid={`suggestion-${c.id}`} onClick={() => setConfirmCard(c)} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
+              className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-slate-700 bg-slate-900/60 text-slate-200 hover:border-amber-400/70 hover:text-amber-200 max-w-[60vw] sm:max-w-[220px]">
+              <span className={`w-2 h-2 rounded-full shrink-0 ${colorClass(c)}`} /><span className="truncate">{c.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="lg:max-h-[calc(100vh-280px)] lg:overflow-y-auto lg:pr-1 lg:-mr-1">
         <div className={`grid grid-cols-3 sm:grid-cols-4 ${(CARD_SIZES.find((z) => z.k === cardSize) || CARD_SIZES[1]).cols} gap-2 sm:gap-3`} data-testid="available-cards">
           {poolCards.map((c) => {
