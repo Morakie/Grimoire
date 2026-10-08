@@ -1481,7 +1481,11 @@ def _warm_vrd_pool() -> None:
     async def lookup(ids):
         async with httpx.AsyncClient(timeout=30.0, headers=HEADERS) as hc:
             return await _collection_lookup(hc, ids)
-    vrd.warm(db, lookup, map_card, fetch_combos, build_card_index)
+
+    async def oldest(cards):
+        async with httpx.AsyncClient(timeout=30.0, headers=HEADERS) as hc:
+            return await _prefer_oldest(hc, cards)
+    vrd.warm(db, lookup, map_card, fetch_combos, build_card_index, oldest)
 
 
 async def _vrd_rebuild(entry: dict) -> None:

@@ -10,7 +10,8 @@ def test_legality_rules():
     assert vrd.is_legal(raw("Lightning Bolt"))
     assert vrd.is_legal(raw("Black Lotus", "Artifact", vintage="restricted"))
     assert not vrd.is_legal(raw("Chaos Orb", vintage="banned"))
-    assert not vrd.is_legal(raw("Arena-only Card", games=("arena",)))
+    assert not vrd.is_legal(raw("Alchemy Card", vintage="not_legal", games=("arena",)))
+    assert vrd.is_legal(raw("Mox Sapphire", "Artifact", vintage="restricted", games=("mtgo",)))   # online-only printing is fine
     assert not vrd.is_legal(raw("Island", "Basic Land — Island"))
     assert not vrd.is_legal(raw("Snow-Covered Forest", "Basic Snow Land — Forest"))
     assert vrd.is_basic(raw("Wastes", "Basic Land"))
