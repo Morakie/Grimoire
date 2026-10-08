@@ -7,7 +7,8 @@ remaining card from a few simple ingredients:
 2. Colours: flexible for the first few picks, committed to two colours by about pick 10. After that,
    off-colour cards are mostly ignored. A third colour is allowed only as a deliberate splash: the bot
    already owns strong cards in it AND has (or takes) fixing for it.
-3. Combos and packages: Commander Spellbook combos plus simple enabler/payoff pairs.
+3. Combos and packages: Commander Spellbook combos, CubeCobra "synergistic / often drafted with"
+   partners (what real drafters put together), plus simple enabler/payoff pairs.
 4. Fixing timing: spells first; dual/fetch lands for the bot's colours from mid-draft, urgently if short.
 5. Deck style by colour pair: once committed, a light nudge towards what that pair usually does
    (e.g. white-red values cheap creatures and burn).
@@ -46,6 +47,7 @@ TUNING: Dict[str, float] = {
     "fixing_target": 5,         # duals/fetches a deck would like
     # synergy
     "combo_base": 0.35, "combo_growth": 0.45,
+    "partner_weight": 0.3,      # CubeCobra package partners (value when fully "in" a package)
     "style_weight": 1.0,        # colour-pair deck style nudge (after committing)
     # late needs / floating
     "needs_start": 0.45, "needs_slope": 1.8,
@@ -54,6 +56,7 @@ TUNING: Dict[str, float] = {
     # win condition
     "wincon_start": 0.3,        # share of picks made before the bot checks it has a way to win
     "wincon_weight": 0.35,      # value of a strong threat for a deck with no win condition at all
+    "wincon_combo_weight": 0.8, # only fairly popular combos count as a way to win (Spellbook weight 0.6-1)
 }
 
 LANES: List[FrozenSet[str]] = (
@@ -192,6 +195,15 @@ def package_value(card: CardInfo, role_counts: Dict[str, int]) -> float:
     return min(total, 0.3)
 
 
+def partner_value(card: CardInfo, owned: Iterable[str], fit_of) -> float:
+    """CubeCobra packages: how strongly this card goes with the (on-colour) cards we already own,
+    based on what real drafters put together ("synergistic" counts double "often drafted with")."""
+    if not card.partners:
+        return 0.0
+    total = sum(strength * fit_of(o) for o, strength in card.partners.items() if o in owned)
+    return min(1.0, total / 3.0)
+
+
 def _role_counts(pool: Iterable[CardInfo]) -> Dict[str, int]:
     counts: Dict[str, int] = {}
     for c in pool:
@@ -241,7 +253,8 @@ def threat_level(card: CardInfo) -> float:
     return 0.0
 
 
-def win_plan(pool: List[CardInfo], fits, owned: set, remaining: set, combos: List[Combo]) -> Tuple[float, str]:
+def win_plan(pool: List[CardInfo], fits, owned: set, remaining: set, combos: List[Combo],
+             min_weight: float = TUNING["wincon_combo_weight"]) -> Tuple[float, str]:
     """How well this pool can actually win (0..1) and by which plan.
 
     Three ways to win, judged on cards the bot can cast:
@@ -254,6 +267,8 @@ def win_plan(pool: List[CardInfo], fits, owned: set, remaining: set, combos: Lis
     cheap_attackers = sum(1 for c in on if c.is_creature and c.cmc <= 2)
     combo = 0.0
     for combo_line in combos:
+        if combo_line.weight < min_weight:
+            continue
         have = sum(1 for p in combo_line.pieces if p in owned)
         if not have:
             continue
@@ -330,7 +345,8 @@ def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[s
             return card_fit(ctx.index[cid], d) if cid in ctx.index else 0.0
         desires = sorted(((max(ctx.index[cid].power, 0.0) * (0.3 + 0.7 * card_fit(ctx.index[cid], dist))
                            + 0.8 * combo_value(ctx.index[cid], owned, remaining, ctx.combos, fit_of)
-                           + package_value(ctx.index[cid], roles), cid) for cid in plausible), reverse=True)
+                           + package_value(ctx.index[cid], roles)
+                           + 0.3 * partner_value(ctx.index[cid], owned, fit_of), cid) for cid in plausible), reverse=True)
         spread = 1.0 + 0.35 * n_picks
         for rank, (_, cid) in enumerate(desires):
             if cid in cand_set:
@@ -403,7 +419,8 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     # (no combo line, too few threats, no aggro base) leans towards on-colour threats.
     wincon_gap, plan = 0.0, None
     if pair and t >= k("wincon_start"):
-        plan_score, plan = win_plan(mine, lambda c: fit_of(c.id), owned, remaining, ctx.combos)
+        plan_score, plan = win_plan(mine, lambda c: fit_of(c.id), owned, remaining, ctx.combos,
+                                    k("wincon_combo_weight"))
         ramp = min(1.0, (t - k("wincon_start")) / 0.25)
         wincon_gap = max(0.0, 1.0 - plan_score) * ramp * k("wincon_weight")
 
@@ -418,6 +435,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         base = (w_power * power
                 + w_combo * combo_value(card, owned, remaining, ctx.combos, fit_of)
                 + package_value(card, roles)
+                + k("partner_weight") * p.w("combo") * partner_value(card, owned, fit_of)
                 + w_needs * needs_value(card, mine, p))
         if wincon_gap:
             base += wincon_gap * threat_level(card) * min(1.0, 0.4 + max(card.power, 0.0))

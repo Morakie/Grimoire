@@ -24,6 +24,7 @@ from datetime import datetime, timezone, timedelta
 
 from draftbot import BotContext, build_card_index, choose_pick, combos_from_dicts, fetch_combos, random_persona, bot_names
 from draftbot.combos import attach_combos
+from draftbot.cardstats import draft_stats, ensure_stats
 from draftbot.personas import Persona
 from draftbot.simulate import run_draft, summarise
 
@@ -690,6 +691,12 @@ async def start_draft(share_id: str):
     update = {"status": "drafting", "order": order, "started_at": now, "updated_at": now}
     if any(p.get("is_bot") for p in d["players"]):
         update["bot_combos"] = [c.to_dict() for c in await fetch_combos(build_card_index(d["cube"]))]
+        # CubeCobra ratings and package partners (usually already cached while the lobby filled up).
+        try:
+            await ensure_stats(db, _cube_names(d["cube"]), budget_s=12.0)
+            update["bot_stats"] = await draft_stats(db, d["cube"])
+        except Exception as exc:  # bots still work without these
+            logger.warning("CubeCobra card stats unavailable: %s", exc)
     await db.drafts.update_one({"share_id": share_id}, {"$set": update})
     d = await db.drafts.find_one({"share_id": share_id})
     return draft_state(d)
@@ -801,6 +808,20 @@ class BotRemoveInput(BaseModel):
     host_token: str
     player_id: str
 
+_BACKGROUND: set = set()   # keep references to background tasks so they aren't garbage collected
+
+
+def _cube_names(cube: List[dict]) -> List[str]:
+    return [c.get("name", "") for c in cube if not c.get("is_custom")]
+
+
+def _warm_card_stats(cube: List[dict]) -> None:
+    """Start caching CubeCobra stats for a cube in the background (bots use them once the draft starts)."""
+    task = asyncio.create_task(ensure_stats(db, _cube_names(cube), budget_s=600.0))
+    _BACKGROUND.add(task)
+    task.add_done_callback(_BACKGROUND.discard)
+
+
 _BOT_INDEX_CACHE: Dict[str, Any] = {}   # share_id -> (cube size, card index, combos)
 
 
@@ -808,7 +829,7 @@ def _bot_index(d: dict):
     cached = _BOT_INDEX_CACHE.get(d["share_id"])
     if cached and cached[0] == len(d["cube"]):
         return cached[1], cached[2]
-    index = build_card_index(d["cube"])
+    index = build_card_index(d["cube"], d.get("bot_stats"))
     combos = combos_from_dicts(d.get("bot_combos", []))
     attach_combos(index, combos)
     if len(_BOT_INDEX_CACHE) > 50:
@@ -899,6 +920,7 @@ async def add_bot(share_id: str, data: BotInput):
     d["players"].append({"id": pid, "token": str(uuid.uuid4()), "name": name, "seats": assigned,
                          "is_bot": True, "persona": random_persona(rng).to_dict()})
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": d["players"], "updated_at": datetime.now(timezone.utc).isoformat()}})
+    _warm_card_stats(d["cube"])
     return draft_state(d, light=True)
 
 
@@ -939,6 +961,8 @@ class SimulateInput(BaseModel):
     seed: int = 0
     tuning: Dict[str, float] = {}      # overrides for draftbot.engine.TUNING
     baseline: bool = True              # also run an Elo-greedy draft for comparison
+    card_stats: bool = True            # use CubeCobra live Elo + package partners
+    stats_budget: float = Field(60.0, ge=0, le=240)   # seconds to spend filling the stats cache this call
 
 
 @api_router.post("/bots/simulate")
@@ -955,12 +979,17 @@ async def simulate_bots(data: SimulateInput):
         cached = _SIM_CACHE[data.cube_id] = (cube, resolved["not_found"], combos)
     cube, not_found, combos = cached
     resolved = {"not_found": not_found}
-    index = build_card_index(cube)
+    stats = None
+    if data.card_stats:
+        await ensure_stats(db, _cube_names(cube), budget_s=data.stats_budget)
+        stats = await draft_stats(db, cube)
+    index = build_card_index(cube, stats)
     order = compute_pick_order(data.seats, 0, data.picks_per_seat, len(cube))
     bots = await run_in_threadpool(run_draft, cube, combos, order, data.seats, data.picks_per_seat, data.seed, (), index, data.tuning)
     greedy = await run_in_threadpool(run_draft, cube, combos, order, data.seats, data.picks_per_seat, data.seed, tuple(range(data.seats))) if data.baseline else None
     return {
         "cube_size": len(cube), "not_found": resolved["not_found"], "combos_in_cube": len(combos),
+        "cards_with_stats": len((stats or {}).get("elo", {})),
         "seconds": round(bots["seconds"], 1),
         "bots": summarise(bots, combos),
         "elo_greedy_baseline": [{k: s[k] for k in ("seat", "lane", "on_lane_pct", "avg_elo_top23")} for s in summarise(greedy, combos)] if greedy else [],
@@ -974,6 +1003,7 @@ async def startup():
     await db.decks.create_index("share_id")
     await db.decks.create_index("user_id")
     await db.drafts.create_index("share_id", unique=True)
+    await db.card_stats.create_index("key", unique=True)
     # Optional seed account (handy for local dev and tests). Only created when both values
     # are set explicitly; there is deliberately no built-in default password.
     admin_email = os.environ.get("ADMIN_EMAIL", "").strip().lower()

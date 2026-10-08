@@ -156,3 +156,28 @@ def test_committed_bot_ignores_off_colour_cards():
     ctx = _two_seat_ctx(cube, [], [f"U{i}" for i in range(7)] + [f"R{i}" for i in range(7)], [])
     top5 = [cid for _, cid, _ in score_pool(ctx)[:5]]
     assert all(cid[0] in "UR" or cid.startswith("land") for cid in top5), top5
+
+
+def test_cubecobra_card_page_is_parsed():
+    from draftbot.cardstats import parse_card_page
+    html = ('<script>window.reactProps = {"card": {"name": "Underworld Breach", "scryfall_id": "abc", "elo": 1585.6},'
+            ' "draftedWithIDs": {"top": ["x", "y"]}, "synergisticIDs": {"top": ["y"]}};</script>')
+    stats = parse_card_page(html)
+    assert stats == {"name": "Underworld Breach", "cc_id": "abc", "elo": 1585.6, "drafted_with": ["x", "y"], "synergistic": ["y"]}
+    assert parse_card_page("<html>404</html>") is None
+
+
+def test_live_elo_and_package_partners_shape_picks():
+    cube = synthetic_cube() + [
+        card("breach", "Breach", "{1}{U}", 2, "Enchantment", "", "U", 1300),
+        card("other", "Other", "{1}{U}", 2, "Enchantment", "", "U", 1300),
+    ]
+    stats = {"elo": {"breach": 1500}, "partners": {"breach": {"U0": 1.0, "U1": 1.0, "U2": 0.5},
+                                                   "U0": {"breach": 1.0}, "U1": {"breach": 1.0}, "U2": {"breach": 0.5}}}
+    idx = build_card_index(cube, stats)
+    assert idx["breach"].elo == 1500 and idx["other"].elo == 1300
+    ctx = _two_seat_ctx(cube, [], ["U0", "U1", "U2", "R0", "R1"], [])
+    ctx.index = idx
+    scores = {cid: s for s, cid, _ in score_pool(ctx)}
+    plain = {cid: s for s, cid, _ in score_pool(_two_seat_ctx(cube, [], ["U0", "U1", "U2", "R0", "R1"], []))}
+    assert scores["breach"] > plain["breach"] * 1.3

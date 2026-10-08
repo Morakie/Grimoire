@@ -77,6 +77,7 @@ class CardInfo:
     power: float                  # normalised 0..1 power within this cube
     roles: FrozenSet[str] = field(default_factory=frozenset)
     combos: List[int] = field(default_factory=list)   # indices into the draft's combo list
+    partners: Dict[str, float] = field(default_factory=dict)  # CubeCobra package partners in this cube
 
     @property
     def is_land(self) -> bool:
@@ -152,9 +153,15 @@ def _estimate_elo(card: dict, types: FrozenSet[str], text: str, elos: List[float
     return mid
 
 
-def build_card_index(cube: Iterable[dict]) -> Dict[str, CardInfo]:
-    """Build CardInfo for every non-custom card in a cube (cube entries are draft card dicts)."""
-    cards = [c for c in cube if not c.get("is_custom")]
+def build_card_index(cube: Iterable[dict], stats: Optional[dict] = None) -> Dict[str, CardInfo]:
+    """Build CardInfo for every non-custom card in a cube (cube entries are draft card dicts).
+
+    `stats` (optional, from draftbot.cardstats.draft_stats) supplies live CubeCobra Elo, which replaces
+    the CSV value, and each card's package partners within the cube."""
+    stats = stats or {}
+    live_elo = stats.get("elo") or {}
+    partners = stats.get("partners") or {}
+    cards = [dict(c, elo=live_elo.get(c["id"]) or c.get("elo")) for c in cube if not c.get("is_custom")]
     elos = [float(c["elo"]) for c in cards if c.get("elo")]
     mid = median(elos) if elos else 1200.0
     lo = sorted(elos)[int(len(elos) * 0.05)] if elos else mid - 200
@@ -182,6 +189,7 @@ def build_card_index(cube: Iterable[dict]) -> Dict[str, CardInfo]:
             elo=elo,
             power=power,
             roles=_roles(c, types, text),
+            partners=dict(partners.get(c["id"], {})),
         )
     return index
 
