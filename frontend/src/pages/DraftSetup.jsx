@@ -1,57 +1,21 @@
 import React, { useEffect, useRef, useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import api from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
+import { resolveCube, readTextFile } from "@/lib/cube";
+import CustomCardsPicker, { toCubeCustoms } from "@/components/CustomCardsPicker";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Sparkles, Loader2, Shuffle, Users, RefreshCw, Plus, ArrowRight, ImagePlus, X, Eye, Lock, KeyRound } from "lucide-react";
+import { Sparkles, Loader2, Shuffle, Users, RefreshCw, Plus, ArrowRight, Eye, Lock, KeyRound, Library } from "lucide-react";
 import { toast } from "sonner";
-
-function parseList(text) {
-  const t = text.trim();
-  if (t.startsWith("[") || t.startsWith("{")) {
-    try {
-      const j = JSON.parse(t);
-      const arr = Array.isArray(j) ? j : (j.cards || j.mainboard || []);
-      return arr.map((x) => (typeof x === "string" ? x : x.name)).filter(Boolean);
-    } catch { /* fall through */ }
-  }
-  return t.split(/\r?\n/).map((ln) => {
-    let s = ln.split(",")[0].trim();           // CSV: first column
-    s = s.replace(/^\d+\s*[xX]?\s+/, "");       // leading "4 " / "4x "
-    s = s.replace(/\s*\([^)]*\)\s*[^\s]*/g, "").trim();
-    return s;
-  }).filter((s) => s && !/^(name|quantity|count)$/i.test(s));
-}
-
-// Shrink an uploaded image to card size (488 px wide, like Scryfall's "normal" image) as a JPEG
-// data URL, so a custom card adds roughly 50 KB to the draft instead of a multi-MB photo.
-function resizeImage(file, width = 488) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      const scale = Math.min(1, width / img.width);
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(img.width * scale);
-      canvas.height = Math.round(img.height * scale);
-      const ctx = canvas.getContext("2d");
-      ctx.fillStyle = "#000";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      URL.revokeObjectURL(url);
-      resolve(canvas.toDataURL("image/jpeg", 0.85));
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Not an image")); };
-    img.src = url;
-  });
-}
-
-const fileBaseName = (f) => f.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
 
 export default function DraftSetup() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const [params] = useSearchParams();
   const formRef = useRef(null);
   const [showForm, setShowForm] = useState(false);
   const [lobbies, setLobbies] = useState([]);
@@ -71,23 +35,26 @@ export default function DraftSetup() {
   const [cubeCobra, setCubeCobra] = useState("");
   const [loading, setLoading] = useState(false);
   const [customCards, setCustomCards] = useState([]);   // { id, name, image }
+  // My Cubes (logged-in users): host from a saved cube, or save a new list while hosting.
+  const [cubes, setCubes] = useState([]);
+  const [cubeId, setCubeId] = useState("new");          // "new" or a saved cube id
+  const [saveCube, setSaveCube] = useState(true);
+  const [cubeName, setCubeName] = useState("");
+  const savedCube = cubes.find((c) => c.id === cubeId);
 
-  const addCustomFiles = async (e) => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = "";
-    const room = 30 - customCards.length;
-    if (files.length > room) toast(`Only ${Math.max(room, 0)} more custom card(s) fit (30 max)`);
-    const added = [];
-    for (const f of files.slice(0, Math.max(room, 0))) {
-      try {
-        const image = await resizeImage(f);
-        added.push({ id: Math.random().toString(36).slice(2, 10), name: fileBaseName(f) || "Custom card", image });
-      } catch { toast.error(`${f.name} isn't an image`); }
-    }
-    setCustomCards((cs) => [...cs, ...added]);
-  };
-  const renameCustom = (id, name) => setCustomCards((cs) => cs.map((c) => (c.id === id ? { ...c, name } : c)));
-  const removeCustom = (id) => setCustomCards((cs) => cs.filter((c) => c.id !== id));
+  useEffect(() => {
+    if (!user) return;
+    api.get("/cubes").then(({ data }) => {
+      setCubes(data.cubes || []);
+      const wanted = params.get("cube");
+      if (wanted && (data.cubes || []).some((c) => c.id === wanted)) {
+        setCubeId(wanted);
+        setShowForm(true);
+        setTimeout(() => formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
+      }
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   const nPeople = Number(players) || 0;
   const nBots = Number(bots) || 0;
@@ -127,31 +94,36 @@ export default function DraftSetup() {
     setTimeout(() => formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
   };
 
-  const onFile = (e) => {
+  const onFile = async (e) => {
     const f = e.target.files?.[0];
-    if (!f) return;
-    const r = new FileReader();
-    r.onload = () => setCubeText(String(r.result || ""));
-    r.readAsText(f);
+    if (f) setCubeText(await readTextFile(f));
   };
 
   const create = async () => {
     if (!seatsOk) { toast.error("Need at least 1 player, at most 12 players + bots, and 64 seats in total"); return; }
     setLoading(true);
     try {
-      let names = [];
-      if (cubeCobra.trim()) {
-        const { data } = await api.get("/cube/cubecobra", { params: { id: cubeCobra.trim() } });
-        names = data.names || [];
+      const customs = toCubeCustoms(customCards);
+      let cards;
+      if (savedCube) {
+        const { data } = await api.get(`/cubes/${savedCube.id}`);
+        cards = data.cards || [];
       } else {
-        names = parseList(cubeText);
+        if (!cubeCobra.trim() && !cubeText.trim() && !customs.length) { toast.error("Add a cube list, a CubeCobra link or custom cards"); setLoading(false); return; }
+        const res = (cubeCobra.trim() || cubeText.trim()) ? await resolveCube({ cubeCobra, text: cubeText }) : { cards: [], notFound: [] };
+        if (!res.cards.length && !customs.length) { toast.error("No cards resolved from that cube"); setLoading(false); return; }
+        if (res.notFound.length) toast(`${res.notFound.length} card(s) not found and skipped`);
+        cards = res.cards;
+        if (user && saveCube) {
+          try {
+            const label = cubeName.trim() || name.trim() || "My Cube";
+            await api.post("/cubes", { name: label, cubecobra_id: res.cubecobraId, cards: [...customs, ...cards] });
+            toast.success(`Saved "${label}" to My Cubes`);
+          } catch { toast.error("Couldn't save the cube, but the draft will still be created"); }
+        }
       }
-      if (!names.length && !customCards.length) { toast.error("Add a cube list, a CubeCobra link or custom cards"); setLoading(false); return; }
-      const uniq = Array.from(new Set(names));
-      const col = uniq.length ? (await api.post("/cards/collection", { names: uniq })).data : { cards: [] };
-      if (!col.cards?.length && !customCards.length) { toast.error("No cards resolved from that cube"); setLoading(false); return; }
-      if (col.not_found?.length) toast(`${col.not_found.length} card(s) not found and skipped`);
-      const customs = customCards.map((c) => ({ id: `custom-${c.id}`, name: c.name.trim() || "Custom card", image: c.image, is_custom: true }));
+      // A saved cube already carries its own custom cards; extra uploads are added for this draft only.
+      const col = { cards: savedCube ? [...cards.filter((c) => c.is_custom), ...cards.filter((c) => !c.is_custom)] : cards };
       const { data: draft } = await api.post("/drafts", {
         name: name.trim() || "Cube Draft",
         num_players: nPeople + nBots,
@@ -306,6 +278,25 @@ export default function DraftSetup() {
                 Bots are seated automatically and pick on their own turns. “Double after” = single picks per seat before each turn grants 2 (0 = off). Boundary seats get 4 in a row during the double phase.
               </p>
 
+              {user && cubes.length > 0 && (
+                <div data-testid="saved-cube-picker">
+                  <Label className="text-slate-300 flex items-center gap-1.5"><Library className="w-3.5 h-3.5 text-amber-400" /> Cube</Label>
+                  <Select value={cubeId} onValueChange={setCubeId}>
+                    <SelectTrigger data-testid="saved-cube-select" className="mt-1.5 bg-slate-950 border-slate-700 text-slate-100"><SelectValue /></SelectTrigger>
+                    <SelectContent className="bg-slate-900 border-slate-700 text-slate-200">
+                      <SelectItem value="new">New list (CubeCobra link or paste)</SelectItem>
+                      {cubes.map((c) => <SelectItem key={c.id} value={c.id}>{c.name} · {c.card_count} cards</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  {savedCube && (
+                    <p className="text-xs text-slate-500 mt-1.5" data-testid="saved-cube-summary">
+                      {savedCube.card_count} cards{savedCube.custom_count ? `, ${savedCube.custom_count} custom` : ""}. Manage it under My Decks → Cubes.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {!savedCube && (<>
               <div>
                 <Label className="text-slate-300">CubeCobra link or ID</Label>
                 <Input data-testid="draft-cubecobra" value={cubeCobra} onChange={(e) => setCubeCobra(e.target.value)} placeholder="https://cubecobra.com/cube/overview/xxxx" className="mt-1.5 bg-slate-950 border-slate-700 text-slate-100 focus-visible:ring-amber-400" />
@@ -317,6 +308,19 @@ export default function DraftSetup() {
                   Upload file <input type="file" accept=".txt,.csv,.json" onChange={onFile} className="hidden" data-testid="draft-cube-file" />
                 </label>
               </div>
+              {user ? (
+                <div className="flex items-center gap-3 flex-wrap" data-testid="save-cube">
+                  <label className="flex items-center gap-2 text-sm text-slate-200 cursor-pointer">
+                    <input type="checkbox" checked={saveCube} onChange={(e) => setSaveCube(e.target.checked)} className="w-4 h-4 accent-amber-400" data-testid="save-cube-toggle" />
+                    Save to My Cubes as
+                  </label>
+                  <Input data-testid="save-cube-name" value={cubeName} onChange={(e) => setCubeName(e.target.value)} placeholder={name.trim() || "My Cube"} disabled={!saveCube} maxLength={120}
+                    className="h-8 w-56 bg-slate-950 border-slate-700 text-slate-100 text-sm disabled:opacity-50" />
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500"><Link to="/login" className="text-amber-400 hover:underline">Log in</Link> to save cubes for next time.</p>
+              )}
+              </>)}
 
               <label className="flex items-start gap-3 cursor-pointer" data-testid="draft-private">
                 <input type="checkbox" checked={isPrivate} onChange={(e) => setIsPrivate(e.target.checked)} className="mt-1 w-4 h-4 accent-amber-400" data-testid="draft-private-toggle" />
@@ -328,26 +332,8 @@ export default function DraftSetup() {
 
               <div data-testid="custom-cards">
                 <Label className="text-slate-300">Custom cards (optional)</Label>
-                <p className="text-xs text-slate-500 mt-1">Upload card images (your own designs, proxies, inside jokes). They join the pool as tokens, sit at the top of the draft, and bots leave them alone.</p>
-                {customCards.length > 0 && (
-                  <div className="mt-3 grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-6 gap-3">
-                    {customCards.map((c) => (
-                      <div key={c.id} className="relative" data-testid={`custom-card-${c.id}`}>
-                        <div className="aspect-[0.716] rounded-lg overflow-hidden border border-slate-700 bg-slate-800">
-                          <img src={c.image} alt={c.name} className="w-full h-full object-cover" />
-                        </div>
-                        <button type="button" onClick={() => removeCustom(c.id)} title="Remove" data-testid={`custom-remove-${c.id}`}
-                          className="absolute top-1 right-1 w-6 h-6 rounded bg-black/80 text-white hover:bg-red-500 flex items-center justify-center"><X className="w-3.5 h-3.5" /></button>
-                        <Input value={c.name} onChange={(e) => renameCustom(c.id, e.target.value)} maxLength={80} aria-label="Card name"
-                          className="mt-1.5 h-8 text-xs bg-slate-950 border-slate-700 text-slate-100" />
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <label className="mt-3 inline-flex items-center gap-2 text-sm px-3 h-9 rounded-md border border-slate-700 bg-slate-950 text-slate-300 cursor-pointer hover:text-white hover:border-slate-600">
-                  <ImagePlus className="w-4 h-4" /> Add card images
-                  <input type="file" accept="image/*" multiple onChange={addCustomFiles} className="hidden" data-testid="custom-card-file" />
-                </label>
+                <p className="text-xs text-slate-500 mt-1">Upload card images (your own designs, proxies, inside jokes). They join the pool as tokens, sit at the top of the draft, and bots leave them alone.{savedCube ? " These are added to this draft only; the saved cube keeps its own." : ""}</p>
+                <CustomCardsPicker value={customCards} onChange={setCustomCards} />
               </div>
 
               <Button data-testid="draft-create-submit" onClick={create} disabled={loading} className="w-full h-11 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">

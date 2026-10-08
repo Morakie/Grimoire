@@ -617,6 +617,93 @@ async def root():
 async def health():
     return {"status": "ok"}
 
+# ===================== My Cubes (saved cube lists) =====================
+
+CUBE_CARD_KEYS = ("id", "oracle_id", "name", "mana_cost", "cmc", "type_line", "oracle_text", "colors",
+                  "color_identity", "rarity", "set", "set_name", "collector_number", "image", "art_crop", "elo", "is_custom")
+MAX_CUBE_CARDS = 1200
+
+
+class CubeInput(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    cubecobra_id: Optional[str] = Field(default=None, max_length=200)   # set when the list came from CubeCobra
+    cards: List[dict] = Field(default=[], max_length=MAX_CUBE_CARDS)
+
+
+class CubeUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    cubecobra_id: Optional[str] = Field(default=None, max_length=200)
+    cards: Optional[List[dict]] = Field(default=None, max_length=MAX_CUBE_CARDS)
+
+
+def _cube_cards(cards: List[dict]) -> List[dict]:
+    """Keep only the card fields a draft needs (no prices etc.) and validate custom cards."""
+    if not cards:
+        raise HTTPException(status_code=400, detail="A cube needs at least one card")
+    cleaned = _clean_custom_cards([c for c in cards if isinstance(c, dict) and c.get("id") and c.get("name")])
+    return [{k: c[k] for k in CUBE_CARD_KEYS if k in c} for c in cleaned]
+
+
+def cube_summary(c: dict) -> dict:
+    cards = c.get("cards", [])
+    art = next((x.get("art_crop") for x in cards if x.get("art_crop") and not x.get("is_custom")), None)
+    return {
+        "id": c["id"], "name": c["name"], "cubecobra_id": c.get("cubecobra_id"),
+        "card_count": len(cards), "custom_count": sum(1 for x in cards if x.get("is_custom")),
+        "art": art, "created_at": c["created_at"], "updated_at": c["updated_at"],
+    }
+
+
+async def _owned_cube(cube_id: str, user: dict) -> dict:
+    c = await db.cubes.find_one({"id": cube_id}, {"_id": 0})
+    if not c or c["user_id"] != user["id"]:
+        raise HTTPException(status_code=404, detail="Cube not found")
+    return c
+
+
+@api_router.get("/cubes")
+async def list_cubes(user: dict = Depends(get_current_user)):
+    rows = db.cubes.find({"user_id": user["id"]}, {"_id": 0}).sort("updated_at", -1).limit(200)
+    return {"cubes": [cube_summary(c) async for c in rows]}
+
+
+@api_router.get("/cubes/{cube_id}")
+async def get_cube(cube_id: str, user: dict = Depends(get_current_user)):
+    c = await _owned_cube(cube_id, user)
+    return {**cube_summary(c), "cards": c.get("cards", [])}
+
+
+@api_router.post("/cubes")
+async def create_cube(data: CubeInput, user: dict = Depends(get_current_user)):
+    now = datetime.now(timezone.utc).isoformat()
+    cube = {"id": str(uuid.uuid4()), "user_id": user["id"], "name": data.name.strip(),
+            "cubecobra_id": (data.cubecobra_id or "").strip() or None,
+            "cards": _cube_cards(data.cards), "created_at": now, "updated_at": now}
+    await db.cubes.insert_one(cube)
+    return {**cube_summary(cube), "cards": cube["cards"]}
+
+
+@api_router.put("/cubes/{cube_id}")
+async def update_cube(cube_id: str, data: CubeUpdate, user: dict = Depends(get_current_user)):
+    await _owned_cube(cube_id, user)
+    update: Dict[str, Any] = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if data.name is not None:
+        update["name"] = data.name.strip()
+    if data.cubecobra_id is not None:
+        update["cubecobra_id"] = data.cubecobra_id.strip() or None
+    if data.cards is not None:
+        update["cards"] = _cube_cards(data.cards)
+    await db.cubes.update_one({"id": cube_id}, {"$set": update})
+    c = await _owned_cube(cube_id, user)
+    return {**cube_summary(c), "cards": c.get("cards", [])}
+
+
+@api_router.delete("/cubes/{cube_id}")
+async def delete_cube(cube_id: str, user: dict = Depends(get_current_user)):
+    await _owned_cube(cube_id, user)
+    await db.cubes.delete_one({"id": cube_id})
+    return {"ok": True}
+
 # ===================== Rotisserie Cube Draft =====================
 
 class DraftCreate(BaseModel):
@@ -1273,6 +1360,8 @@ async def startup():
     await db.drafts.create_index("share_id", unique=True)
     await db.drafts.create_index("join_code", sparse=True)
     await db.card_stats.create_index("key", unique=True)
+    await db.cubes.create_index("id", unique=True)
+    await db.cubes.create_index("user_id")
     # Optional seed account (handy for local dev and tests). Only created when both values
     # are set explicitly; there is deliberately no built-in default password.
     admin_email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
