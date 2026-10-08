@@ -33,7 +33,7 @@ TUNING: Dict[str, float] = {
     "commit_pick": 10,          # by this pick the bot is committed to two colours
     "flex_floor": 0.9,          # off-colour cards keep this share of their value while flexible...
     "committed_floor": 0.1,     # ...and this share once committed
-    "openness_weight": 0.6,     # colour signals from the table (early picks only)
+    "openness_weight": 2.5,     # colour signals from the table (early picks only); tuned in simulations
     # splash
     "splash_min_value": 1.2,    # owned power in the third colour before a splash is considered
     "splash_fit": 0.6,          # how on-colour splash cards count once the splash is real
