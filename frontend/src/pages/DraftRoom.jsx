@@ -4,7 +4,7 @@ import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { buildExport } from "@/components/ExportDialog";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -554,6 +554,9 @@ export default function DraftRoom() {
           <span className="text-slate-500">/</span>
           <span className="font-display font-semibold truncate min-w-0 max-w-[40vw] sm:max-w-none">{state.name}</span>
           <span className="text-xs px-2 py-0.5 rounded-full border border-slate-700 text-slate-300 capitalize">{state.status}</span>
+          {!me && state.status !== "lobby" && (
+            <span data-testid="spectating-badge" className="text-xs px-2 py-0.5 rounded-full border border-sky-400/30 text-sky-300 flex items-center gap-1"><Eye className="w-3 h-3" /> Watching</span>
+          )}
           <div className="ml-auto flex items-center gap-2">
             {state.status === "drafting" && (
               <Button size="sm" variant="outline" data-testid="mute-toggle" onClick={toggleMute} title={muted ? "Unmute turn alert" : "Mute turn alert"} className="bg-slate-900 border-slate-700 text-slate-300">{muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}</Button>
@@ -617,7 +620,11 @@ export default function DraftRoom() {
                     <Input readOnly value={shareUrl} data-testid="lobby-share-url" className="h-8 bg-slate-900 border-slate-700 text-slate-300 text-xs" />
                     <Button size="sm" data-testid="lobby-copy-link" onClick={() => { navigator.clipboard.writeText(shareUrl); toast.success("Invite link copied"); }} className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold shrink-0"><Copy className="w-4 h-4" /></Button>
                   </div>
-                  <div className="text-[11px] text-slate-500 mt-1.5">Table code: <span className="text-amber-400 font-mono" data-testid="lobby-code">{shareId}</span></div>
+                  <div className="text-[11px] text-slate-500 mt-1.5 flex items-center gap-1.5 flex-wrap">
+                    Table code: <span className="text-amber-400 font-mono text-sm tracking-widest" data-testid="lobby-code">{state.join_code || shareId}</span>
+                    {state.join_code && <button type="button" data-testid="lobby-copy-code" onClick={() => { navigator.clipboard.writeText(state.join_code); toast.success("Code copied"); }} className="text-slate-500 hover:text-amber-300" title="Copy code"><Copy className="w-3 h-3" /></button>}
+                    {state.private && <span className="ml-auto flex items-center gap-1 text-slate-400"><Lock className="w-3 h-3" /> Private</span>}
+                  </div>
                 </div>
                 <div className="mb-4" data-testid="lobby-players">
                   <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1.5">Players</div>

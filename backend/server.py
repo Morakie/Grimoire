@@ -566,6 +566,7 @@ class DraftCreate(BaseModel):
     num_bots: int = Field(0, ge=0, le=11)    # bots seated straight away (the rest are people)
     double_draft_after: int = 0   # picks per seat made singly before turns grant 2; 0 = never
     pick_cap: int = 45            # picks per seat
+    private: bool = False         # hidden from Open tables; join by link or code
     cube: List[dict] = []
 
 class ClaimInput(BaseModel):
@@ -621,6 +622,8 @@ def draft_state(d: dict, light: bool = False) -> dict:
     picked_ids = [p["card_id"] for p in d.get("picks", [])]
     base = {
         "share_id": d["share_id"],
+        "join_code": d.get("join_code"),
+        "private": bool(d.get("private")),
         "name": d["name"],
         "status": d["status"],
         "num_players": d["num_players"],
@@ -685,6 +688,29 @@ def _clean_custom_cards(cube: List[dict]) -> List[dict]:
     return out
 
 
+# Join codes: 5 characters without look-alikes (no 0/O, 1/I/L), easy to read out at the table.
+CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+
+async def _new_join_code() -> str:
+    for _ in range(20):
+        code = "".join(random.choice(CODE_ALPHABET) for _ in range(5))
+        if not await db.drafts.find_one({"join_code": code}, {"_id": 1}):
+            return code
+    raise HTTPException(status_code=503, detail="Could not create a table code, try again")
+
+
+@api_router.get("/drafts/code/{code}")
+async def find_by_code(code: str):
+    """Look up a table by its join code (or its share id, which works as a code too)."""
+    c = code.strip()
+    d = await db.drafts.find_one({"join_code": c.upper()}, {"share_id": 1, "status": 1, "_id": 0}) \
+        or await db.drafts.find_one({"share_id": c.lower()}, {"share_id": 1, "status": 1, "_id": 0})
+    if not d or d.get("status") == "cancelled":
+        raise HTTPException(status_code=404, detail="No table with that code")
+    return {"share_id": d["share_id"], "status": d["status"]}
+
+
 @api_router.post("/drafts")
 async def create_draft(data: DraftCreate):
     if data.num_seats % data.num_players != 0:
@@ -704,6 +730,8 @@ async def create_draft(data: DraftCreate):
         "num_seats": data.num_seats,
         "double_draft_after": data.double_draft_after,
         "pick_cap": data.pick_cap,
+        "private": data.private,
+        "join_code": await _new_join_code(),
         "cube": data.cube,
         "seats": [{"index": i, "player_id": None, "player_name": None} for i in range(data.num_seats)],
         "players": [],
@@ -725,20 +753,36 @@ async def create_draft(data: DraftCreate):
 @api_router.get("/drafts/open")
 async def list_open_drafts():
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
-    cursor = db.drafts.find({"status": "lobby", "created_at": {"$gte": cutoff}}).sort("created_at", -1).limit(30)
-    out = []
+    # Lobbies to join, plus drafts under way to watch. Private tables never appear here.
+    live_cutoff = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    query = {"private": {"$ne": True}, "$or": [
+        {"status": "lobby", "created_at": {"$gte": cutoff}},
+        {"status": "drafting", "updated_at": {"$gte": live_cutoff}},
+    ]}
+    projection = {"_id": 0, "cube": 0, "bot_stats": 0, "bot_combos": 0, "messages": 0, "order": 0}
+    cursor = db.drafts.find(query, projection).sort("created_at", -1).limit(40)
+    lobbies, live = [], []
     async for d in cursor:
-        out.append({
+        row = {
             "share_id": d["share_id"],
             "name": d["name"],
+            "status": d["status"],
             "num_players": d["num_players"],
             "num_seats": d["num_seats"],
             "players_joined": len(d.get("players", [])),
             "seats_claimed": sum(1 for s in d["seats"] if s["player_id"] is not None),
-            "cube_size": len(d.get("cube", [])),
+            "picks_made": len(d.get("picks", [])),
             "created_at": d["created_at"],
-        })
-    return {"drafts": out}
+        }
+        (lobbies if d["status"] == "lobby" else live).append(row)
+    sizes = {r["share_id"]: 0 for r in lobbies}
+    if sizes:   # cube size for lobbies only, without loading whole cubes
+        async for r in db.drafts.aggregate([{"$match": {"share_id": {"$in": list(sizes)}}},
+                                            {"$project": {"_id": 0, "share_id": 1, "n": {"$size": {"$ifNull": ["$cube", []]}}}}]):
+            sizes[r["share_id"]] = r["n"]
+    for r in lobbies:
+        r["cube_size"] = sizes[r["share_id"]]
+    return {"drafts": lobbies, "live": live}
 
 @api_router.get("/drafts/{share_id}")
 async def get_draft(share_id: str):
@@ -1167,6 +1211,7 @@ async def startup():
     await db.decks.create_index("share_id")
     await db.decks.create_index("user_id")
     await db.drafts.create_index("share_id", unique=True)
+    await db.drafts.create_index("join_code", sparse=True)
     await db.card_stats.create_index("key", unique=True)
     # Optional seed account (handy for local dev and tests). Only created when both values
     # are set explicitly; there is deliberately no built-in default password.

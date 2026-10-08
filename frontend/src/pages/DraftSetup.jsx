@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Sparkles, Loader2, Shuffle, Users, RefreshCw, Plus, ArrowRight, ImagePlus, X } from "lucide-react";
+import { Sparkles, Loader2, Shuffle, Users, RefreshCw, Plus, ArrowRight, ImagePlus, X, Eye, Lock, KeyRound } from "lucide-react";
 import { toast } from "sonner";
 
 function parseList(text) {
@@ -55,6 +55,10 @@ export default function DraftSetup() {
   const formRef = useRef(null);
   const [showForm, setShowForm] = useState(false);
   const [lobbies, setLobbies] = useState([]);
+  const [live, setLive] = useState([]);
+  const [code, setCode] = useState("");
+  const [finding, setFinding] = useState(false);
+  const [isPrivate, setIsPrivate] = useState(false);
   const [loadingLobbies, setLoadingLobbies] = useState(true);
 
   const [name, setName] = useState("Cube Draft");
@@ -95,6 +99,7 @@ export default function DraftSetup() {
     try {
       const { data } = await api.get("/drafts/open");
       setLobbies(data.drafts || []);
+      setLive(data.live || []);
     } catch { /* silent */ }
     finally { setLoadingLobbies(false); }
   };
@@ -104,6 +109,18 @@ export default function DraftSetup() {
     const iv = setInterval(loadLobbies, 5000);
     return () => clearInterval(iv);
   }, []);
+
+  const joinByCode = async (e) => {
+    e.preventDefault();
+    const c = code.trim();
+    if (!c) return;
+    setFinding(true);
+    try {
+      const { data } = await api.get(`/drafts/code/${encodeURIComponent(c)}`);
+      navigate(`/draft/${data.share_id}`);
+    } catch { toast.error("No table with that code"); }
+    finally { setFinding(false); }
+  };
 
   const revealForm = () => {
     setShowForm(true);
@@ -142,6 +159,7 @@ export default function DraftSetup() {
         num_seats: totalSeats,
         double_draft_after: Number(doubleAfter) || 0,
         pick_cap: Number(pickCap) || 45,
+        private: isPrivate,
         cube: [...customs, ...col.cards],
       });
       if (draft.host_token) localStorage.setItem(`grim_draft_host_${draft.share_id}`, draft.host_token);
@@ -172,6 +190,18 @@ export default function DraftSetup() {
             <Plus className="w-4 h-4 mr-1.5" /> Host your own draft
           </Button>
         </div>
+
+        <form onSubmit={joinByCode} className="mt-6 flex items-center gap-2 max-w-sm" data-testid="join-by-code">
+          <div className="relative flex-1">
+            <KeyRound className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+            <Input data-testid="join-code-input" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="Have a table code?" maxLength={12}
+              autoCapitalize="characters" autoComplete="off" spellCheck={false}
+              className="pl-9 bg-slate-950 border-slate-700 text-slate-100 font-mono tracking-widest placeholder:font-sans placeholder:tracking-normal focus-visible:ring-amber-400" />
+          </div>
+          <Button type="submit" data-testid="join-code-submit" disabled={finding || !code.trim()} variant="outline" className="bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
+            {finding ? <Loader2 className="w-4 h-4 animate-spin" /> : "Join"}
+          </Button>
+        </form>
 
         {/* Open tables */}
         <section className="mt-8">
@@ -214,6 +244,29 @@ export default function DraftSetup() {
             </div>
           )}
         </section>
+
+        {live.length > 0 && (
+          <section className="mt-10" data-testid="live-tables">
+            <div className="flex items-center gap-2 mb-4">
+              <Eye className="w-5 h-5 text-amber-400" />
+              <h2 className="font-display text-lg font-bold">Drafting now</h2>
+            </div>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {live.map((l) => (
+                <div key={l.share_id} data-testid={`live-${l.share_id}`} className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 flex flex-col">
+                  <div className="flex items-start justify-between gap-2">
+                    <h3 className="font-display font-semibold truncate">{l.name}</h3>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full border border-green-400/30 text-green-300 shrink-0">live</span>
+                  </div>
+                  <div className="mt-2 text-xs text-slate-400">{l.players_joined} players · {l.num_seats} seats · {l.picks_made} picks made</div>
+                  <Button data-testid={`watch-${l.share_id}`} variant="outline" onClick={() => navigate(`/draft/${l.share_id}`)} className="mt-4 w-full bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
+                    <Eye className="w-4 h-4 mr-1.5" /> Watch
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* Create form */}
         {showForm && (
@@ -264,6 +317,14 @@ export default function DraftSetup() {
                   Upload file <input type="file" accept=".txt,.csv,.json" onChange={onFile} className="hidden" data-testid="draft-cube-file" />
                 </label>
               </div>
+
+              <label className="flex items-start gap-3 cursor-pointer" data-testid="draft-private">
+                <input type="checkbox" checked={isPrivate} onChange={(e) => setIsPrivate(e.target.checked)} className="mt-1 w-4 h-4 accent-amber-400" data-testid="draft-private-toggle" />
+                <span>
+                  <span className="text-sm text-slate-200 flex items-center gap-1.5"><Lock className="w-3.5 h-3.5 text-amber-400" /> Private table</span>
+                  <span className="block text-xs text-slate-500 mt-0.5">Hidden from Open tables and Drafting now. Players join with the invite link or the table code.</span>
+                </span>
+              </label>
 
               <div data-testid="custom-cards">
                 <Label className="text-slate-300">Custom cards (optional)</Label>
