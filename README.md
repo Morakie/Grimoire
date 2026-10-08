@@ -1,210 +1,100 @@
-# Grimoire — MTG Deck Builder & Analyzer
+# Grimoire
 
-Grimoire is a fast, modern web app for **Magic: The Gathering** players to build,
-optimize, and organize decks. It searches live card data from the public
-[Scryfall API](https://scryfall.com/docs/api), visualizes your mana curve and
-color distribution, and lets you save, clone, and publicly share decklists.
+A Magic: The Gathering deck builder and live rotisserie cube-draft app.
 
-> This repository is a **platform-independent export**. It was originally built
-> on the Emergent platform and has been cleaned so it runs anywhere. See
-> [`docs/MIGRATION.md`](docs/MIGRATION.md) for exactly what was removed/changed.
+- **Deck building:** search the full card catalog (via [Scryfall](https://scryfall.com/docs/api)), build decks with
+  drag-and-drop columns, and watch the mana curve, colors and type breakdown update as you go.
+  Commander decks get a dedicated Command Zone.
+- **Import / export:** paste lists from Moxfield, MTGO, Arena or plain text. Exact printings and commanders are
+  detected automatically, and you can export back to any of those formats. Bulk edit lets you rewrite a whole list as text.
+- **Sharing:** every deck can be shared as a read-only link, no account needed to view.
+- **Rotisserie cube drafts:** import a cube from [CubeCobra](https://cubecobra.com), invite friends to a lobby, and
+  draft in snake order with a pick queue, live pick feed, table chat, turn alerts and host undo/reassign tools.
+  Cards default-sort by CubeCobra Elo.
 
----
+## Tech stack
 
-## Features
+| Layer    | Tech |
+|----------|------|
+| Frontend | React 19, React Router, Tailwind CSS, shadcn/ui (Radix), dnd-kit, Recharts |
+| Backend  | FastAPI, Motor (async MongoDB), PyJWT, bcrypt, httpx |
+| Database | MongoDB |
+| Card data | Scryfall REST API, proxied through the backend (no API key needed) |
 
-- **Card search** (Scryfall) by name, color, and type, with autocomplete and a
-  responsive grid of high-res card art + mana symbols.
-- **Deck builder** with a top "find & add" bar, **Mainboard / Sideboard / Commander**
-  sections, quantity controls (max 4 copies, basic lands unlimited), and quick-add.
-- **Moxfield/Arena-style board**: View (Text / Visual Grid), Group (Type / Mana Value /
-  Color / Custom), Sort (Manual / Name / Mana Value), and **drag-and-drop** to reorder,
-  move between groups (with manual override), or move between Mainboard/Sideboard.
-- **Analytics**: mana curve (CMC 0–7+), color distribution, total cards, average CMC,
-  and card-type breakdown.
-- **Import / Export** decklists (plain text and JSON; export uses
-  `<qty> <name> (<SET>) <collector#>` — Moxfield/MTGA compatible).
-- **Accounts** (JWT email/password), a **My Decks** dashboard (create/edit/clone/delete),
-  **guest mode** (build without an account; sign in only when saving), and
-  **public share links** (`/d/:shareId`).
+Live draft state is synced by short-interval HTTP polling rather than WebSockets, which keeps hosting simple.
 
----
+## Running locally
 
-## Tech Stack
+**Prerequisites:** Node 20 + Yarn 1, Python 3.11, and Docker (for a local MongoDB) or any MongoDB URL.
 
-| Layer     | Technology |
-|-----------|------------|
-| Frontend  | React 19, React Router 7, CRACO, Tailwind CSS, shadcn/ui (Radix), Recharts, @dnd-kit, lucide-react, sonner |
-| Backend   | FastAPI (Python 3.11+), Motor (async MongoDB), PyJWT, bcrypt, httpx |
-| Database  | MongoDB 7 |
-| Auth      | Custom JWT (email/password) — **not** a third-party provider |
-| External  | Scryfall API (public, no key) |
-| Package managers | **yarn** (frontend), **pip** (backend) |
-
----
-
-## Prerequisites
-
-- **Node.js** 18+ and **yarn** (`npm i -g yarn`)
-- **Python** 3.11+ and **pip**
-- **MongoDB** 7 — either Docker (recommended) or a hosted instance (e.g. MongoDB Atlas)
-
----
-
-## Local Setup (step by step)
-
-### 1. Get the code & env files
 ```bash
-git clone <your-repo-url> grimoire && cd grimoire
-cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env
-```
-Open `backend/.env` and set a real `JWT_SECRET` (generate one with
-`python -c "import secrets; print(secrets.token_hex(32))"`) and an
-`ADMIN_EMAIL` / `ADMIN_PASSWORD`.
+# 1. Database
+docker compose up -d                      # MongoDB on localhost:27017
 
-### 2. Start MongoDB
-Using Docker (recommended):
-```bash
-docker compose up -d        # starts MongoDB on localhost:27017
-```
-Or point `MONGO_URL` in `backend/.env` at a hosted database (e.g. an Atlas
-`mongodb+srv://...` connection string). **No schema migration is required** —
-collections and indexes are created automatically on first run.
-
-### 3. Backend
-```bash
+# 2. Backend  (http://localhost:8001)
 cd backend
-python -m venv .venv && source .venv/bin/activate   # optional but recommended
-pip install -r requirements.txt
-uvicorn server:app --host 0.0.0.0 --port 8001 --reload
-```
-The API is now at `http://localhost:8001` (all routes are under `/api`).
-On startup it creates indexes and seeds the admin user from your `.env`.
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+cp .env.example .env                      # then set JWT_SECRET
+uvicorn server:app --reload --port 8001
 
-Optionally load a sample deck:
-```bash
-python ../scripts/seed.py
-```
-
-### 4. Frontend
-```bash
+# 3. Frontend  (http://localhost:3000)
 cd frontend
 yarn install
-yarn start                  # dev server on http://localhost:3000
+cp .env.example .env
+yarn start
 ```
-`frontend/.env` must contain `REACT_APP_BACKEND_URL=http://localhost:8001`.
 
-### 5. Production build (frontend)
+Optional: `python scripts/seed.py` creates indexes, the seed account from `ADMIN_EMAIL` / `ADMIN_PASSWORD`,
+and a sample deck.
+
+### Tests
+
+The backend tests are API tests that run against a live server:
+
 ```bash
-cd frontend
-yarn build                  # outputs static files to frontend/build
+cd backend
+pytest                                    # targets http://localhost:8001 by default
+REACT_APP_BACKEND_URL=https://<staging-api> pytest
 ```
 
----
+Tests that log in use the seed account, so set `ADMIN_EMAIL` / `ADMIN_PASSWORD` to the same values as the server.
 
-## Environment Variables
+## Configuration
 
-### `backend/.env`
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `MONGO_URL` | yes | MongoDB connection string (local Docker or hosted Atlas URI). |
-| `DB_NAME` | yes | Database name (e.g. `grimoire`). |
-| `CORS_ORIGINS` | yes | Comma-separated allowed origins; set to your frontend URL in prod. |
-| `JWT_SECRET` | yes | Secret used to sign JWTs. Generate a long random hex. |
-| `ADMIN_EMAIL` | yes | Seed admin account email (created on startup). |
-| `ADMIN_PASSWORD` | yes | Seed admin account password. |
+| Variable | Where | Required | Notes |
+|----------|-------|----------|-------|
+| `MONGO_URL` | backend | yes | `mongodb://…` or Atlas `mongodb+srv://…` |
+| `DB_NAME` | backend | yes | e.g. `grimoire`, or `grimoire_dev` for staging |
+| `JWT_SECRET` | backend | yes | long random string, unique per environment |
+| `CORS_ORIGINS` | backend | no | comma-separated frontend URLs (defaults to `*`) |
+| `ADMIN_EMAIL`, `ADMIN_PASSWORD` | backend | no | seed account, created only when both are set |
+| `REACT_APP_BACKEND_URL` | frontend | yes | backend base URL; no trailing slash, no `/api` |
 
-### `frontend/.env`
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `REACT_APP_BACKEND_URL` | yes | Base URL of the backend (no trailing slash). Frontend calls `${REACT_APP_BACKEND_URL}/api/...`. |
-| `WDS_SOCKET_PORT` | no | **Emergent-only**: hosted dev-server websocket port. Omit locally. |
-| `ENABLE_HEALTH_CHECK` | no | **Emergent-only**: dev health probe. Omit locally. |
+The backend refuses to start with a clear error if a required variable is missing.
 
-> **External services:** only **Scryfall** (`https://api.scryfall.com`, public, no
-> API key) and **MongoDB**. There are no paid or keyed third-party integrations.
+## Project layout
 
----
-
-## Project Structure
 ```
-.
-├── backend/
-│   ├── server.py            # FastAPI app: auth, Scryfall proxy, deck CRUD
-│   ├── requirements.txt
-│   ├── .env.example
-│   └── tests/               # pytest API tests
-├── frontend/
-│   ├── src/
-│   │   ├── pages/           # Landing, Login, Register, Dashboard, DeckBuilder, PublicDeck
-│   │   ├── components/      # CardSearchBar, DeckBoard, DeckStats, Import/Export/Printings dialogs, ui/
-│   │   ├── context/AuthContext.js
-│   │   └── lib/             # api.js (axios), mtg.js (grouping/analytics helpers)
-│   ├── craco.config.js
-│   ├── .env.example
-│   └── package.json
-├── scripts/seed.py          # idempotent DB seed (indexes + admin + sample deck)
-├── data/sample_deck.json    # sample deck document (data-model reference)
-├── docker-compose.yml       # local MongoDB
-├── docs/MIGRATION.md        # Emergent audit + what was removed
-└── AGENTS.md                # instructions for AI coding assistants
+backend/
+  server.py            API: auth, Scryfall proxy, decks, drafts
+  data/card_elo.csv    CubeCobra Elo ratings used for default draft sorting
+  tests/               API tests (pytest)
+frontend/src/
+  pages/               Landing, DeckBuilder, Dashboard, PublicDeck, DraftSetup, DraftRoom, auth
+  components/          DeckBoard, CardSearchBar, Import/Export dialogs, stats, ui/ (shadcn)
+  lib/                 api client, MTG helpers (mana, grouping, analytics)
+docs/DEPLOYMENT.md     Render + MongoDB Atlas setup, staging workflow
+design_guidelines.json Visual design reference
+render.yaml            Render Blueprint for production
 ```
 
----
+## Data model
 
-## Data Model (MongoDB)
+MongoDB collections: `users`, `decks` and `drafts`. Deck cards are embedded in the deck document as
+snapshots of Scryfall data, with `quantity` and optional per-view `group_overrides`. Indexes are created on
+startup.
 
-Database: value of `DB_NAME`. Two collections.
+## Deployment
 
-### `users`
-| Field | Type | Notes |
-|-------|------|-------|
-| `_id` | ObjectId | Mongo internal id (not used by the API). |
-| `id` | string (uuid) | App-level user id; referenced by `decks.user_id`. **unique index** |
-| `email` | string | lowercased. **unique index** |
-| `password_hash` | string | bcrypt hash. Never returned by the API. |
-| `name` | string | Display name. |
-| `created_at` | string (ISO 8601) | |
-
-### `decks`
-| Field | Type | Notes |
-|-------|------|-------|
-| `_id` | ObjectId | Mongo internal id. |
-| `id` | string (uuid) | App-level deck id. **unique index** |
-| `user_id` | string (uuid) | Owner → `users.id`. **index** |
-| `share_id` | string (8 chars) | Public link token (`/d/:shareId`). **index** |
-| `name` | string | |
-| `format` | string | `standard`, `commander`, `modern`, `pioneer`, `pauper`, `legacy`, `vintage`, `kitchen`. |
-| `description` | string | |
-| `mainboard` / `sideboard` / `commander` | array of **DeckCard** | See below. |
-| `created_at` / `updated_at` | string (ISO 8601) | |
-
-### `DeckCard` (embedded sub-document)
-`id` (Scryfall card id), `oracle_id`, `name`, `mana_cost`, `cmc`, `type_line`,
-`oracle_text`, `colors[]`, `color_identity[]`, `rarity`, `set`, `set_name`,
-`collector_number`, `image`, `art_crop`, `quantity`, and
-`group_overrides` (object mapping a board grouping dimension → a chosen group,
-e.g. `{"cmc": "0"}` to force a card into the "0" mana-value column).
-
-**Relationships:** `decks.user_id` → `users.id`. Deck cards are embedded (no join).
-
-### Recreating the data
-`scripts/seed.py` recreates all indexes, the admin user, and loads
-`data/sample_deck.json`. Point `MONGO_URL` anywhere (local or hosted) and run it.
-
----
-
-## Available Scripts
-- Frontend: `yarn start` (dev), `yarn build` (prod), `yarn test`.
-- Backend: `uvicorn server:app --reload --port 8001`; tests: `pytest backend/tests`.
-- DB: `docker compose up -d` / `down`; seed: `python scripts/seed.py`.
-
----
-
-## What breaks if the old Emergent database is gone?
-Nothing in the code — the app only needs *a* MongoDB reachable via `MONGO_URL`.
-However, **the actual saved decks/users that lived in the Emergent-hosted
-database do not travel with this code export.** Point `MONGO_URL` at your own
-MongoDB and run `scripts/seed.py` to recreate the structure (and a sample deck).
-To migrate real data, `mongodump` the old database and `mongorestore` into the new one.
+Production and staging both run on Render with MongoDB Atlas. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).

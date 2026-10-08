@@ -1,11 +1,5 @@
-// craco.config.js
 const path = require("path");
 require("dotenv").config();
-
-// Optional in-container health probe. Disabled unless ENABLE_HEALTH_CHECK=true.
-const config = {
-  enableHealthCheck: process.env.ENABLE_HEALTH_CHECK === "true",
-};
 
 function makeDevServerV5Compatible(devServerConfig) {
   const {
@@ -52,17 +46,6 @@ function makeDevServerV5Compatible(devServerConfig) {
   return compatibleConfig;
 }
 
-// Conditionally load health check modules only if enabled
-let WebpackHealthPlugin;
-let setupHealthEndpoints;
-let healthPluginInstance;
-
-if (config.enableHealthCheck) {
-  WebpackHealthPlugin = require("./plugins/health-check/webpack-health-plugin");
-  setupHealthEndpoints = require("./plugins/health-check/health-endpoints");
-  healthPluginInstance = new WebpackHealthPlugin();
-}
-
 const webpackConfig = {
   eslint: {
     configure: {
@@ -89,30 +72,12 @@ const webpackConfig = {
           "**/public/**",
         ],
       };
-      if (config.enableHealthCheck && healthPluginInstance) {
-        webpackConfig.plugins.push(healthPluginInstance);
-      }
       return webpackConfig;
     },
   },
 };
 
-webpackConfig.devServer = (devServerConfig) => {
-  if (config.enableHealthCheck && setupHealthEndpoints && healthPluginInstance) {
-    const originalSetupMiddlewares = devServerConfig.setupMiddlewares;
-    devServerConfig.setupMiddlewares = (middlewares, devServer) => {
-      if (originalSetupMiddlewares) {
-        middlewares = originalSetupMiddlewares(middlewares, devServer);
-      }
-      setupHealthEndpoints(devServer, healthPluginInstance);
-      return middlewares;
-    };
-  }
-  return devServerConfig;
-};
-
-const configureDevServer = webpackConfig.devServer;
-webpackConfig.devServer = (devServerConfig) =>
-  makeDevServerV5Compatible(configureDevServer(devServerConfig));
+// CRA 5 still passes webpack-dev-server v4 options; translate them for v5.
+webpackConfig.devServer = (devServerConfig) => makeDevServerV5Compatible(devServerConfig);
 
 module.exports = webpackConfig;

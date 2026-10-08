@@ -25,8 +25,8 @@ load_dotenv(ROOT / "backend" / ".env")
 
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
 DB_NAME = os.environ.get("DB_NAME", "grimoire")
-ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "change-me")
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 
 def hash_password(pw: str) -> str:
@@ -45,7 +45,10 @@ def main():
     db.decks.create_index("user_id")
     print("Indexes ensured.")
 
-    # Admin user
+    # Admin user (needed to own the sample deck)
+    if not ADMIN_EMAIL or not ADMIN_PASSWORD:
+        print("ADMIN_EMAIL / ADMIN_PASSWORD not set; skipping admin user and sample deck.")
+        return
     admin = db.users.find_one({"email": ADMIN_EMAIL})
     if not admin:
         admin = {

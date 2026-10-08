@@ -1,10 +1,6 @@
+# Render Blueprint for production (branch: main). See docs/DEPLOYMENT.md.
 services:
-  # ---------------------------------------------------------------------------
-  # Backend — FastAPI (Python)
-  # ---------------------------------------------------------------------------
-  # Docker pins Python 3.11.9 in the image. Native Render Python defaults to
-  # 3.14.3 and the pinned pymongo/motor/bcrypt wheels then fail at import
-  # with "Exited with status 3" before uvicorn logs anything.
+  # Backend: FastAPI in Docker (the image pins Python 3.11.9).
   - type: web
     name: grimoire-api
     runtime: docker
@@ -14,21 +10,19 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: MONGO_URL
-        sync: false            # set in the Render dashboard (MongoDB Atlas SRV string)
+        sync: false            # MongoDB Atlas SRV string, set in the dashboard
       - key: DB_NAME
         value: grimoire
       - key: JWT_SECRET
-        generateValue: true    # Render generates a secure random value
+        generateValue: true
       - key: CORS_ORIGINS
-        sync: false            # set to your frontend URL, e.g. https://grimoire-web.onrender.com
+        sync: false            # the frontend URL, e.g. https://grimoire-web.onrender.com
       - key: ADMIN_EMAIL
-        sync: false
+        sync: false            # optional seed account
       - key: ADMIN_PASSWORD
         sync: false
 
-  # ---------------------------------------------------------------------------
-  # Frontend — React (static site, built with CRACO)
-  # ---------------------------------------------------------------------------
+  # Frontend: React static site.
   - type: web
     name: grimoire-web
     runtime: static
@@ -37,7 +31,11 @@ services:
     staticPublishPath: build
     envVars:
       - key: REACT_APP_BACKEND_URL
-        sync: false            # set to the backend URL, e.g. https://grimoire-api.onrender.com
+        sync: false            # the backend URL, no trailing slash, no /api
+      - key: NODE_VERSION
+        value: 20.18.0
+      - key: NPM_CONFIG_LEGACY_PEER_DEPS
+        value: "true"
     routes:
       - type: rewrite
         source: /*

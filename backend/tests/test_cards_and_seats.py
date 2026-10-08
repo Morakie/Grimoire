@@ -1,4 +1,4 @@
-"""Iteration 9 backend tests: seat spread, ELO on cards, printings earliest-first."""
+"""Seat spread across players, ELO on card results, and printings ordered oldest-first."""
 import os
 import pytest
 import requests

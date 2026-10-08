@@ -1,4 +1,4 @@
-"""Backend tests for Table Chat + Live Pick Feed (iteration 7)."""
+"""Table chat and the live pick feed."""
 import os
 import pytest
 import requests

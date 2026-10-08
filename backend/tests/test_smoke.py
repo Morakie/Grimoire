@@ -1,4 +1,4 @@
-"""Regression tests after startup _require_env refactor (iteration 13).
+"""End-to-end smoke test of the main API surface.
 
 Covers: /api/health, admin JWT login, /api/auth/me, cards search (Scryfall),
 deck CRUD + public share, drafts create + /api/drafts/open + state.
@@ -12,8 +12,8 @@ BASE = os.environ.get("REACT_APP_BACKEND_URL", "http://localhost:8001")
 BASE = BASE.rstrip("/")
 API = f"{BASE}/api"
 
-ADMIN_EMAIL = "admin@grimoire.gg"
-ADMIN_PASSWORD = "grimoire123"
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@example.com")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "change-me-locally")
 
 
 # --- fixtures ---------------------------------------------------------------

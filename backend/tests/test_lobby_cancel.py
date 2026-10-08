@@ -1,4 +1,4 @@
-"""Tests for /drafts/open filtering and /drafts/{sid}/cancel (iter 8)."""
+"""Open-lobby filtering (/drafts/open) and host cancel (/drafts/{share_id}/cancel)."""
 import os
 import pytest
 import requests

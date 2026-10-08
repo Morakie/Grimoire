@@ -779,8 +779,12 @@ async def startup():
     await db.decks.create_index("share_id")
     await db.decks.create_index("user_id")
     await db.drafts.create_index("share_id", unique=True)
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@grimoire.gg")
-    admin_password = os.environ.get("ADMIN_PASSWORD", "grimoire123")
+    # Optional seed account (handy for local dev and tests). Only created when both values
+    # are set explicitly; there is deliberately no built-in default password.
+    admin_email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+    admin_password = os.environ.get("ADMIN_PASSWORD", "")
+    if not admin_email or not admin_password:
+        return
     existing = await db.users.find_one({"email": admin_email})
     if not existing:
         await db.users.insert_one({
