@@ -27,6 +27,7 @@ from draftbot.combos import attach_combos
 from draftbot.cardstats import draft_stats, ensure_stats
 from draftbot.personas import Persona
 from draftbot.engine import suggest_picks
+from draftbot.deckbuild import suggest_deck
 from draftbot.simulate import run_draft, summarise
 import commander as cmdr
 
@@ -482,6 +483,21 @@ async def card_extras(data: ExtrasInput):
         "prices": {i: _EXTRAS_CACHE[i][1] for i in ids if i in _EXTRAS_CACHE},
         "tokens": tokens,
     }
+
+BASIC_NAMES = {"W": "Plains", "U": "Island", "B": "Swamp", "R": "Mountain", "G": "Forest", "C": "Wastes"}
+_BASICS_CACHE: Dict[str, dict] = {}
+
+
+@api_router.get("/cards/basics")
+async def basic_lands():
+    """One card per basic land type (original printing), keyed by colour: W U B R G and C (Wastes)."""
+    if len(_BASICS_CACHE) < len(BASIC_NAMES):
+        found = (await _collection_by_names(list(BASIC_NAMES.values())))["cards"]
+        by_name = {c["name"]: c for c in found}
+        for col, name in BASIC_NAMES.items():
+            if name in by_name:
+                _BASICS_CACHE[col] = by_name[name]
+    return {"basics": _BASICS_CACHE}
 
 @api_router.get("/cards/autocomplete")
 async def card_autocomplete(q: str = ""):
@@ -1033,6 +1049,18 @@ async def cancel_draft(share_id: str, data: CancelInput):
         raise HTTPException(status_code=403, detail="Only the host can close this table")
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"status": "cancelled", "updated_at": datetime.now(timezone.utc).isoformat()}})
     return {"status": "cancelled"}
+
+@api_router.get("/drafts/{share_id}/build")
+async def build_from_pool(share_id: str, seat: int, size: int = 40):
+    """Suggested deck for one seat's picks: main deck card ids plus basic land counts by colour."""
+    d = await db.drafts.find_one({"share_id": share_id}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    size = max(20, min(size, 100))
+    picked = {p["card_id"] for p in d.get("picks", []) if p["seat_index"] == seat}
+    pool = [c for c in d["cube"] if c["id"] in picked and not c.get("is_custom")]
+    index, _ = _bot_index(d)
+    return await run_in_threadpool(suggest_deck, pool, index, size)
 
 @api_router.post("/drafts/{share_id}/pick")
 async def make_pick(share_id: str, data: PickInput):

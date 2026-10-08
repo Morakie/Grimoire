@@ -5,6 +5,7 @@ import CardSearchBar from "@/components/CardSearchBar";
 import DeckBoard from "@/components/DeckBoard";
 import DeckStats from "@/components/DeckStats";
 import PrimerEditor from "@/components/Primer";
+import BasicLandsDialog from "@/components/BasicLandsDialog";
 import CommanderCheck, { CommanderBadge, useCommanderCheck } from "@/components/CommanderCheck";
 import PrintingsDialog from "@/components/PrintingsDialog";
 import ImportDialog from "@/components/ImportDialog";
@@ -14,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { ArrowLeft, Share2, Save, Loader2, Check, Copy, BarChart3, Upload, Download, ListChecks, Layers, BookOpen } from "lucide-react";
+import { ArrowLeft, Share2, Save, Loader2, Check, Copy, BarChart3, Upload, Download, ListChecks, Layers, BookOpen, Mountain } from "lucide-react";
 import { FORMATS, maxCopies, isBasicLand } from "@/lib/mtg";
 import { useAuth } from "@/context/AuthContext";
 import AuthDialog from "@/components/AuthDialog";
@@ -51,6 +52,7 @@ export default function DeckBuilder() {
   const [exportOpen, setExportOpen] = useState(false);
   const [printingCtx, setPrintingCtx] = useState(null);
   const [statsOpen, setStatsOpen] = useState(false);
+  const [basicsOpen, setBasicsOpen] = useState(false);
   const [pane, setPane] = useState("deck");   // "deck" | "primer"
   const sidebarRef = useRef(null);
   const skipSave = useRef(true);
@@ -254,6 +256,9 @@ export default function DeckBuilder() {
             <Button data-testid="bulk-edit-btn" variant="outline" size="sm" onClick={() => setBulkOpen(true)} className="bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
               <ListChecks className="w-4 h-4 sm:mr-1" /> <span className="hidden sm:inline">Bulk edit</span>
             </Button>
+            <Button data-testid="basic-lands-btn" variant="outline" size="sm" onClick={() => setBasicsOpen(true)} title="Add basic lands" className="bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
+              <Mountain className="w-4 h-4 sm:mr-1" /> <span className="hidden sm:inline">Basics</span>
+            </Button>
             <Button data-testid="export-btn" variant="outline" size="sm" onClick={() => setExportOpen(true)} className="bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
               <Download className="w-4 h-4 sm:mr-1" /> <span className="hidden sm:inline">Export</span>
             </Button>
@@ -331,6 +336,8 @@ export default function DeckBuilder() {
       <ImportDialog open={bulkOpen} onOpenChange={setBulkOpen} onImport={applyImport} mode="replace" format={deck.format}
         initialText={bulkOpen ? buildExport(deck) : ""} />
       <ExportDialog open={exportOpen} onOpenChange={setExportOpen} deck={deck} />
+      <BasicLandsDialog open={basicsOpen} onOpenChange={setBasicsOpen} deck={deck} target={target === "commander" ? "mainboard" : target}
+        onChange={(cat, list) => setDeck((prev) => ({ ...prev, [cat]: list }))} />
     </div>
   );
 }

@@ -188,3 +188,16 @@ export const SORT_OPTIONS = [
   { value: "color", label: "Color, type, MV" },
   { value: "type", label: "Type, MV" },
 ];
+
+// ---------- Basic lands ----------
+
+export const BASIC_COLORS = ["W", "U", "B", "R", "G", "C"];
+export const BASIC_LABEL = { W: "Plains", U: "Island", B: "Swamp", R: "Mountain", G: "Forest", C: "Wastes" };
+let basicsPromise = null;
+/** One card per basic land type, keyed by colour (W U B R G, C = Wastes). Fetched once. */
+export function getBasics(api) {
+  if (!basicsPromise) {
+    basicsPromise = api.get("/cards/basics").then(({ data }) => data.basics || {}).catch((e) => { basicsPromise = null; throw e; });
+  }
+  return basicsPromise;
+}
