@@ -31,11 +31,35 @@ export function cubeCobraId(input) {
  * `keep` (optional) is a list of cards already in the cube: cards whose names are still in the
  * list are reused as they are (same printing), so only new names are looked up.
  */
-export async function resolveCube({ cubeCobra = "", text = "", keep = [] }) {
+/** True for failures worth one automatic retry: no response at all, or the server restarting/busy. */
+export const isTransient = (e) => !e?.response || [502, 503, 504].includes(e.response.status);
+
+/** Run `fn`, retrying once after a short pause if the failure looks transient (e.g. a server restart). */
+export async function withRetry(fn, waitMs = 3000) {
+  try { return await fn(); } catch (e) {
+    if (!isTransient(e)) throw e;
+    await new Promise((r) => setTimeout(r, waitMs));
+    return fn();
+  }
+}
+
+/** A readable message for a failed step, e.g. "Couldn't load the CubeCobra cube: server didn't answer". */
+export function stepError(step, e) {
+  const detail = e?.response?.data?.detail;
+  const why = typeof detail === "string" ? detail
+    : !e?.response ? "the server didn't answer (it may be restarting); try again in a minute"
+    : `error ${e.response.status}`;
+  return `${step}: ${why}`;
+}
+
+export async function resolveCube({ cubeCobra = "", text = "", keep = [], onStep }) {
   let names;
   if (cubeCobra.trim()) {
-    const { data } = await api.get("/cube/cubecobra", { params: { id: cubeCobra.trim() } });
-    names = data.names || [];
+    onStep?.("Loading the CubeCobra cube…");
+    try {
+      const { data } = await withRetry(() => api.get("/cube/cubecobra", { params: { id: cubeCobra.trim() } }));
+      names = data.names || [];
+    } catch (e) { throw new Error(stepError("Couldn't load the CubeCobra cube", e)); }
   } else {
     names = parseList(text);
   }
@@ -55,9 +79,12 @@ export async function resolveCube({ cubeCobra = "", text = "", keep = [] }) {
   let found = [];
   let notFound = [];
   if (lookup.length) {
-    const { data } = await api.post("/cards/collection", { names: lookup });
-    found = data.cards || [];
-    notFound = data.not_found || [];
+    onStep?.(`Looking up ${lookup.length} cards…`);
+    try {
+      const { data } = await withRetry(() => api.post("/cards/collection", { names: lookup }));
+      found = data.cards || [];
+      notFound = data.not_found || [];
+    } catch (e) { throw new Error(stepError("Couldn't look up the cards", e)); }
   }
   return { cards: [...reuse, ...found], notFound, total: uniq.length, cubecobraId: cubeCobra.trim() ? cubeCobraId(cubeCobra) : null };
 }

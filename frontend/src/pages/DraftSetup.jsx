@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import api from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
-import { resolveCube, readTextFile } from "@/lib/cube";
+import { resolveCube, readTextFile, withRetry, stepError } from "@/lib/cube";
 import CustomCardsPicker, { toCubeCustoms } from "@/components/CustomCardsPicker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
@@ -39,6 +39,7 @@ export default function DraftSetup() {
   const [cubeText, setCubeText] = useState("");
   const [cubeCobra, setCubeCobra] = useState("");
   const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState("");             // progress shown on the Create button
   const [customCards, setCustomCards] = useState([]);   // { id, name, image }
   // My Cubes (logged-in users): host from a saved cube, or save a new list while hosting.
   const [cubes, setCubes] = useState([]);
@@ -115,7 +116,7 @@ export default function DraftSetup() {
         cards = data.cards || [];
       } else {
         if (!cubeCobra.trim() && !cubeText.trim() && !customs.length) { toast.error("Add a cube list, a CubeCobra link or custom cards"); setLoading(false); return; }
-        const res = (cubeCobra.trim() || cubeText.trim()) ? await resolveCube({ cubeCobra, text: cubeText }) : { cards: [], notFound: [] };
+        const res = (cubeCobra.trim() || cubeText.trim()) ? await resolveCube({ cubeCobra, text: cubeText, onStep: setStep }) : { cards: [], notFound: [] };
         if (!res.cards.length && !customs.length) { toast.error("No cards resolved from that cube"); setLoading(false); return; }
         if (res.notFound.length) toast(`${res.notFound.length} card(s) not found and skipped`);
         cards = res.cards;
@@ -129,7 +130,10 @@ export default function DraftSetup() {
       }
       // A saved cube already carries its own custom cards; extra uploads are added for this draft only.
       const col = { cards: savedCube ? [...cards.filter((c) => c.is_custom), ...cards.filter((c) => !c.is_custom)] : cards };
-      const { data: draft } = await api.post("/drafts", {
+      setStep("Creating the table…");
+      let draft;
+      try {
+        ({ data: draft } = await withRetry(() => api.post("/drafts", {
         name: name.trim() || "Cube Draft",
         num_players: nPeople + nBots,
         num_bots: nBots,
@@ -140,13 +144,14 @@ export default function DraftSetup() {
         mode,
         ...(mode === "packs" ? { pack_count: Number(packCount) || 3, pack_size: Number(packSize) || 15, timer: timerOn ? "shrinking" : "off" } : {}),
         cube: [...customs, ...col.cards],
-      });
+      })));
+      } catch (e) { throw new Error(stepError("Couldn't create the table", e)); }
       if (draft.host_token) localStorage.setItem(`grim_draft_host_${draft.share_id}`, draft.host_token);
       toast.success(`Draft created with ${col.cards.length + customs.length} cards`);
       navigate(`/draft/${draft.share_id}`);
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Could not create draft");
-    } finally { setLoading(false); }
+      toast.error(e.response?.data?.detail || e.message || "Could not create draft", { duration: 8000 });
+    } finally { setLoading(false); setStep(""); }
   };
 
   return (
@@ -392,7 +397,7 @@ export default function DraftSetup() {
               </div>
 
               <Button data-testid="draft-create-submit" onClick={create} disabled={loading} className="w-full h-11 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">
-                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Create draft & get link"}
+                {loading ? <span className="flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> {step || "Working…"}</span> : "Create draft & get link"}
               </Button>
             </div>
           </section>
