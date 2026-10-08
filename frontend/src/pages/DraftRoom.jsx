@@ -4,10 +4,12 @@ import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { buildExport } from "@/components/ExportDialog";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
+// Touch screens have no hover: cards open a tap preview instead and queue buttons are always visible.
+const canHover = () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia("(hover: hover)").matches;
 
 function storeKey(sid) { return `grim_draft_${sid}`; }
 
@@ -61,6 +63,9 @@ export default function DraftRoom() {
   const [view, setView] = useState("pick");
   const [deckSeat, setDeckSeat] = useState(null);
   const [showMiniTable, setShowMiniTable] = useState(false);
+  const [sheet, setSheet] = useState(null);            // mobile bottom sheet: "queue" | "feed" | "chat"
+  const [previewCard, setPreviewCard] = useState(null); // mobile tap-to-preview
+  const seatStripRef = useRef(null);
   const [muted, setMuted] = useState(() => localStorage.getItem("grim_draft_muted") === "true");
   const [queue, setQueue] = useState(() => { try { return JSON.parse(localStorage.getItem(`grim_draft_queue_${shareId}`)) || []; } catch { return []; } });
   const hostToken = useMemo(() => { try { return localStorage.getItem(`grim_draft_host_${shareId}`); } catch { return null; } }, [shareId]);
@@ -103,6 +108,15 @@ export default function DraftRoom() {
   // Auto-pick from the queue whenever it's our turn — re-runs on every state/queue change so
   // it keeps picking across consecutive turns, wheel-backs and multi-seat players.
   useEffect(() => { if (state && me) autoPickRef.current(); }, [state, me, queue]);
+
+  // Phones: keep the seat on the clock centred in the sideways-scrolling seat strip.
+  const clockSeat = state?.current_seat_index;
+  useEffect(() => {
+    const strip = seatStripRef.current;
+    if (!strip || clockSeat == null || strip.scrollWidth <= strip.clientWidth) return;
+    const el = strip.querySelector(`[data-testid="seat-${clockSeat}"]`);
+    if (el) strip.scrollTo({ left: el.offsetLeft - strip.clientWidth / 2 + el.clientWidth / 2, behavior: "smooth" });
+  }, [clockSeat]);
 
   if (!draft || !state) return <div className="h-screen flex items-center justify-center bg-[#060a14]"><Loader2 className="w-8 h-8 text-amber-400 animate-spin" /></div>;
 
@@ -239,6 +253,8 @@ export default function DraftRoom() {
     return { ...p, player_name: seat?.player_name, card: cubeById[p.card_id] };
   }).reverse();
 
+  const hoverable = canHover();
+  const tapPreview = (c) => (!hoverable && c ? () => setPreviewCard(c) : undefined);
   const hoverIn = (c) => () => c && setHoverCard(c);
   const hoverOut = (c) => () => setHoverCard((h) => (h?.id === c?.id ? null : h));
 
@@ -256,7 +272,7 @@ export default function DraftRoom() {
   const renderPickGrid = () => (
     <div>
       <div className="mb-3 flex items-center gap-3 flex-wrap">
-        <Input data-testid="cube-filter" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter cards..." className="w-44 h-9 bg-slate-950 border-slate-700 text-slate-100" />
+        <Input data-testid="cube-filter" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter cards..." className="w-full sm:w-44 h-9 bg-slate-950 border-slate-700 text-slate-100" />
         <div className="flex items-center gap-1" data-testid="sort-controls">
           <span className="text-xs text-slate-500 mr-1">Sort</span>
           {SORTS.map((s) => (
@@ -269,15 +285,15 @@ export default function DraftRoom() {
         </label>
         <span className="text-xs text-slate-500 ml-auto">{availableCount} available</span>
       </div>
-      <div className="max-h-[calc(100vh-280px)] overflow-y-auto pr-1 -mr-1">
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3" data-testid="available-cards">
+      <div className="lg:max-h-[calc(100vh-280px)] lg:overflow-y-auto lg:pr-1 lg:-mr-1">
+        <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3" data-testid="available-cards">
           {poolCards.map((c) => {
             const isPicked = pickedIds.has(c.id);
             const clickable = myTurn && !isPicked && !picking;
             const queued = queue.includes(c.id);
             return (
               <div key={c.id} data-testid={`pool-card-${c.id}`} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
-                onClick={() => { if (clickable) setConfirmCard(c); }}
+                onClick={() => { if (clickable) setConfirmCard(c); else if (!hoverable) setPreviewCard(c); }}
                 className={`group relative rounded-lg overflow-hidden border transition-colors ${isPicked ? "border-slate-800 opacity-40 grayscale cursor-not-allowed" : clickable ? "border-slate-800 hover:border-amber-400/70 cursor-pointer" : "border-slate-800 cursor-default"}`}>
                 <div className="aspect-[0.716] bg-slate-800 flex items-center justify-center">
                   {(c.image || c.art_crop) ? <img src={c.image || c.art_crop} alt={c.name} loading="lazy" className="w-full h-full object-cover" /> : <div className="p-2 text-center text-xs font-medium text-slate-200 leading-tight">{c.name}</div>}
@@ -287,7 +303,7 @@ export default function DraftRoom() {
                 ) : (
                   <button data-testid={`queue-${c.id}`} onClick={(e) => { e.stopPropagation(); toggleQueue(c.id); }}
                     title={queued ? "Remove from queue" : "Queue for later"}
-                    className={`absolute top-1 right-1 w-6 h-6 rounded flex items-center justify-center transition-opacity ${queued ? "bg-amber-400 text-stone-900" : "bg-black/70 text-slate-200 opacity-0 group-hover:opacity-100 hover:bg-amber-400 hover:text-stone-900"}`}>
+                    className={`absolute top-1 right-1 ${hoverable ? "w-6 h-6" : "w-8 h-8"} rounded flex items-center justify-center transition-opacity ${queued ? "bg-amber-400 text-stone-900" : `bg-black/70 text-slate-200 ${hoverable ? "opacity-0 group-hover:opacity-100" : ""} hover:bg-amber-400 hover:text-stone-900`}`}>
                     {queued ? <BookmarkCheck className="w-3.5 h-3.5" /> : <BookmarkPlus className="w-3.5 h-3.5" />}
                   </button>
                 )}
@@ -306,9 +322,9 @@ export default function DraftRoom() {
     const perSeat = seatsSorted.map((s) => (state.picks || []).filter((p) => p.seat_index === s.index).sort((a, b) => a.order - b.order));
     const maxRows = perSeat.reduce((m, a) => Math.max(m, a.length), 0);
     const dense = compact || (fit && seatsSorted.length > 4);
-    const cell = compact ? "px-1.5 py-0.5 text-[10px]" : dense ? "px-1.5 py-1 text-xs" : "px-3 py-1.5 text-sm";
+    const cell = compact ? "px-1.5 py-0.5 text-[10px]" : dense ? "px-1.5 py-1 text-xs" : "px-2 sm:px-3 py-1.5 text-xs sm:text-sm";
     return (
-      <div className={`${compact ? "max-h-[44vh]" : "max-h-[calc(100vh-240px)]"} overflow-auto rounded-xl border border-slate-800`} data-testid={compact ? "mini-draft-table" : "draft-table"}>
+      <div className={`${compact ? "max-h-[44vh]" : "max-h-[70vh] lg:max-h-[calc(100vh-240px)]"} overflow-auto rounded-xl border border-slate-800`} data-testid={compact ? "mini-draft-table" : "draft-table"}>
         <table className={`w-full border-collapse ${fit ? "table-fixed" : ""}`}>
           {fit && <colgroup><col className="w-8" /><col className="w-5" />{seatsSorted.map((s) => <col key={s.index} />)}</colgroup>}
           <thead className="sticky top-0 z-10">
@@ -316,7 +332,7 @@ export default function DraftRoom() {
               <th className="px-2 py-1.5 text-left text-slate-500 w-8 text-xs">#</th>
               <th className="w-6 bg-[#0b111e]"></th>
               {seatsSorted.map((s) => (
-                <th key={s.index} title={s.player_name || ""} className={`${dense ? "px-1.5" : "px-3"} py-1.5 text-left font-display text-slate-100 border-l border-slate-800 truncate ${dense ? "text-[11px]" : "text-sm min-w-[160px]"} ${compact ? "min-w-[96px]" : ""}`}>
+                <th key={s.index} title={s.player_name || ""} className={`${dense ? "px-1.5" : "px-3"} py-1.5 text-left font-display text-slate-100 border-l border-slate-800 truncate ${dense ? "text-[11px]" : "text-xs sm:text-sm min-w-[112px] sm:min-w-[160px]"} ${compact ? "min-w-[96px]" : ""}`}>
                   {s.player_name || "—"}<div className="text-[10px] text-slate-500 font-normal">Seat {s.index + 1}</div>
                 </th>
               ))}
@@ -336,7 +352,7 @@ export default function DraftRoom() {
                     <td key={s.index} className="p-0.5 border-l border-slate-800/60">
                       {card ? (
                         <div data-testid={compact ? undefined : `table-cell-${s.index}-${r}`} onMouseEnter={hoverIn(card)} onMouseLeave={hoverOut(card)}
-                          onClick={hostToken ? () => setReassignPick({ order: pk.order, seat_index: s.index, card }) : undefined}
+                          onClick={hostToken ? () => setReassignPick({ order: pk.order, seat_index: s.index, card }) : tapPreview(card)}
                           title={card.name} className={`rounded truncate ${cell} ${colorClass(card)} ${hostToken ? "cursor-pointer hover:ring-2 hover:ring-amber-300" : "cursor-default"}`}>{card.name}</div>
                       ) : <div className={`${cell} text-slate-700`}>·</div>}
                     </td>
@@ -381,7 +397,7 @@ export default function DraftRoom() {
           ) : (
             <div className="grid sm:grid-cols-2 gap-x-6 gap-y-0.5">
               {deck.mainboard.map((c, i) => (
-                <div key={c.id || i} data-testid={`deck-card-${activeSeat}-${i}`} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
+                <div key={c.id || i} data-testid={`deck-card-${activeSeat}-${i}`} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)} onClick={tapPreview(c)}
                   className="flex items-center gap-2 text-sm py-1 px-1 rounded border-b border-slate-800/40 cursor-default hover:bg-slate-800/40">
                   <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${colorClass(c)}`} />
                   <span className="text-slate-500 tabular-nums w-5">{c.quantity}</span>
@@ -394,6 +410,66 @@ export default function DraftRoom() {
       </div>
     );
   };
+
+  const renderQueueList = () => (
+    <>
+                {queue.length === 0 ? (
+                  <p className="text-[11px] text-slate-600 px-1 py-2">Bookmark cards in the pool to queue them. Auto-picks your top available card the moment it's your turn.</p>
+                ) : (
+                  <div className="space-y-1">
+                    {queue.map((id, i) => { const c = cubeById[id]; if (!c) return null; const taken = pickedIds.has(id);
+                      return (
+                        <div key={id} data-testid={`queue-item-${id}`} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)} className={`flex items-center gap-1 text-xs rounded p-1 hover:bg-slate-800/60 ${taken ? "opacity-40" : ""}`}>
+                          <span className="text-slate-500 w-4 tabular-nums shrink-0">{i + 1}</span>
+                          <span className="flex-1 truncate text-slate-200">{c.name}{taken && <span className="text-red-400 ml-1">(taken)</span>}</span>
+                          <button data-testid={`queue-up-${id}`} onClick={() => moveQueue(id, -1)} disabled={i === 0} className="p-0.5 text-slate-500 hover:text-amber-300 disabled:opacity-20"><ArrowUp className="w-3.5 h-3.5" /></button>
+                          <button data-testid={`queue-down-${id}`} onClick={() => moveQueue(id, 1)} disabled={i === queue.length - 1} className="p-0.5 text-slate-500 hover:text-amber-300 disabled:opacity-20"><ArrowDown className="w-3.5 h-3.5" /></button>
+                          <button data-testid={`queue-remove-${id}`} onClick={() => removeFromQueue(id)} className="p-0.5 text-slate-500 hover:text-red-400"><X className="w-3.5 h-3.5" /></button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+    </>
+  );
+  const renderFeedList = () => (
+                <div className="space-y-1.5">
+                  {pickFeed.map((p) => (
+                    <div key={p.order} data-testid={`pick-feed-item-${p.order}`} onMouseEnter={hoverIn(p.card)} onMouseLeave={hoverOut(p.card)} onClick={tapPreview(p.card)}
+                      className="flex items-center gap-2 text-xs rounded-md hover:bg-slate-800/60 p-1 cursor-default">
+                      <div className="w-8 h-11 rounded bg-slate-800 overflow-hidden shrink-0 flex items-center justify-center">
+                        {p.card && (p.card.image || p.card.art_crop) ? <img src={p.card.image || p.card.art_crop} alt={p.card.name} loading="lazy" className="w-full h-full object-cover" /> : <span className="text-[8px] text-slate-500 px-0.5 text-center leading-none">{p.card?.name?.slice(0, 10) || "?"}</span>}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-amber-400 font-semibold truncate">{(p.player_name || "Seat")} <span className="text-slate-500 font-normal">· S{p.seat_index + 1}</span></div>
+                        <div className="text-slate-300 truncate">{p.card?.name || "a card"}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+  );
+  const renderChatBody = (tall = false) => (
+    <>
+              <div className={`space-y-2 ${tall ? "max-h-[50vh]" : "max-h-64"} overflow-y-auto pr-1 mb-3`} data-testid="chat-messages">
+                {(state.messages || []).length === 0 ? (
+                  <p className="text-xs text-slate-600">No messages yet. Say hello!</p>
+                ) : (state.messages || []).map((m, i) => (
+                  <div key={m.id || i} data-testid={`chat-message-${i}`} className="text-xs leading-relaxed">
+                    <span className="text-amber-400 font-semibold">{m.name}</span>
+                    <span className="text-slate-300 ml-1.5 break-words">{m.text}</span>
+                  </div>
+                ))}
+              </div>
+              {me ? (
+                <div className="flex gap-2">
+                  <Input data-testid="chat-input" value={chatText} onChange={(e) => setChatText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") sendChat(); }} placeholder="Message the table..." className="h-9 bg-slate-950 border-slate-700 text-slate-100 text-sm focus-visible:ring-amber-400" />
+                  <Button data-testid="chat-send" onClick={sendChat} size="sm" className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold shrink-0">Send</Button>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-600">Claim a seat to join the chat.</p>
+              )}
+    </>
+  );
 
   const renderResults = () => (
     <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -413,10 +489,10 @@ export default function DraftRoom() {
   return (
     <div className="min-h-screen bg-[#060a14] text-slate-100 grim-grain">
       <header className="sticky top-0 z-30 border-b border-slate-800 bg-[#070c17]">
-        <div className="max-w-7xl mx-auto px-6 py-3 flex items-center gap-3 flex-wrap">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 py-3 flex items-center gap-2 sm:gap-3 flex-wrap">
           <Link to="/" className="flex items-center gap-2"><Sparkles className="w-5 h-5 text-amber-400" /><span className="font-display text-lg font-bold">Grimoire</span></Link>
           <span className="text-slate-500">/</span>
-          <span className="font-display font-semibold truncate">{state.name}</span>
+          <span className="font-display font-semibold truncate min-w-0 max-w-[40vw] sm:max-w-none">{state.name}</span>
           <span className="text-xs px-2 py-0.5 rounded-full border border-slate-700 text-slate-300 capitalize">{state.status}</span>
           <div className="ml-auto flex items-center gap-2">
             {state.status === "drafting" && (
@@ -434,14 +510,14 @@ export default function DraftRoom() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-6">
-        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6" data-testid="seat-grid">
+      <main className={`max-w-7xl mx-auto px-3 sm:px-6 py-4 sm:py-6 ${state.status !== "lobby" ? "pb-28 lg:pb-6" : ""}`}>
+        <div ref={seatStripRef} className="flex gap-2 overflow-x-auto -mx-3 px-3 pb-1 mb-4 sm:mx-0 sm:px-0 sm:pb-0 sm:mb-6 sm:grid sm:grid-cols-2 lg:grid-cols-4 sm:gap-3 sm:overflow-visible" data-testid="seat-grid">
           {seatsSorted.map((s) => {
             const isCurrent = state.current_seat_index === s.index;
             const mine = me?.seats?.includes(s.index);
             const last = seatPicks(s.index).slice(-1)[0];
             return (
-              <div key={s.index} data-testid={`seat-${s.index}`} className={`rounded-xl border p-3 ${isCurrent ? "border-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.15)]" : "border-slate-800"} bg-slate-900/50`}>
+              <div key={s.index} data-testid={`seat-${s.index}`} className={`rounded-xl border p-2.5 sm:p-3 min-w-[148px] shrink-0 sm:min-w-0 ${isCurrent ? "border-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.15)]" : "border-slate-800"} bg-slate-900/50`}>
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-slate-500">Seat {s.index + 1}{mine ? " · you" : ""}</span>
                   <span className="text-xs text-amber-400 tabular-nums">{seatPicks(s.index).length}/{state.pick_cap}</span>
@@ -466,23 +542,7 @@ export default function DraftRoom() {
                 <span className="text-xs text-slate-500">({queue.length})</span>
               </div>
               <div className="overflow-y-auto p-2">
-                {queue.length === 0 ? (
-                  <p className="text-[11px] text-slate-600 px-1 py-2">Bookmark cards in the pool to queue them. Auto-picks your top available card the moment it's your turn.</p>
-                ) : (
-                  <div className="space-y-1">
-                    {queue.map((id, i) => { const c = cubeById[id]; if (!c) return null; const taken = pickedIds.has(id);
-                      return (
-                        <div key={id} data-testid={`queue-item-${id}`} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)} className={`flex items-center gap-1 text-xs rounded p-1 hover:bg-slate-800/60 ${taken ? "opacity-40" : ""}`}>
-                          <span className="text-slate-500 w-4 tabular-nums shrink-0">{i + 1}</span>
-                          <span className="flex-1 truncate text-slate-200">{c.name}{taken && <span className="text-red-400 ml-1">(taken)</span>}</span>
-                          <button data-testid={`queue-up-${id}`} onClick={() => moveQueue(id, -1)} disabled={i === 0} className="p-0.5 text-slate-500 hover:text-amber-300 disabled:opacity-20"><ArrowUp className="w-3.5 h-3.5" /></button>
-                          <button data-testid={`queue-down-${id}`} onClick={() => moveQueue(id, 1)} disabled={i === queue.length - 1} className="p-0.5 text-slate-500 hover:text-amber-300 disabled:opacity-20"><ArrowDown className="w-3.5 h-3.5" /></button>
-                          <button data-testid={`queue-remove-${id}`} onClick={() => removeFromQueue(id)} className="p-0.5 text-slate-500 hover:text-red-400"><X className="w-3.5 h-3.5" /></button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                {renderQueueList()}
               </div>
             </aside>
           )}
@@ -551,7 +611,7 @@ export default function DraftRoom() {
             {state.status === "complete" && (
               <div data-testid="draft-complete">
                 <div className="mb-4 flex items-center gap-3 flex-wrap">
-                  <h2 className="font-display text-2xl font-bold">Draft complete 🎉</h2>
+                  <h2 className="font-display text-2xl font-bold flex items-center gap-2">Draft complete <PartyPopper className="w-6 h-6 text-amber-400" /></h2>
                   {viewTabs([["pick", "Results", ListChecks], ["table", "Draft Table", Table2], ["decks", "Decks", Eye]])}
                 </div>
                 {view === "table" ? renderDraftTable() : view === "decks" ? renderDecks() : renderResults()}
@@ -560,7 +620,7 @@ export default function DraftRoom() {
             )}
           </div>
 
-          <aside className="space-y-4 lg:sticky lg:top-20 self-start" data-testid="draft-sidebar">
+          <aside className={`space-y-4 lg:sticky lg:top-20 self-start ${state.status === "lobby" ? "" : "hidden lg:block"}`} data-testid="draft-sidebar">
             {state.status !== "lobby" && (
               <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-2 h-[300px] flex items-center justify-center overflow-hidden" data-testid="card-preview">
                 {hoverCard ? (
@@ -575,47 +635,75 @@ export default function DraftRoom() {
             {pickFeed.length > 0 && (
               <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4" data-testid="pick-feed">
                 <h3 className="font-display font-semibold text-sm mb-3 flex items-center gap-2"><ListChecks className="w-4 h-4 text-amber-400" /> Pick feed</h3>
-                <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
-                  {pickFeed.map((p) => (
-                    <div key={p.order} data-testid={`pick-feed-item-${p.order}`} onMouseEnter={hoverIn(p.card)} onMouseLeave={hoverOut(p.card)}
-                      className="flex items-center gap-2 text-xs rounded-md hover:bg-slate-800/60 p-1 cursor-default">
-                      <div className="w-8 h-11 rounded bg-slate-800 overflow-hidden shrink-0 flex items-center justify-center">
-                        {p.card && (p.card.image || p.card.art_crop) ? <img src={p.card.image || p.card.art_crop} alt={p.card.name} loading="lazy" className="w-full h-full object-cover" /> : <span className="text-[8px] text-slate-500 px-0.5 text-center leading-none">{p.card?.name?.slice(0, 10) || "?"}</span>}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-amber-400 font-semibold truncate">{(p.player_name || "Seat")} <span className="text-slate-500 font-normal">· S{p.seat_index + 1}</span></div>
-                        <div className="text-slate-300 truncate">{p.card?.name || "a card"}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <div className="max-h-72 overflow-y-auto pr-1">{renderFeedList()}</div>
               </div>
             )}
 
             <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4 flex flex-col" data-testid="chat-panel">
               <h3 className="font-display font-semibold text-sm mb-3 flex items-center gap-2"><MessageSquare className="w-4 h-4 text-amber-400" /> Table chat</h3>
-              <div className="space-y-2 max-h-64 overflow-y-auto pr-1 mb-3" data-testid="chat-messages">
-                {(state.messages || []).length === 0 ? (
-                  <p className="text-xs text-slate-600">No messages yet. Say hello!</p>
-                ) : (state.messages || []).map((m, i) => (
-                  <div key={m.id || i} data-testid={`chat-message-${i}`} className="text-xs leading-relaxed">
-                    <span className="text-amber-400 font-semibold">{m.name}</span>
-                    <span className="text-slate-300 ml-1.5 break-words">{m.text}</span>
-                  </div>
-                ))}
-              </div>
-              {me ? (
-                <div className="flex gap-2">
-                  <Input data-testid="chat-input" value={chatText} onChange={(e) => setChatText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") sendChat(); }} placeholder="Message the table..." className="h-9 bg-slate-950 border-slate-700 text-slate-100 text-sm focus-visible:ring-amber-400" />
-                  <Button data-testid="chat-send" onClick={sendChat} size="sm" className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold shrink-0">Send</Button>
-                </div>
-              ) : (
-                <p className="text-xs text-slate-600">Claim a seat to join the chat.</p>
-              )}
+              {renderChatBody()}
             </div>
           </aside>
         </div>
       </main>
+
+      {state.status !== "lobby" && (
+        <nav className="lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-slate-800 bg-[#070c17]/95 backdrop-blur pb-[env(safe-area-inset-bottom)]" data-testid="mobile-bar">
+          {state.status === "drafting" && (
+            <div className={`text-center text-xs font-display font-semibold py-1 ${myTurn ? "bg-amber-400 text-stone-900" : "text-slate-300"}`} data-testid="mobile-turn">
+              {myTurn ? `Your pick! · Seat ${state.current_seat_index + 1}` : `${currentSeatName || "…"}'s pick`} · {state.pick_index}/{state.order_len}
+            </div>
+          )}
+          <div className="flex">
+            {[
+              ...(state.status === "drafting" ? [["queue", `Queue${queue.length ? ` (${queue.length})` : ""}`, Bookmark]] : []),
+              ["feed", "Picks", ListChecks],
+              ["chat", `Chat${(state.messages || []).length ? ` (${state.messages.length})` : ""}`, MessageSquare],
+            ].map(([k, label, Icon]) => (
+              <button key={k} data-testid={`mobile-${k}`} onClick={() => setSheet(k)} className="flex-1 flex flex-col items-center gap-0.5 py-2 text-[11px] text-slate-300 active:text-amber-300">
+                <Icon className="w-5 h-5 text-amber-400" /> {label}
+              </button>
+            ))}
+            <button data-testid="mobile-peek" onClick={() => setShowMiniTable(true)} className="flex-1 flex flex-col items-center gap-0.5 py-2 text-[11px] text-slate-300 active:text-amber-300">
+              <Table2 className="w-5 h-5 text-amber-400" /> Peek
+            </button>
+          </div>
+        </nav>
+      )}
+
+      {sheet && (
+        <div className="lg:hidden fixed inset-0 z-50 bg-black/60 flex items-end" data-testid="mobile-sheet" onClick={() => setSheet(null)}>
+          <div className="w-full max-h-[80vh] bg-[#0b111e] border-t border-slate-700 rounded-t-2xl flex flex-col pb-[env(safe-area-inset-bottom)]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 shrink-0">
+              <span className="font-display font-semibold text-sm">{{ queue: "Pick queue", feed: "Pick feed", chat: "Table chat" }[sheet]}</span>
+              <button data-testid="mobile-sheet-close" onClick={() => setSheet(null)} className="p-1 text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="overflow-y-auto p-3">
+              {sheet === "queue" && renderQueueList()}
+              {sheet === "feed" && (pickFeed.length ? renderFeedList() : <p className="text-xs text-slate-600">No picks yet.</p>)}
+              {sheet === "chat" && renderChatBody(true)}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {previewCard && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6" data-testid="card-preview-dialog" onClick={() => setPreviewCard(null)}>
+          <div className="w-full max-w-xs" onClick={(e) => e.stopPropagation()}>
+            {(previewCard.image || previewCard.art_crop)
+              ? <img src={previewCard.image || previewCard.art_crop} alt={previewCard.name} className="w-full rounded-xl" />
+              : <div className="rounded-xl border border-slate-700 bg-slate-900 p-6 text-center text-slate-200">{previewCard.name}</div>}
+            <div className="flex gap-2 mt-3">
+              {state.status === "drafting" && !pickedIds.has(previewCard.id) && cubeById[previewCard.id] && (
+                <Button data-testid="preview-queue" variant="outline" onClick={() => toggleQueue(previewCard.id)} className="flex-1 bg-slate-900 border-slate-700 text-slate-200">
+                  {queue.includes(previewCard.id) ? <><BookmarkCheck className="w-4 h-4 mr-1.5 text-amber-400" /> Queued</> : <><BookmarkPlus className="w-4 h-4 mr-1.5" /> Queue</>}
+                </Button>
+              )}
+              <Button data-testid="preview-close" onClick={() => setPreviewCard(null)} className="flex-1 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">Close</Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showMiniTable && state.status !== "lobby" && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center p-4 pt-20" data-testid="mini-table" onClick={() => setShowMiniTable(false)}>
