@@ -12,9 +12,8 @@ cube: no card names are hard-coded, and custom cards (`is_custom`) are ignored.
 
 - **Adding a bot:** in the lobby, the host clicks **Add bot** to fill an empty player slot. A bot takes seats
   exactly like a human (spread around the snake) and gets a name with no connection to its hidden personality.
-- **Taking a turn:** picks run on the server. When a bot is on the clock, the next state poll after a short,
-  randomised delay (0.8–1.7 s, scaled by `BOT_DELAY_SCALE`; set it to `0` on staging for instant test drafts)
-  makes the pick. A guard on the pick count makes this safe when several clients poll at once.
+- **Taking a turn:** picks run on the server. When a bot is on the clock, the next state poll makes the pick: bots
+  pick instantly by default (`BOT_DELAY_SCALE=1` adds a 0.8–1.7 s pause). A guard on the pick count makes this safe when several clients poll at once.
 - Bot picks appear in the pick feed like anyone else's. Host undo / reassign work on bot picks too.
 
 ## Card knowledge

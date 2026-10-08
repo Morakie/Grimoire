@@ -39,7 +39,7 @@ Optional, for a throwaway test instance only:
 | Variable | Effect |
 |----------|--------|
 | `ENABLE_BOT_SIM=true` | Turns on `POST /api/bots/simulate`, a bot-only draft for tuning (see [DRAFT_BOTS.md](DRAFT_BOTS.md)). |
-| `BOT_DELAY_SCALE=0` | Draft bots pick instantly instead of after a 1–2 s delay. |
+| `BOT_DELAY_SCALE=1` | Draft bots pause 0.8–1.7 s before each pick (default `0`: instant). |
 
 Don't set either on a site real people draft on.
 

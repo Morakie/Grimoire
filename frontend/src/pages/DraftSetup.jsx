@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import api from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
-import { resolveCube, readTextFile } from "@/lib/cube";
+import { resolveCube, readTextFile, withRetry, stepError } from "@/lib/cube";
 import CustomCardsPicker, { toCubeCustoms } from "@/components/CustomCardsPicker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
@@ -34,11 +34,14 @@ export default function DraftSetup() {
   const [packCount, setPackCount] = useState(3);
   const [packSize, setPackSize] = useState(15);
   const [timerOn, setTimerOn] = useState(true);
+  const [pool, setPool] = useState("cube");           // rotisserie: "cube" or "vintage" (VRD)
+  const vrdMode = mode === "rotisserie" && pool === "vintage";
   const [pickCap, setPickCap] = useState(45);
   const [doubleAfter, setDoubleAfter] = useState(0);
   const [cubeText, setCubeText] = useState("");
   const [cubeCobra, setCubeCobra] = useState("");
   const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState("");             // progress shown on the Create button
   const [customCards, setCustomCards] = useState([]);   // { id, name, image }
   // My Cubes (logged-in users): host from a saved cube, or save a new list while hosting.
   const [cubes, setCubes] = useState([]);
@@ -108,14 +111,16 @@ export default function DraftSetup() {
     if (!seatsOk) { toast.error("Need at least 1 player, at most 12 players + bots, and 64 seats in total"); return; }
     setLoading(true);
     try {
-      const customs = toCubeCustoms(customCards);
+      const customs = vrdMode ? [] : toCubeCustoms(customCards);
       let cards;
-      if (savedCube) {
+      if (vrdMode) {
+        cards = [];
+      } else if (savedCube) {
         const { data } = await api.get(`/cubes/${savedCube.id}`);
         cards = data.cards || [];
       } else {
         if (!cubeCobra.trim() && !cubeText.trim() && !customs.length) { toast.error("Add a cube list, a CubeCobra link or custom cards"); setLoading(false); return; }
-        const res = (cubeCobra.trim() || cubeText.trim()) ? await resolveCube({ cubeCobra, text: cubeText }) : { cards: [], notFound: [] };
+        const res = (cubeCobra.trim() || cubeText.trim()) ? await resolveCube({ cubeCobra, text: cubeText, onStep: setStep }) : { cards: [], notFound: [] };
         if (!res.cards.length && !customs.length) { toast.error("No cards resolved from that cube"); setLoading(false); return; }
         if (res.notFound.length) toast(`${res.notFound.length} card(s) not found and skipped`);
         cards = res.cards;
@@ -129,7 +134,10 @@ export default function DraftSetup() {
       }
       // A saved cube already carries its own custom cards; extra uploads are added for this draft only.
       const col = { cards: savedCube ? [...cards.filter((c) => c.is_custom), ...cards.filter((c) => !c.is_custom)] : cards };
-      const { data: draft } = await api.post("/drafts", {
+      setStep("Creating the table…");
+      let draft;
+      try {
+        ({ data: draft } = await withRetry(() => api.post("/drafts", {
         name: name.trim() || "Cube Draft",
         num_players: nPeople + nBots,
         num_bots: nBots,
@@ -138,15 +146,17 @@ export default function DraftSetup() {
         pick_cap: Number(pickCap) || 45,
         private: isPrivate,
         mode,
+        pool: vrdMode ? "vintage" : "cube",
         ...(mode === "packs" ? { pack_count: Number(packCount) || 3, pack_size: Number(packSize) || 15, timer: timerOn ? "shrinking" : "off" } : {}),
         cube: [...customs, ...col.cards],
-      });
+      })));
+      } catch (e) { throw new Error(stepError("Couldn't create the table", e)); }
       if (draft.host_token) localStorage.setItem(`grim_draft_host_${draft.share_id}`, draft.host_token);
-      toast.success(`Draft created with ${col.cards.length + customs.length} cards`);
+      toast.success(vrdMode ? "VRD table created" : `Draft created with ${col.cards.length + customs.length} cards`);
       navigate(`/draft/${draft.share_id}`);
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Could not create draft");
-    } finally { setLoading(false); }
+      toast.error(e.response?.data?.detail || e.message || "Could not create draft", { duration: 8000 });
+    } finally { setLoading(false); setStep(""); }
   };
 
   return (
@@ -209,11 +219,11 @@ export default function DraftSetup() {
                 <div key={l.share_id} data-testid={`lobby-${l.share_id}`} className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 hover:border-amber-400/40 transition-colors flex flex-col">
                   <div className="flex items-start justify-between gap-2">
                     <h3 className="font-display font-semibold truncate">{l.name}</h3>
-                    <span className="text-[11px] px-2 py-0.5 rounded-full border border-amber-400/30 text-amber-300 shrink-0">{l.mode === "packs" ? "pack draft" : "rotisserie"}</span>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full border border-amber-400/30 text-amber-300 shrink-0">{l.mode === "packs" ? "pack draft" : l.pool === "vintage" ? "VRD" : "rotisserie"}</span>
                   </div>
                   <div className="mt-2 text-xs text-slate-400 space-y-0.5">
                     <div>{l.players_joined}/{l.num_players} players joined</div>
-                    <div>{l.seats_claimed}/{l.num_seats} seats claimed · {l.cube_size} cards</div>
+                    <div>{l.seats_claimed}/{l.num_seats} seats claimed · {l.pool === "vintage" ? "all Vintage cards" : `${l.cube_size} cards`}</div>
                   </div>
                   <Button data-testid={`join-lobby-${l.share_id}`} onClick={() => navigate(`/draft/${l.share_id}`)} className="mt-4 w-full bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">
                     Join table <ArrowRight className="w-4 h-4 ml-1.5" />
@@ -333,7 +343,23 @@ export default function DraftSetup() {
                 </label>
               )}
 
-              {user && cubes.length > 0 && (
+              {mode === "rotisserie" && (
+                <div data-testid="draft-pool">
+                  <Label className="text-slate-300">Card pool</Label>
+                  <div className="mt-1.5 grid grid-cols-2 gap-2 max-w-md" role="radiogroup">
+                    {[["cube", "Cube", "Your cube, CubeCobra or a list"], ["vintage", "VRD", "Every Vintage-legal card ever printed"]].map(([k, label, desc]) => (
+                      <button key={k} type="button" role="radio" aria-checked={pool === k} data-testid={`draft-pool-${k}`} onClick={() => setPool(k)}
+                        className={`text-left rounded-lg border p-3 transition-colors ${pool === k ? "border-amber-400 bg-amber-400/10" : "border-slate-700 bg-slate-950 hover:border-slate-600"}`}>
+                        <span className={`block text-sm font-semibold ${pool === k ? "text-amber-300" : "text-slate-200"}`}>{label}</span>
+                        <span className="block text-[11px] text-slate-500 mt-0.5">{desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {vrdMode && <p className="text-xs text-slate-500 mt-2" data-testid="vrd-note">Vintage Rotisserie Draft: on your turn, search for any Vintage-legal paper card. One copy of each card across the table; basic lands are free. Bots draft from the top-rated Vintage cards.</p>}
+                </div>
+              )}
+
+              {!vrdMode && user && cubes.length > 0 && (
                 <div data-testid="saved-cube-picker">
                   <Label className="text-slate-300 flex items-center gap-1.5"><Library className="w-3.5 h-3.5 text-amber-400" /> Cube</Label>
                   <Select value={cubeId} onValueChange={setCubeId}>
@@ -351,7 +377,7 @@ export default function DraftSetup() {
                 </div>
               )}
 
-              {!savedCube && (<>
+              {!savedCube && !vrdMode && (<>
               <div>
                 <Label className="text-slate-300">CubeCobra link or ID</Label>
                 <Input data-testid="draft-cubecobra" value={cubeCobra} onChange={(e) => setCubeCobra(e.target.value)} placeholder="https://cubecobra.com/cube/overview/xxxx" className="mt-1.5 bg-slate-950 border-slate-700 text-slate-100 focus-visible:ring-amber-400" />
@@ -385,14 +411,14 @@ export default function DraftSetup() {
                 </span>
               </label>
 
-              <div data-testid="custom-cards">
+              {!vrdMode && <div data-testid="custom-cards">
                 <Label className="text-slate-300">Custom cards (optional)</Label>
                 <p className="text-xs text-slate-500 mt-1">Upload card images (your own designs, proxies, inside jokes). They join the pool as tokens, sit at the top of the draft, and bots leave them alone.{savedCube ? " These are added to this draft only; the saved cube keeps its own." : ""}</p>
                 <CustomCardsPicker value={customCards} onChange={setCustomCards} />
-              </div>
+              </div>}
 
               <Button data-testid="draft-create-submit" onClick={create} disabled={loading} className="w-full h-11 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">
-                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Create draft & get link"}
+                {loading ? <span className="flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> {step || "Working…"}</span> : "Create draft & get link"}
               </Button>
             </div>
           </section>

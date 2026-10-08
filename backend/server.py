@@ -30,6 +30,7 @@ from draftbot.engine import suggest_picks
 from draftbot.deckbuild import suggest_deck
 from draftbot.packbot import choose_from_pack, rank_pack
 import packdraft as pd
+import vrd
 from draftbot.simulate import run_draft, summarise
 import commander as cmdr
 
@@ -747,6 +748,7 @@ class DraftCreate(BaseModel):
     pack_count: int = Field(default=3, ge=1, le=6)     # pack drafts: packs per seat
     pack_size: int = Field(default=15, ge=3, le=20)    # pack drafts: cards per pack
     timer: str = Field(default="shrinking", pattern="^(shrinking|off)$")
+    pool: str = Field(default="cube", pattern="^(cube|vintage)$")   # "vintage" = VRD: every Vintage-legal paper card
     cube: List[dict] = []
 
 class ClaimInput(BaseModel):
@@ -819,6 +821,7 @@ def draft_state(d: dict, light: bool = False) -> dict:
         "current_seat_index": (d["order"][len(d.get("picks", []))] if d["status"] == "drafting" and len(d.get("picks", [])) < len(d.get("order", [])) else None),
         "messages": d.get("messages", [])[-50:],
         "mode": d.get("mode", "rotisserie"),
+        "pool": d.get("pool", "cube"),
         "rev": d.get("rev", 0),
         "version": f'{d.get("rev", 0)}|{d.get("updated_at")}',   # changes on every write (picks, chat, seats)
     }
@@ -906,7 +909,11 @@ async def find_by_code(code: str):
 async def create_draft(data: DraftCreate):
     if data.num_seats % data.num_players != 0:
         raise HTTPException(status_code=400, detail="Seats must divide evenly among players")
-    if not data.cube:
+    if data.pool == "vintage":
+        if data.mode != "rotisserie":
+            raise HTTPException(status_code=400, detail="VRD is a rotisserie format")
+        data.cube = []      # the draft's card list fills up as cards are picked
+    elif not data.cube:
         raise HTTPException(status_code=400, detail="Cube is empty")
     if data.num_bots >= data.num_players:
         raise HTTPException(status_code=400, detail="Leave at least one seat for a person")
@@ -928,6 +935,7 @@ async def create_draft(data: DraftCreate):
         "double_draft_after": data.double_draft_after,
         "pick_cap": data.pick_cap,
         "mode": data.mode,
+        "pool": data.pool,
         "pack_count": data.pack_count,
         "pack_size": data.pack_size,
         "timer": data.timer,
@@ -947,7 +955,10 @@ async def create_draft(data: DraftCreate):
         rng = random.Random()
         for _ in range(data.num_bots):
             _seat_bot(draft, rng)
-    _warm_card_stats(draft["cube"])
+    if data.pool == "vintage":
+        _warm_vrd_pool()
+    else:
+        _warm_card_stats(draft["cube"])
     await db.drafts.insert_one(draft)
     return {**draft_state(draft), "host_token": draft["host_token"]}
 
@@ -974,6 +985,7 @@ async def list_open_drafts():
             "seats_claimed": sum(1 for s in d["seats"] if s["player_id"] is not None),
             "picks_made": len(d.get("picks", [])),
             "mode": d.get("mode", "rotisserie"),
+            "pool": d.get("pool", "cube"),
             "created_at": d["created_at"],
         }
         (lobbies if d["status"] == "lobby" else live).append(row)
@@ -1217,18 +1229,30 @@ async def start_draft(share_id: str):
         update = {"status": "drafting", "order": [], "packs": packs, "rev": 0, "started_at": now, "updated_at": now,
                   "seats": d["seats"], "players": d["players"]}
     else:
-        order = compute_pick_order(d["num_seats"], d["double_draft_after"], d["pick_cap"], len(d["cube"]))
+        pool_size = 10 ** 6 if d.get("pool") == "vintage" else len(d["cube"])
+        order = compute_pick_order(d["num_seats"], d["double_draft_after"], d["pick_cap"], pool_size)
         update = {"status": "drafting", "order": order, "started_at": now, "updated_at": now,
                   "seats": d["seats"], "players": d["players"]}
     # Card knowledge for bots and pick suggestions: Spellbook combos plus CubeCobra ratings and
     # package partners (usually cached while the lobby filled up; bot tables wait a little for them).
     has_bots = any(p.get("is_bot") for p in d["players"])
-    update["bot_combos"] = [c.to_dict() for c in await fetch_combos(build_card_index(d["cube"]))]
-    try:
-        await ensure_stats(db, _cube_names(d["cube"]), budget_s=12.0 if has_bots else 2.0)
-        update["bot_stats"] = await draft_stats(db, d["cube"])
-    except Exception as exc:  # bots and suggestions still work without these
-        logger.warning("CubeCobra card stats unavailable: %s", exc)
+
+    async def _stats():
+        try:
+            await ensure_stats(db, _cube_names(d["cube"]), budget_s=12.0 if has_bots else 2.0)
+            return await draft_stats(db, d["cube"])
+        except Exception as exc:  # bots and suggestions still work without these
+            logger.warning("CubeCobra card stats unavailable: %s", exc)
+            return None
+
+    if d.get("pool") == "vintage":
+        _warm_vrd_pool()            # bots' card knowledge lives in the shared VRD pool (loads in the background)
+    else:
+        # Both lookups can take several seconds for a cube the server hasn't seen before: run them together.
+        combos, stats = await asyncio.gather(fetch_combos(build_card_index(d["cube"])), _stats())
+        update["bot_combos"] = [c.to_dict() for c in combos]
+        if stats is not None:
+            update["bot_stats"] = stats
     if update.get("packs"):
         # Fetching card knowledge above can take a few seconds: start the pick clocks now, not before.
         later = datetime.now(timezone.utc).isoformat()
@@ -1266,6 +1290,47 @@ async def build_from_pool(share_id: str, seat: int, size: int = 40, x_player_tok
     index = cards["index"]
     return await run_in_threadpool(suggest_deck, pool, index, size)
 
+async def _vrd_card(card_id: str, cards: dict) -> dict:
+    """A VRD pick's card data, checked: Vintage-legal, on paper, not a basic land."""
+    hit = next((c for c in cards["pool_cards"] if c["id"] == card_id), None) if card_id in cards["pool_ids"] else None
+    if hit:
+        return hit
+    async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
+        found = await _collection_lookup(hc, [{"id": card_id}])
+    if not found:
+        raise HTTPException(status_code=400, detail="Card not found on Scryfall")
+    raw = found[0]
+    if vrd.is_basic(raw):
+        raise HTTPException(status_code=400, detail="Basic lands are free; no need to draft them")
+    if not vrd.is_legal(raw):
+        raise HTTPException(status_code=400, detail=f"{raw.get('name')} isn't legal in Vintage (paper)")
+    return map_card(raw)
+
+
+@api_router.get("/drafts/{share_id}/cube")
+async def draft_cube_since(share_id: str, start: int = 0):
+    """Cards in the draft's card list from position `start` on. VRD drafts add cards as they're picked,
+    so clients fetch just the new ones instead of reloading the whole draft."""
+    doc = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "share_id": 1, "cube": {"$slice": [max(start, 0), 1000]}})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return {"cards": doc.get("cube", []), "start": max(start, 0)}
+
+
+@api_router.get("/drafts/{share_id}/vrd/top")
+async def vrd_top(share_id: str, limit: int = 60):
+    """Highest-rated Vintage cards nobody has drafted yet (a starting list before you search)."""
+    d = await _draft(share_id)
+    if not d or d.get("pool") != "vintage":
+        raise HTTPException(status_code=404, detail="VRD draft not found")
+    cards = await _cards(share_id)
+    if not cards["pool_cards"]:
+        return {"cards": [], "warming": True}
+    keep = set(_remaining_ids(d, cards))
+    out = [c for c in cards["pool_cards"] if c["id"] in keep][: max(1, min(limit, 200))]
+    return {"cards": out}
+
+
 @api_router.post("/drafts/{share_id}/pick")
 async def make_pick(share_id: str, data: PickInput):
     d = await _draft(share_id)
@@ -1287,11 +1352,26 @@ async def make_pick(share_id: str, data: PickInput):
     picked_ids = {p["card_id"] for p in d["picks"]}
     if data.card_id in picked_ids:
         raise HTTPException(status_code=409, detail="Card already taken")
-    if data.card_id not in (await _cards(share_id))["ids"]:
+    cards = await _cards(share_id)
+    card_doc = None
+    if cards.get("vintage"):
+        card_doc = await _vrd_card(data.card_id, cards)
+        if card_doc["name"].lower() in _taken_names(d, cards["cube"]):
+            raise HTTPException(status_code=409, detail=f"{card_doc['name']} has already been drafted")
+    elif data.card_id not in cards["ids"]:
         raise HTTPException(status_code=400, detail="Card not in cube")
-    d["picks"].append({"order": pick_index, "seat_index": data.seat_index, "card_id": data.card_id, "ts": datetime.now(timezone.utc).isoformat()})
-    new_status = "complete" if len(d["picks"]) >= len(d["order"]) else "drafting"
-    await db.drafts.update_one({"share_id": share_id}, {"$set": {"picks": d["picks"], "status": new_status, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    pick = {"order": pick_index, "seat_index": data.seat_index, "card_id": data.card_id, "ts": datetime.now(timezone.utc).isoformat()}
+    new_status = "complete" if pick_index + 1 >= len(d["order"]) else "drafting"
+    push: Dict[str, Any] = {"picks": pick}
+    if card_doc:
+        push["cube"] = card_doc
+    # Only succeeds if nobody (e.g. a bot on a poll) picked in the meantime.
+    res = await db.drafts.update_one({"share_id": share_id, "picks": {"$size": pick_index}},
+                                     {"$push": push, "$set": {"status": new_status, "updated_at": pick["ts"]}})
+    if not res.modified_count:
+        raise HTTPException(status_code=409, detail="Someone else picked first; try again")
+    if card_doc:
+        await _vrd_add_card(share_id, card_doc)
     d = await _draft(share_id)
     return draft_state(d, light=True)
 
@@ -1320,8 +1400,8 @@ async def reassign_pick(share_id: str, data: AdminPickInput):
         raise HTTPException(status_code=404, detail="Draft not found")
     if d.get("host_token") != data.host_token:
         raise HTTPException(status_code=403, detail="Only the host can reassign picks")
-    if d.get("mode") == "packs":
-        raise HTTPException(status_code=400, detail="Reassign isn't available in pack drafts")
+    if d.get("mode") == "packs" or d.get("pool") == "vintage":
+        raise HTTPException(status_code=400, detail="Reassign isn't available in this format; use Undo")
     pk = next((p for p in d.get("picks", []) if p["order"] == data.order), None)
     if not pk:
         raise HTTPException(status_code=404, detail="Pick not found")
@@ -1395,12 +1475,80 @@ async def _draft(share_id: str) -> Optional[dict]:
     return await db.drafts.find_one({"share_id": share_id}, _HEAVY)
 
 
+def _warm_vrd_pool() -> None:
+    """Start loading (or, the very first time, building) the VRD bots' pool in the background.
+    Only VRD tables call this; nothing ever waits for it (see vrd.py)."""
+    async def lookup(ids):
+        async with httpx.AsyncClient(timeout=30.0, headers=HEADERS) as hc:
+            return await _collection_lookup(hc, ids)
+
+    async def oldest(cards):
+        async with httpx.AsyncClient(timeout=30.0, headers=HEADERS) as hc:
+            return await _prefer_oldest(hc, cards)
+    vrd.warm(db, lookup, map_card, fetch_combos, build_card_index, oldest)
+
+
+async def _vrd_rebuild(entry: dict) -> None:
+    """(Re)build a VRD draft's bot index: the shared pool plus any picked cards from outside it."""
+    extras = [c for c in entry["cube"] if c["id"] not in entry["pool_ids"]]
+    index = await run_in_threadpool(build_card_index, entry["pool_cards"] + extras, entry["stats"])
+    combos = combos_from_dicts(entry["combo_dicts"])
+    attach_combos(index, combos)
+    entry.update(index=index, combos=combos, extras=len(extras),
+                 ids=entry["pool_ids"] | {c["id"] for c in entry["cube"]})
+
+
+async def _vrd_add_card(share_id: str, card: dict) -> None:
+    """Keep the cached VRD card list in step after we save a pick (saves reloading the whole list)."""
+    entry = _CARDS_CACHE.get(share_id)
+    if entry and entry.get("vintage"):
+        entry["cube"].append(card)
+        entry["ids"].add(card["id"])
+        if card["id"] not in entry["pool_ids"]:
+            await _vrd_rebuild(entry)
+
+
+def _taken_names(d: dict, cube: List[dict]) -> set:
+    """Names already drafted (VRD is singleton across the table, whatever the printing)."""
+    picked = {p["card_id"] for p in d.get("picks", [])}
+    return {c["name"].lower() for c in cube if c["id"] in picked}
+
+
+def _remaining_ids(d: dict, cards: dict) -> List[str]:
+    """Card ids the bots may still pick: undrafted cube cards, or undrafted names from the VRD pool."""
+    taken = {p["card_id"] for p in d.get("picks", [])}
+    if cards.get("vintage"):
+        names = _taken_names(d, cards["cube"])
+        return [c["id"] for c in cards["pool_cards"] if c["id"] not in taken and c["name"].lower() not in names]
+    return [cid for cid in cards["index"] if cid not in taken]
+
+
 async def _cards(share_id: str) -> dict:
     """The draft's cube, card ids and bot card index, loaded once and cached."""
     hit = _CARDS_CACHE.get(share_id)
+    if hit and hit.get("vintage") and hit.get("pool_ref") is not vrd.peek():
+        # The VRD pool arrived (or gained its combos) since this entry was made: refresh the bot side.
+        pool = vrd.peek()
+        if pool:
+            hit.update(pool_ref=pool, pool_cards=pool["cards"], pool_ids={c["id"] for c in pool["cards"]},
+                       stats=pool.get("stats"), combo_dicts=pool.get("combos", []))
+            await _vrd_rebuild(hit)
+        return hit
     if hit:
         return hit
-    doc = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "cube": 1, "bot_stats": 1, "bot_combos": 1, "status": 1}) or {}
+    doc = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "cube": 1, "bot_stats": 1, "bot_combos": 1, "status": 1, "pool": 1}) or {}
+    if doc.get("pool") == "vintage":
+        pool = vrd.peek()
+        if not pool:
+            _warm_vrd_pool()        # bots wait (and suggestions are empty) until it's ready; people can pick
+        entry = {"vintage": True, "cube": doc.get("cube", []), "pool_ref": pool, "pool_cards": (pool or {}).get("cards", []),
+                 "pool_ids": {c["id"] for c in (pool or {}).get("cards", [])}, "stats": (pool or {}).get("stats"),
+                 "combo_dicts": (pool or {}).get("combos", [])}
+        await _vrd_rebuild(entry)
+        if len(_CARDS_CACHE) > 40:
+            _CARDS_CACHE.clear()
+        _CARDS_CACHE[share_id] = entry
+        return entry
     cube = doc.get("cube", [])
     index = await run_in_threadpool(build_card_index, cube, doc.get("bot_stats"))
     combos = combos_from_dicts(doc.get("bot_combos", []))
@@ -1418,11 +1566,11 @@ async def _bot_index(share_id: str):
     return c["index"], c["combos"]
 
 
-def _bot_delay(share_id: str, pick_index: int) -> float:
-    """0.8–1.7 s (plus up to a 1 s poll), stable for a given pick so concurrent polls agree on when it's due.
-    BOT_DELAY_SCALE scales it (0 = instant, handy for test drafts on staging)."""
+def _bot_delay(share_id: str, pick_index) -> float:
+    """Bots pick instantly by default (a "thinking" pause adds up fast with several bots between turns).
+    BOT_DELAY_SCALE=1 brings back a human-like 0.8-1.7 s pause, stable per pick so concurrent polls agree."""
     try:
-        scale = float(os.environ.get("BOT_DELAY_SCALE", "1"))
+        scale = float(os.environ.get("BOT_DELAY_SCALE", "0"))
     except ValueError:
         scale = 1.0
     return scale * (0.8 + random.Random(f"{share_id}:{pick_index}").random() * 0.9)
@@ -1454,12 +1602,15 @@ async def _bot_pick_once(d: dict) -> dict:
     if datetime.now(timezone.utc) < due:
         return d
 
-    index, combos = await _bot_index(d["share_id"])
+    cards = await _cards(d["share_id"])
+    if cards.get("vintage") and not cards["pool_cards"]:
+        return d                    # VRD bots wait a moment for their card pool to load
+    index, combos = cards["index"], cards["combos"]
     picks_by_seat: Dict[int, List[str]] = {s["index"]: [] for s in d["seats"]}
     for p in d["picks"]:
         picks_by_seat.setdefault(p["seat_index"], []).append(p["card_id"])
     taken = {p["card_id"] for p in d["picks"]}
-    remaining = [cid for cid in index if cid not in taken]
+    remaining = _remaining_ids(d, cards)
     rng = random.Random(f"{d['share_id']}:{pick_index}:{bot['id']}")
     if remaining:
         ctx = BotContext(index, combos, remaining, picks_by_seat, seat, d["order"], pick_index,
@@ -1474,11 +1625,19 @@ async def _bot_pick_once(d: dict) -> dict:
 
     pick = {"order": pick_index, "seat_index": seat, "card_id": card_id, "ts": datetime.now(timezone.utc).isoformat(), "bot": True}
     status = "complete" if pick_index + 1 >= len(d["order"]) else "drafting"
+    push: Dict[str, Any] = {"picks": pick}
+    card_doc = None
+    if cards.get("vintage"):       # VRD: the draft's card list grows as cards are picked
+        card_doc = next((c for c in cards["pool_cards"] if c["id"] == card_id), None)
+        if card_doc:
+            push["cube"] = card_doc
     # Only succeeds if nobody else picked in the meantime (another poll, an undo, a reassign).
-    await db.drafts.update_one(
+    res = await db.drafts.update_one(
         {"share_id": d["share_id"], "status": "drafting", "picks": {"$size": pick_index}},
-        {"$push": {"picks": pick}, "$set": {"status": status, "updated_at": pick["ts"]}},
+        {"$push": push, "$set": {"status": status, "updated_at": pick["ts"]}},
     )
+    if card_doc and res.modified_count:
+        await _vrd_add_card(d["share_id"], card_doc)
     return await _draft(d["share_id"])
 
 
@@ -1509,12 +1668,12 @@ async def pick_suggestions(share_id: str, seat: int, x_player_token: Optional[st
     pick_index = len(d.get("picks", []))
     key = (share_id, pick_index, seat)
     if key not in _SUGGEST_CACHE:
-        index, combos = await _bot_index(share_id)
+        cards = await _cards(share_id)
+        index, combos = cards["index"], cards["combos"]
         picks_by_seat: Dict[int, List[str]] = {s["index"]: [] for s in d["seats"]}
         for p in d["picks"]:
             picks_by_seat.setdefault(p["seat_index"], []).append(p["card_id"])
-        taken = {p["card_id"] for p in d["picks"]}
-        remaining = [cid for cid in index if cid not in taken]
+        remaining = _remaining_ids(d, cards)
         if not remaining:
             return {"suggestions": []}
         ctx = BotContext(index, combos, remaining, picks_by_seat, seat, d["order"], min(pick_index, len(d["order"]) - 1),
@@ -1525,7 +1684,11 @@ async def pick_suggestions(share_id: str, seat: int, x_player_token: Optional[st
         # Keep suggestions that are reasonably close to the best one.
         best = top[0][1] if top else 0
         _SUGGEST_CACHE[key] = [cid for cid, sc in top if best <= 0 or sc >= 0.7 * best]
-    return {"suggestions": _SUGGEST_CACHE[key]}
+    out: Dict[str, Any] = {"suggestions": _SUGGEST_CACHE[key]}
+    if d.get("pool") == "vintage":   # VRD: the page may not have these cards yet
+        pool = {c["id"]: c for c in (await _cards(share_id))["pool_cards"]}
+        out["cards"] = [pool[i] for i in out["suggestions"] if i in pool]
+    return out
 
 
 def _seat_bot(d: dict, rng: random.Random) -> None:

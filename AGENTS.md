@@ -25,6 +25,8 @@ Notes for anyone (human or AI) changing this codebase. Start with the [README](R
 | `frontend/src/components/CommanderCheck.jsx` | Commander legality + bracket panel and toolbar badge |
 | `backend/commander.py` | Commander legality rules and bracket estimate (`POST /api/commander/check`) |
 | `frontend/src/components/MyCubes.jsx`, `src/lib/cube.js` | Saved cubes (dashboard Cubes tab), cube list parsing and resolving (`/api/cubes`) |
+| `backend/packdraft.py`, `backend/draftbot/packbot.py`, `frontend/src/components/PackDraftView.jsx` | Pack drafts: dealing/passing/timer logic, pack bots, picking UI |
+| `backend/vrd.py` | VRD (every Vintage-legal card): legality rules and the bots' top-rated card pool (`vrd_pool` collection) |
 
 ## Conventions
 
