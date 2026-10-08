@@ -657,6 +657,34 @@ async def cubecobra_fetch(id: str):
         names = [ln.strip() for ln in r.text.splitlines() if ln.strip()]
     return {"names": names}
 
+MAX_CUSTOM_CARDS = 30
+MAX_CUSTOM_IMAGE = 400_000   # characters of data URL (~300 KB image); the client sends ~60 KB JPEGs
+
+
+def _clean_custom_cards(cube: List[dict]) -> List[dict]:
+    """Custom cards carry an uploaded image (as a data URL) and are treated as tokens: no mana cost,
+    no colour, never chosen by bots. Normalise them and reject anything malformed or oversized."""
+    customs = [c for c in cube if c.get("is_custom")]
+    if len(customs) > MAX_CUSTOM_CARDS:
+        raise HTTPException(status_code=400, detail=f"At most {MAX_CUSTOM_CARDS} custom cards per draft")
+    out = []
+    for c in cube:
+        if not c.get("is_custom"):
+            out.append(c)
+            continue
+        image = str(c.get("image") or "")
+        if not image.startswith("data:image/") or len(image) > MAX_CUSTOM_IMAGE:
+            raise HTTPException(status_code=400, detail="Each custom card needs an image under 300 KB")
+        name = str(c.get("name") or "").strip()[:80] or "Custom card"
+        out.append({
+            "id": "custom-" + str(c.get("id") or uuid.uuid4().hex).removeprefix("custom-")[:40],
+            "is_custom": True, "name": name, "image": image,
+            "type_line": "Token — Custom", "mana_cost": "", "cmc": 0, "colors": [], "color_identity": [],
+            "oracle_text": str(c.get("oracle_text") or "")[:500], "rarity": "special", "set": "", "elo": None,
+        })
+    return out
+
+
 @api_router.post("/drafts")
 async def create_draft(data: DraftCreate):
     if data.num_seats % data.num_players != 0:
@@ -665,6 +693,7 @@ async def create_draft(data: DraftCreate):
         raise HTTPException(status_code=400, detail="Cube is empty")
     if data.num_bots >= data.num_players:
         raise HTTPException(status_code=400, detail="Leave at least one seat for a person")
+    data.cube = _clean_custom_cards(data.cube)
     now = datetime.now(timezone.utc).isoformat()
     draft = {
         "id": str(uuid.uuid4()),
@@ -972,12 +1001,17 @@ async def _bot_pick_once(d: dict) -> dict:
         picks_by_seat.setdefault(p["seat_index"], []).append(p["card_id"])
     taken = {p["card_id"] for p in d["picks"]}
     remaining = [cid for cid in index if cid not in taken]
-    if not remaining:
-        return d
-    ctx = BotContext(index, combos, remaining, picks_by_seat, seat, d["order"], pick_index,
-                     d["pick_cap"], Persona.from_dict(bot.get("persona", {})))
     rng = random.Random(f"{d['share_id']}:{pick_index}:{bot['id']}")
-    card_id = await run_in_threadpool(choose_pick, ctx, rng)
+    if remaining:
+        ctx = BotContext(index, combos, remaining, picks_by_seat, seat, d["order"], pick_index,
+                         d["pick_cap"], Persona.from_dict(bot.get("persona", {})))
+        card_id = await run_in_threadpool(choose_pick, ctx, rng)
+    else:
+        # Bots ignore custom cards, but if those are all that's left they take one so the draft can finish.
+        leftovers = [c["id"] for c in d["cube"] if c["id"] not in taken]
+        if not leftovers:
+            return d
+        card_id = rng.choice(leftovers)
 
     pick = {"order": pick_index, "seat_index": seat, "card_id": card_id, "ts": datetime.now(timezone.utc).isoformat(), "bot": True}
     status = "complete" if pick_index + 1 >= len(d["order"]) else "drafting"

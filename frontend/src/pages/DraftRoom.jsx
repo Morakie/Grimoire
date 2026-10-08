@@ -269,6 +269,9 @@ export default function DraftRoom() {
   };
 
   const comparator = (a, b) => {
+    // Custom (uploaded) cards always sit at the top of the pool, whatever the sort.
+    const custom = (b.is_custom ? 1 : 0) - (a.is_custom ? 1 : 0);
+    if (custom) return custom;
     if (sortBy === "elo") return (b.elo || 0) - (a.elo || 0) || a.name.localeCompare(b.name);
     if (sortBy === "color") return colorKey(a) - colorKey(b) || typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
     if (sortBy === "type") return typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);

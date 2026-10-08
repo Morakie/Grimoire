@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Sparkles, Loader2, Shuffle, Users, RefreshCw, Plus, ArrowRight } from "lucide-react";
+import { Sparkles, Loader2, Shuffle, Users, RefreshCw, Plus, ArrowRight, ImagePlus, X } from "lucide-react";
 import { toast } from "sonner";
 
 function parseList(text) {
@@ -25,6 +25,31 @@ function parseList(text) {
   }).filter((s) => s && !/^(name|quantity|count)$/i.test(s));
 }
 
+// Shrink an uploaded image to card size (488 px wide, like Scryfall's "normal" image) as a JPEG
+// data URL, so a custom card adds roughly 50 KB to the draft instead of a multi-MB photo.
+function resizeImage(file, width = 488) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const scale = Math.min(1, width / img.width);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Not an image")); };
+    img.src = url;
+  });
+}
+
+const fileBaseName = (f) => f.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
+
 export default function DraftSetup() {
   const navigate = useNavigate();
   const formRef = useRef(null);
@@ -41,6 +66,24 @@ export default function DraftSetup() {
   const [cubeText, setCubeText] = useState("");
   const [cubeCobra, setCubeCobra] = useState("");
   const [loading, setLoading] = useState(false);
+  const [customCards, setCustomCards] = useState([]);   // { id, name, image }
+
+  const addCustomFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    const room = 30 - customCards.length;
+    if (files.length > room) toast(`Only ${Math.max(room, 0)} more custom card(s) fit (30 max)`);
+    const added = [];
+    for (const f of files.slice(0, Math.max(room, 0))) {
+      try {
+        const image = await resizeImage(f);
+        added.push({ id: Math.random().toString(36).slice(2, 10), name: fileBaseName(f) || "Custom card", image });
+      } catch { toast.error(`${f.name} isn't an image`); }
+    }
+    setCustomCards((cs) => [...cs, ...added]);
+  };
+  const renameCustom = (id, name) => setCustomCards((cs) => cs.map((c) => (c.id === id ? { ...c, name } : c)));
+  const removeCustom = (id) => setCustomCards((cs) => cs.filter((c) => c.id !== id));
 
   const nPeople = Number(players) || 0;
   const nBots = Number(bots) || 0;
@@ -86,11 +129,12 @@ export default function DraftSetup() {
       } else {
         names = parseList(cubeText);
       }
-      if (!names.length) { toast.error("Add a cube list or a CubeCobra link"); setLoading(false); return; }
+      if (!names.length && !customCards.length) { toast.error("Add a cube list, a CubeCobra link or custom cards"); setLoading(false); return; }
       const uniq = Array.from(new Set(names));
-      const { data: col } = await api.post("/cards/collection", { names: uniq });
-      if (!col.cards?.length) { toast.error("No cards resolved from that cube"); setLoading(false); return; }
+      const col = uniq.length ? (await api.post("/cards/collection", { names: uniq })).data : { cards: [] };
+      if (!col.cards?.length && !customCards.length) { toast.error("No cards resolved from that cube"); setLoading(false); return; }
       if (col.not_found?.length) toast(`${col.not_found.length} card(s) not found and skipped`);
+      const customs = customCards.map((c) => ({ id: `custom-${c.id}`, name: c.name.trim() || "Custom card", image: c.image, is_custom: true }));
       const { data: draft } = await api.post("/drafts", {
         name: name.trim() || "Cube Draft",
         num_players: nPeople + nBots,
@@ -98,10 +142,10 @@ export default function DraftSetup() {
         num_seats: totalSeats,
         double_draft_after: Number(doubleAfter) || 0,
         pick_cap: Number(pickCap) || 45,
-        cube: col.cards,
+        cube: [...customs, ...col.cards],
       });
       if (draft.host_token) localStorage.setItem(`grim_draft_host_${draft.share_id}`, draft.host_token);
-      toast.success(`Draft created with ${col.cards.length} cards`);
+      toast.success(`Draft created with ${col.cards.length + customs.length} cards`);
       navigate(`/draft/${draft.share_id}`);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Could not create draft");
@@ -218,6 +262,30 @@ export default function DraftSetup() {
                 <Textarea data-testid="draft-cube-text" value={cubeText} onChange={(e) => setCubeText(e.target.value)} placeholder={"Sol Ring\nLightning Bolt\nCounterspell\n..."} className="min-h-[160px] bg-slate-950 border-slate-700 text-slate-100 font-mono text-sm focus-visible:ring-amber-400" />
                 <label className="inline-flex items-center gap-2 text-sm text-slate-300 mt-2 cursor-pointer hover:text-white">
                   Upload file <input type="file" accept=".txt,.csv,.json" onChange={onFile} className="hidden" data-testid="draft-cube-file" />
+                </label>
+              </div>
+
+              <div data-testid="custom-cards">
+                <Label className="text-slate-300">Custom cards (optional)</Label>
+                <p className="text-xs text-slate-500 mt-1">Upload card images (your own designs, proxies, inside jokes). They join the pool as tokens, sit at the top of the draft, and bots leave them alone.</p>
+                {customCards.length > 0 && (
+                  <div className="mt-3 grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-6 gap-3">
+                    {customCards.map((c) => (
+                      <div key={c.id} className="relative" data-testid={`custom-card-${c.id}`}>
+                        <div className="aspect-[0.716] rounded-lg overflow-hidden border border-slate-700 bg-slate-800">
+                          <img src={c.image} alt={c.name} className="w-full h-full object-cover" />
+                        </div>
+                        <button type="button" onClick={() => removeCustom(c.id)} title="Remove" data-testid={`custom-remove-${c.id}`}
+                          className="absolute top-1 right-1 w-6 h-6 rounded bg-black/80 text-white hover:bg-red-500 flex items-center justify-center"><X className="w-3.5 h-3.5" /></button>
+                        <Input value={c.name} onChange={(e) => renameCustom(c.id, e.target.value)} maxLength={80} aria-label="Card name"
+                          className="mt-1.5 h-8 text-xs bg-slate-950 border-slate-700 text-slate-100" />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <label className="mt-3 inline-flex items-center gap-2 text-sm px-3 h-9 rounded-md border border-slate-700 bg-slate-950 text-slate-300 cursor-pointer hover:text-white hover:border-slate-600">
+                  <ImagePlus className="w-4 h-4" /> Add card images
+                  <input type="file" accept="image/*" multiple onChange={addCustomFiles} className="hidden" data-testid="custom-card-file" />
                 </label>
               </div>
 
