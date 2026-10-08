@@ -97,14 +97,37 @@ def _types(type_line: str) -> FrozenSet[str]:
     return frozenset(w for w in re.findall(r"[a-z]+", main))
 
 
+_AGGRO_KEYWORDS = re.compile(r"\b(haste|first strike|double strike|prowess|menace|trample|flying|dash)\b|whenever [^.]* attacks|can't block|(gets|get) \+\d")
+_BURN = re.compile(r"deals? (\d+|x) damage to (any target|target (player|opponent|creature or player|player or planeswalker))|each opponent loses")
+
+
 def _roles(card: dict, types: FrozenSet[str], text: str) -> FrozenSet[str]:
     roles = {name for name, rx in _ROLE_RE.items() if rx.search(text)}
+    cmc = card.get("cmc") or 0
+    if "artifact" in types:
+        roles.add("artifact")
+    if "planeswalker" in types:
+        roles.add("planeswalker")
+    if "equipment" in (card.get("type_line") or "").lower():
+        roles.add("equipment")
+    if "creature" in types and cmc <= 3 and (cmc <= 1 or _AGGRO_KEYWORDS.search(text)):
+        roles.add("aggro_creature")
+    if _BURN.search(text) and not ("creature" in types and cmc >= 4):
+        roles.add("burn")
+    if cmc <= 1 and "draw" in roles and not ("creature" in types):
+        roles.add("cantrip")
+    if ("creature" in types and cmc >= 5) or ("planeswalker" in types and cmc >= 4):
+        roles.add("finisher")
+    if "creature" in types and 2 <= cmc <= 5 and (({"draw", "removal", "token_maker"} & roles) or re.search(r"initiative|monarch|venture", text)):
+        roles.add("value_creature")
     if "creature" in types and (card.get("cmc") or 0) >= 6:
         roles.add("fatty")  # reanimation / cheat-into-play target
     if "artifact" in types and (card.get("cmc") or 0) >= 6:
         roles.add("big_artifact")
     if not ("land" in types) and re.search(r"add \{|add one mana|add (two|three) mana|add mana", text):
         roles.add("mana")
+        if "creature" in types or re.search(r"search your library for (a|up to \w+) (basic )?lands?", text):
+            roles.add("ramp")
     if "creature" in types and (card.get("cmc") or 0) <= 2:
         roles.add("cheap_threat")
     return frozenset(roles)

@@ -300,22 +300,23 @@ export default function DraftRoom() {
     </div>
   );
 
-  const renderDraftTable = (compact = false) => {
+  // fit=true squeezes every seat into the available width (Table Peek popout); the main view keeps
+  // readable columns and scrolls sideways instead.
+  const renderDraftTable = (compact = false, fit = false) => {
     const perSeat = seatsSorted.map((s) => (state.picks || []).filter((p) => p.seat_index === s.index).sort((a, b) => a.order - b.order));
     const maxRows = perSeat.reduce((m, a) => Math.max(m, a.length), 0);
-    // Seats share the width equally (fixed table layout), so every seat stays visible; long names truncate.
-    const dense = compact || seatsSorted.length > 4;
+    const dense = compact || (fit && seatsSorted.length > 4);
     const cell = compact ? "px-1.5 py-0.5 text-[10px]" : dense ? "px-1.5 py-1 text-xs" : "px-3 py-1.5 text-sm";
     return (
       <div className={`${compact ? "max-h-[44vh]" : "max-h-[calc(100vh-240px)]"} overflow-auto rounded-xl border border-slate-800`} data-testid={compact ? "mini-draft-table" : "draft-table"}>
-        <table className="w-full border-collapse table-fixed">
-          <colgroup><col className="w-8" /><col className="w-5" />{seatsSorted.map((s) => <col key={s.index} />)}</colgroup>
+        <table className={`w-full border-collapse ${fit ? "table-fixed" : ""}`}>
+          {fit && <colgroup><col className="w-8" /><col className="w-5" />{seatsSorted.map((s) => <col key={s.index} />)}</colgroup>}
           <thead className="sticky top-0 z-10">
             <tr className="bg-[#0b111e]">
               <th className="px-2 py-1.5 text-left text-slate-500 w-8 text-xs">#</th>
               <th className="w-6 bg-[#0b111e]"></th>
               {seatsSorted.map((s) => (
-                <th key={s.index} title={s.player_name || ""} className={`${dense ? "px-1.5" : "px-3"} py-1.5 text-left font-display text-slate-100 border-l border-slate-800 truncate ${dense ? "text-[11px]" : "text-sm"}`}>
+                <th key={s.index} title={s.player_name || ""} className={`${dense ? "px-1.5" : "px-3"} py-1.5 text-left font-display text-slate-100 border-l border-slate-800 truncate ${dense ? "text-[11px]" : "text-sm min-w-[160px]"} ${compact ? "min-w-[96px]" : ""}`}>
                   {s.player_name || "—"}<div className="text-[10px] text-slate-500 font-normal">Seat {s.index + 1}</div>
                 </th>
               ))}
@@ -623,7 +624,7 @@ export default function DraftRoom() {
               <span className="text-sm font-display font-semibold flex items-center gap-2"><Table2 className="w-4 h-4 text-amber-400" /> Draft table — quick glance</span>
               <button data-testid="mini-table-close" onClick={() => setShowMiniTable(false)} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
             </div>
-            <div className="overflow-auto p-3">{renderDraftTable(false)}</div>
+            <div className="overflow-auto p-3">{renderDraftTable(false, true)}</div>
           </div>
         </div>
       )}

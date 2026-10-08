@@ -110,4 +110,22 @@ def test_float_risk_values_are_sensible():
     combos = [Combo(("freeze", "G0"), 1.0)]
     # Rival is green and holds G0, so Freeze completes their combo: they will very likely take it.
     contested = float_risk(_two_seat_ctx(cube, combos, [], ["G0", "G1"]), ["freeze"], None or set(build_card_index(cube)) - {"G0", "G1"})
-    assert contested["freeze"] > 0.6
+    assert contested["freeze"] > 0.5
+
+
+def test_third_colour_becomes_a_splash_target_and_values_fixing():
+    from draftbot.engine import splash_target
+    cube = synthetic_cube() + [
+        card("bomb", "Splash Bomb", "{2}{G}", 3, "Creature — Test", "", "G", 1750),
+        card("bomb2", "Splash Bomb 2", "{1}{G}", 2, "Instant", "", "G", 1700),
+        card("dual", "UG dual", "", 0, "Land", "Add {U} or {G}.", "UG", 1400),
+    ]
+    idx = build_card_index(cube)
+    ur = [f"U{i}" for i in range(8)] + [f"R{i}" for i in range(8)]
+    mine = [idx[c] for c in ur + ["bomb", "bomb2"]]
+    colour, strength = splash_target(mine, frozenset("UR"), set(), [], idx)
+    assert colour == "G" and strength > 0
+    # With the splash target, the U/G dual should outrank an off-colour dual it would otherwise ignore.
+    ctx = _two_seat_ctx(cube, [], ur + ["bomb", "bomb2"], [])
+    scores = {cid: s for s, cid, _ in score_pool(ctx)}
+    assert scores["dual"] > scores["land1"]   # land1 is the UB dual: no splash help

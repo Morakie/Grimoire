@@ -50,6 +50,9 @@ def random_persona(rng: random.Random) -> Persona:
     # Small per-bot jitter on every weight so two bots of the same archetype still differ.
     for key in ("power", "lane", "combo", "openness", "float", "curve", "interaction"):
         weights[key] = round(weights.get(key, 1.0) * rng.uniform(0.95, 1.05), 3)
+    # A slight soft spot for one deck plan (hidden), e.g. a bot that leans a little towards aggro.
+    from .archetypes import NAMES
+    weights["arch_" + rng.choice(NAMES)] = round(rng.uniform(1.03, 1.07), 3)
     return Persona(archetype, weights, temperature=rng.uniform(0.035, 0.06), seed=rng.randrange(1 << 30))
 
 

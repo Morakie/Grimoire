@@ -6,6 +6,7 @@ import time
 from typing import Callable, Dict, List, Optional, Sequence
 
 from .combos import Combo, attach_combos
+from . import archetypes as arch
 from .engine import BotContext, choose_pick, lane_distribution
 from .features import CardInfo, build_card_index, castable
 from .personas import Persona, bot_names, random_persona
@@ -18,7 +19,7 @@ def _final_lane(pool: List[CardInfo]):
 
 def run_draft(cube: List[dict], combos: List[Combo], order: Sequence[int], num_seats: int, picks_per_seat: int,
               seed: int = 0, greedy_seats: Sequence[int] = (),
-              index: Optional[Dict[str, CardInfo]] = None) -> dict:
+              index: Optional[Dict[str, CardInfo]] = None, tuning: Optional[dict] = None) -> dict:
     """Run a full draft. Seats in `greedy_seats` just take the highest-Elo card (a baseline)."""
     rng = random.Random(seed)
     index = index or build_card_index(cube)
@@ -34,7 +35,7 @@ def run_draft(cube: List[dict], combos: List[Combo], order: Sequence[int], num_s
         if seat in greedy_seats:
             cid = max(remaining, key=lambda c: index[c].elo)
         else:
-            ctx = BotContext(index, combos, remaining, picks, seat, order, slot, picks_per_seat, personas[seat])
+            ctx = BotContext(index, combos, remaining, picks, seat, order, slot, picks_per_seat, personas[seat], tuning)
             cid = choose_pick(ctx, rng)
         picks[seat].append(cid)
         remaining.remove(cid)
@@ -57,6 +58,7 @@ def summarise(result: dict, combos: List[Combo]) -> List[dict]:
             "seat": seat,
             "name": result["names"][seat],
             "persona": result["personas"][seat].archetype,
+            "plan": max((d := arch.archetype_distribution(pool, len(pool))), key=d.get),
             "lane": "".join(sorted(lane, key="WUBRG".index)),
             "on_lane_pct": round(100 * len(on_lane) / max(len(spells), 1)),
             "avg_elo_top23": round(sum(c.elo for c in playables) / max(len(playables), 1)),

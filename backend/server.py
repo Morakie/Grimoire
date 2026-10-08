@@ -818,12 +818,27 @@ def _bot_index(d: dict):
 
 
 def _bot_delay(share_id: str, pick_index: int) -> float:
-    """0.8–1.7 s (plus up to a 1 s poll), stable for a given pick so concurrent polls agree on when it's due."""
-    return 0.8 + random.Random(f"{share_id}:{pick_index}").random() * 0.9
+    """0.8–1.7 s (plus up to a 1 s poll), stable for a given pick so concurrent polls agree on when it's due.
+    BOT_DELAY_SCALE scales it (0 = instant, handy for test drafts on staging)."""
+    try:
+        scale = float(os.environ.get("BOT_DELAY_SCALE", "1"))
+    except ValueError:
+        scale = 1.0
+    return scale * (0.8 + random.Random(f"{share_id}:{pick_index}").random() * 0.9)
 
 
 async def maybe_bot_pick(d: dict) -> dict:
-    """If a bot is on the clock and its delay has passed, make its pick. Returns the fresh draft."""
+    """Let bots on the clock pick. With no delay configured, several consecutive bot picks happen in
+    one poll (bounded so a request never runs long); otherwise one pick per poll once it's due."""
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=1.5)
+    while True:
+        before = len(d.get("picks", []))
+        d = await _bot_pick_once(d)
+        if len(d.get("picks", [])) == before or datetime.now(timezone.utc) > deadline:
+            return d
+
+
+async def _bot_pick_once(d: dict) -> dict:
     if d.get("status") != "drafting":
         return d
     pick_index = len(d.get("picks", []))
@@ -914,11 +929,16 @@ async def remove_bot(share_id: str, data: BotRemoveInput):
     return draft_state(d, light=True)
 
 
+_SIM_CACHE: Dict[str, Any] = {}   # cube_id -> (cards, not_found, combos); simulation only
+
+
 class SimulateInput(BaseModel):
     cube_id: str
     seats: int = Field(8, ge=2, le=12)
     picks_per_seat: int = Field(45, ge=5, le=90)
     seed: int = 0
+    tuning: Dict[str, float] = {}      # overrides for draftbot.engine.TUNING
+    baseline: bool = True              # also run an Elo-greedy draft for comparison
 
 
 @api_router.post("/bots/simulate")
@@ -926,19 +946,24 @@ async def simulate_bots(data: SimulateInput):
     """Bot-only draft for tuning. Disabled unless ENABLE_BOT_SIM=true (set it on staging only)."""
     if os.environ.get("ENABLE_BOT_SIM", "").lower() != "true":
         raise HTTPException(status_code=404, detail="Not found")
-    names = (await cubecobra_fetch(data.cube_id))["names"]
-    resolved = await _collection_by_names(list(dict.fromkeys(names)))
-    cube = resolved["cards"]
+    cached = _SIM_CACHE.get(data.cube_id)
+    if not cached:
+        names = (await cubecobra_fetch(data.cube_id))["names"]
+        resolved = await _collection_by_names(list(dict.fromkeys(names)))
+        cube = resolved["cards"]
+        combos = await fetch_combos(build_card_index(cube))
+        cached = _SIM_CACHE[data.cube_id] = (cube, resolved["not_found"], combos)
+    cube, not_found, combos = cached
+    resolved = {"not_found": not_found}
     index = build_card_index(cube)
-    combos = await fetch_combos(index)
     order = compute_pick_order(data.seats, 0, data.picks_per_seat, len(cube))
-    bots = await run_in_threadpool(run_draft, cube, combos, order, data.seats, data.picks_per_seat, data.seed, (), index)
-    greedy = await run_in_threadpool(run_draft, cube, combos, order, data.seats, data.picks_per_seat, data.seed, tuple(range(data.seats)))
+    bots = await run_in_threadpool(run_draft, cube, combos, order, data.seats, data.picks_per_seat, data.seed, (), index, data.tuning)
+    greedy = await run_in_threadpool(run_draft, cube, combos, order, data.seats, data.picks_per_seat, data.seed, tuple(range(data.seats))) if data.baseline else None
     return {
         "cube_size": len(cube), "not_found": resolved["not_found"], "combos_in_cube": len(combos),
         "seconds": round(bots["seconds"], 1),
         "bots": summarise(bots, combos),
-        "elo_greedy_baseline": [{k: s[k] for k in ("seat", "lane", "on_lane_pct", "avg_elo_top23")} for s in summarise(greedy, combos)],
+        "elo_greedy_baseline": [{k: s[k] for k in ("seat", "lane", "on_lane_pct", "avg_elo_top23")} for s in summarise(greedy, combos)] if greedy else [],
     }
 
 @app.on_event("startup")
