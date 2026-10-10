@@ -289,18 +289,51 @@ def _name_keys(c: Dict[str, Any]) -> List[str]:
     keys += [f.get("name", "") for f in c.get("card_faces") or []]
     return [k.strip().lower() for k in keys if k]
 
+class ScryfallRejected(HTTPException):
+    """Scryfall refused the request itself (4xx other than 429), e.g. a malformed card name in a batch."""
+
+
 async def _scryfall_post(hc: httpx.AsyncClient, path: str, body: dict) -> httpx.Response:
-    """POST to Scryfall, retrying briefly when it is busy (429 / 5xx). Raises a 502 if it still fails,
-    so a Scryfall hiccup is reported instead of silently dropping cards."""
-    for attempt in range(3):
-        r = await hc.post(f"{SCRYFALL}{path}", json=body)
-        if r.status_code == 200:
+    """POST to Scryfall, retrying with backoff when it is busy (429 / 5xx / no answer). Raises a 502 if
+    it still fails, so a Scryfall hiccup is reported instead of silently dropping cards."""
+    r = None
+    for attempt in range(4):
+        try:
+            r = await hc.post(f"{SCRYFALL}{path}", json=body)
+        except httpx.HTTPError as exc:
+            logger.warning("Scryfall %s: %s", path, exc)
+            r = None
+        if r is not None and r.status_code == 200:
             return r
-        if r.status_code not in (429, 500, 502, 503, 504):
-            break
-        await asyncio.sleep(1.0 * (attempt + 1))
-    logger.warning("Scryfall %s failed: %s", path, r.status_code)
+        if r is not None and r.status_code not in (429, 500, 502, 503, 504):
+            logger.warning("Scryfall %s rejected (%s): %s", path, r.status_code, r.text[:300])
+            raise ScryfallRejected(status_code=502, detail="Scryfall couldn't read part of the card list")
+        await asyncio.sleep(min(1.0 * 2 ** attempt, 6.0))
+    logger.warning("Scryfall %s failed: %s", path, r.status_code if r is not None else "no answer")
     raise HTTPException(status_code=502, detail="Scryfall is busy, please try again in a moment")
+
+
+async def _collection_post(hc: httpx.AsyncClient, identifiers: List[dict]) -> tuple:
+    """One /cards/collection call (up to 75 identifiers) -> (cards, not_found identifiers). If Scryfall
+    rejects the batch because of one odd entry, split it to find that entry and report it as not found
+    instead of failing the whole lookup."""
+    try:
+        r = await _scryfall_post(hc, "/cards/collection", {"identifiers": identifiers})
+    except ScryfallRejected:
+        if len(identifiers) == 1:
+            return [], list(identifiers)
+        mid = len(identifiers) // 2
+        a_cards, a_miss = await _collection_post(hc, identifiers[:mid])
+        b_cards, b_miss = await _collection_post(hc, identifiers[mid:])
+        return a_cards + b_cards, a_miss + b_miss
+    payload = r.json()
+    return payload.get("data", []), payload.get("not_found", [])
+
+
+async def _collection_batch(hc: httpx.AsyncClient, names: List[str]) -> tuple:
+    """Look up up to 75 names; returns (cards, names not found)."""
+    cards, miss = await _collection_post(hc, [{"name": n} for n in names])
+    return cards, [nf["name"] for nf in miss if nf.get("name")]
 
 
 async def _collection_lookup(hc: httpx.AsyncClient, identifiers: List[dict]) -> List[dict]:
@@ -308,8 +341,8 @@ async def _collection_lookup(hc: httpx.AsyncClient, identifiers: List[dict]) -> 
     for i in range(0, len(identifiers), 75):
         if i:
             await asyncio.sleep(0.1)
-        r = await _scryfall_post(hc, "/cards/collection", {"identifiers": identifiers[i:i + 75]})
-        out.extend(r.json().get("data", []))
+        cards, _ = await _collection_post(hc, identifiers[i:i + 75])
+        out.extend(cards)
     return out
 
 _OLDEST_CACHE: Dict[str, dict] = {}   # oracle_id -> oldest paper printing (raw Scryfall card)
@@ -406,17 +439,16 @@ async def card_collection(data: CollectionInput):
 async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
     """Resolve card names (e.g. a cube list), using each card's original printing. Misses get a
     second chance through the front face and fuzzy matching (e.g. split cards like "Life // Death")."""
-    names = [n for n in names if n and n.strip()][:800]
+    names = [" ".join(n.split())[:150] for n in names if n and n.strip()][:800]
     raw = []
     missed = []
     async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
         for i in range(0, len(names), 75):
             if i:
                 await asyncio.sleep(0.1)
-            r = await _scryfall_post(hc, "/cards/collection", {"identifiers": [{"name": n} for n in names[i:i + 75]]})
-            payload = r.json()
-            raw.extend(payload.get("data", []))
-            missed.extend(nf["name"] for nf in payload.get("not_found", []) if nf.get("name"))
+            cards, miss = await _collection_batch(hc, names[i:i + 75])
+            raw.extend(cards)
+            missed.extend(miss)
         try:
             raw = await _prefer_oldest(hc, raw)
         except httpx.HTTPError as exc:   # keep Scryfall's default printings
