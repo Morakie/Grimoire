@@ -709,7 +709,7 @@ export default function DraftRoom() {
         <div className="flex items-center gap-2 flex-wrap mb-4">
           <span className="text-xs text-slate-500">View deck:</span>
           {seatsSorted.map((s) => {
-            const mine = me?.seats?.includes(s.index);
+            const mine = isMirror ? s.index === state.my_seat : me?.seats?.includes(s.index);
             return (
               <button key={s.index} data-testid={`deck-seat-${s.index}`} onClick={() => setDeckSeat(s.index)}
                 className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${activeSeat === s.index ? "border-amber-400 text-amber-300 bg-amber-400/10" : "border-slate-700 text-slate-400 hover:text-slate-200"}`}>
@@ -851,7 +851,7 @@ export default function DraftRoom() {
         <div ref={seatStripRef} className="relative flex gap-2 overflow-x-auto -mx-3 px-3 pb-1 mb-4 sm:mx-0 sm:px-0 sm:pb-0 sm:mb-6 sm:grid sm:grid-cols-2 lg:grid-cols-4 sm:gap-3 sm:overflow-visible" data-testid="seat-grid">
           {seatsSorted.map((s) => {
             const isCurrent = state.current_seat_index === s.index;
-            const mine = me?.seats?.includes(s.index);
+            const mine = isMirror ? s.index === state.my_seat : me?.seats?.includes(s.index);
             const last = seatPicks(s.index).slice(-1)[0];
             return (
               <div key={s.index} data-testid={`seat-${s.index}`} className={`rounded-xl border p-2.5 sm:p-3 min-w-[148px] shrink-0 sm:min-w-0 ${isCurrent ? "border-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.15)]" : "border-slate-800"} bg-slate-900/50`}>
@@ -886,11 +886,13 @@ export default function DraftRoom() {
           <div className="min-w-0 space-y-6">
             {state.status === "lobby" && (
               <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 max-w-md" data-testid="lobby-panel">
-                <h2 className="font-display text-xl font-bold mb-2">Join the draft</h2>
+                <h2 className="font-display text-xl font-bold mb-2">{isMirror ? "Mirror table" : "Join the draft"}</h2>
                 <p className="text-sm text-slate-400 mb-4">
                   {state.pool === "vintage" && <span className="block text-amber-300/90 mb-1" data-testid="lobby-format-vrd">Vintage Rotisserie Draft · every Vintage-legal card</span>}
                   {state.mode === "packs" && <span className="block text-amber-300/90 mb-1" data-testid="lobby-format">Pack draft · {state.pack_count} packs of {state.pack_size}{state.timer === "off" ? " · no timer" : " · pick timer on"}</span>}
-                  Enter your name to claim your seat(s). {state.seats_per_player} seat(s) each. {state.players.length}/{state.num_players} players in.
+                  {isMirror
+                    ? "You pick for every seat from this browser. Start when ready, then use Catch up from sheet for picks already made."
+                    : <>Enter your name to claim your seat(s). {state.seats_per_player} seat(s) each. {state.players.length}/{state.num_players} players in.</>}
                 </p>
                 <div className="mb-4 rounded-lg border border-slate-800 bg-slate-950 p-3">
                   <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1.5">Invite players</div>
