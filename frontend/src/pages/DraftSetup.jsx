@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Sparkles, Loader2, Shuffle, Users, RefreshCw, Plus, ArrowRight, Eye, Lock, KeyRound, Library, Info, Package, RotateCw } from "lucide-react";
+import { Sparkles, Loader2, Shuffle, Users, RefreshCw, Plus, ArrowRight, Eye, Lock, KeyRound, Library, Info, Package, RotateCw, Copy } from "lucide-react";
 import { toast } from "sonner";
 
 export default function DraftSetup() {
@@ -38,6 +38,12 @@ export default function DraftSetup() {
   const vrdMode = mode === "rotisserie" && pool === "vintage";
   const [pickCap, setPickCap] = useState(45);
   const [doubleAfter, setDoubleAfter] = useState(0);
+  // Mirror: re-enter a draft happening elsewhere (a spreadsheet), picking for every seat from this browser.
+  const [mirror, setMirror] = useState(false);
+  const [seatNamesText, setSeatNamesText] = useState("");
+  const [mySeat, setMySeat] = useState(0);
+  const mirrorMode = mode === "rotisserie" && mirror;
+  const seatNames = seatNamesText.split("\n").map((n) => n.trim()).filter(Boolean);
   const [cubeText, setCubeText] = useState("");
   const [cubeCobra, setCubeCobra] = useState("");
   const [loading, setLoading] = useState(false);
@@ -68,7 +74,9 @@ export default function DraftSetup() {
   const nBots = Number(bots) || 0;
   const nEach = Number(seatsEach) || 0;
   const totalSeats = (nPeople + nBots) * nEach;
-  const seatsOk = nPeople >= 1 && nBots >= 0 && nEach >= 1 && nPeople + nBots <= 12 && totalSeats <= 64;
+  const seatsOk = mirrorMode
+    ? seatNames.length >= 2 && seatNames.length <= 64
+    : nPeople >= 1 && nBots >= 0 && nEach >= 1 && nPeople + nBots <= 12 && totalSeats <= 64;
 
   const loadLobbies = async () => {
     try {
@@ -108,7 +116,7 @@ export default function DraftSetup() {
   };
 
   const create = async () => {
-    if (!seatsOk) { toast.error("Need at least 1 player, at most 12 players + bots, and 64 seats in total"); return; }
+    if (!seatsOk) { toast.error(mirrorMode ? "List 2 to 64 seat names, one per line, in draft order" : "Need at least 1 player, at most 12 players + bots, and 64 seats in total"); return; }
     setLoading(true);
     try {
       const customs = vrdMode ? [] : toCubeCustoms(customCards);
@@ -147,11 +155,14 @@ export default function DraftSetup() {
         private: isPrivate,
         mode,
         pool: vrdMode ? "vintage" : "cube",
+        ...(mirrorMode ? { mirror: true, seat_names: seatNames, my_seat: Math.min(mySeat, seatNames.length - 1), num_players: 1, num_bots: 0, num_seats: seatNames.length, private: true } : {}),
         ...(mode === "packs" ? { pack_count: Number(packCount) || 3, pack_size: Number(packSize) || 15, timer: timerOn ? "shrinking" : "off" } : {}),
         cube: [...customs, ...col.cards],
       })));
       } catch (e) { throw new Error(stepError("Couldn't create the table", e)); }
       if (draft.host_token) localStorage.setItem(`grim_draft_host_${draft.share_id}`, draft.host_token);
+      // Mirror tables: this browser holds every seat.
+      if (draft.player) localStorage.setItem(`grim_draft_${draft.share_id}`, JSON.stringify(draft.player));
       toast.success(vrdMode ? "VRD table created" : `Draft created with ${col.cards.length + customs.length} cards`);
       navigate(`/draft/${draft.share_id}`);
     } catch (e) {
@@ -278,7 +289,39 @@ export default function DraftSetup() {
                   ))}
                 </div>
               </div>
+              {mode === "rotisserie" && (
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3" data-testid="draft-mirror">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input type="checkbox" checked={mirror} onChange={(e) => setMirror(e.target.checked)} className="mt-1 w-4 h-4 accent-amber-400" data-testid="draft-mirror-toggle" />
+                    <span>
+                      <span className="text-sm text-slate-200 flex items-center gap-1.5"><Copy className="w-3.5 h-3.5 text-amber-400" /> Mirror a draft happening elsewhere</span>
+                      <span className="block text-xs text-slate-500 mt-0.5">You enter every seat's picks from this browser (copy them from the group's sheet). Pick suggestions show on your own seat, and the table tracks how often the bot would have made the same pick. Cards not in the cube can be added as you go.</span>
+                    </span>
+                  </label>
+                  {mirror && (
+                    <div className="mt-3 grid sm:grid-cols-2 gap-4">
+                      <div>
+                        <Label className="text-slate-300">Seats in draft order</Label>
+                        <Textarea data-testid="draft-mirror-names" value={seatNamesText} onChange={(e) => setSeatNamesText(e.target.value)}
+                          placeholder={"Alex\nTyler\nSam\n..."} className="mt-1.5 min-h-[150px] bg-slate-950 border-slate-700 text-slate-100 text-sm focus-visible:ring-amber-400" />
+                        <p className="text-[11px] text-slate-500 mt-1">One name per line, first pick first. {seatNames.length} seat{seatNames.length === 1 ? "" : "s"}.</p>
+                      </div>
+                      <div>
+                        <Label className="text-slate-300">Your seat</Label>
+                        <Select value={String(Math.min(mySeat, Math.max(seatNames.length - 1, 0)))} onValueChange={(v) => setMySeat(Number(v))} disabled={!seatNames.length}>
+                          <SelectTrigger data-testid="draft-mirror-my-seat" className="mt-1.5 bg-slate-950 border-slate-700 text-slate-100"><SelectValue placeholder="Add names first" /></SelectTrigger>
+                          <SelectContent className="bg-slate-900 border-slate-700 text-slate-200">
+                            {seatNames.map((n, i) => <SelectItem key={i} value={String(i)}>{n} (Seat {i + 1})</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-[11px] text-slate-500 mt-1.5">Set Picks / seat and Double after below to match the real draft.</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+                {!mirrorMode && (<>
                 <div>
                   <Label className="text-slate-300">Players</Label>
                   <Input data-testid="draft-players" type="number" min={1} max={12} value={players} onChange={(e) => setPlayers(e.target.value)} className={`mt-1.5 bg-slate-950 border-slate-700 text-slate-100 ${seatsOk ? "" : "ring-1 ring-red-500"}`} />
@@ -291,6 +334,7 @@ export default function DraftSetup() {
                   <Label className="text-slate-300">Seats each</Label>
                   <Input data-testid="draft-seats-each" type="number" min={1} value={seatsEach} onChange={(e) => setSeatsEach(e.target.value)} className="mt-1.5 bg-slate-950 border-slate-700 text-slate-100" />
                 </div>
+                </>)}
                 {mode === "packs" ? (<>
                 <div>
                   <Label className="text-slate-300">Packs each</Label>
@@ -326,12 +370,14 @@ export default function DraftSetup() {
                 </>)}
               </div>
               <p className="text-xs text-slate-500">
-                {seatsOk
+                {mirrorMode
+                  ? <span className={seatsOk ? "text-slate-300" : "text-red-400"} data-testid="draft-seat-summary">{seatsOk ? `Mirror table · ${seatNames.length} seats, all picked from this browser (private). ` : "List 2 to 64 seat names. "}</span>
+                  : seatsOk
                   ? <><span className="text-slate-300" data-testid="draft-seat-summary">{nPeople} {nPeople === 1 ? "player" : "players"}{nBots ? ` + ${nBots} ${nBots === 1 ? "bot" : "bots"}` : ""} · {totalSeats} seats ({nEach} each).</span> </>
                   : <span className="text-red-400">Need at least 1 player, at most 12 players + bots, and 64 seats in total. </span>}
                 {mode === "packs"
                   ? <>Everyone picks at once and passes left, right, left. Needs <span className="text-slate-300" data-testid="pack-cards-needed">{totalSeats * (Number(packCount) || 0) * (Number(packSize) || 0)}</span> cards from the cube.</>
-                  : <>Bots are seated automatically and pick on their own turns.{Number(doubleAfter) > 0 ? ` Picks double after pick #${Number(doubleAfter)}.` : ""}</>}
+                  : mirrorMode ? null : <>Bots are seated automatically and pick on their own turns.{Number(doubleAfter) > 0 ? ` Picks double after pick #${Number(doubleAfter)}.` : ""}</>}
               </p>
               {mode === "packs" && (
                 <label className="flex items-start gap-3 cursor-pointer" data-testid="draft-timer">
@@ -403,13 +449,13 @@ export default function DraftSetup() {
               )}
               </>)}
 
-              <label className="flex items-start gap-3 cursor-pointer" data-testid="draft-private">
+              {!mirrorMode && <label className="flex items-start gap-3 cursor-pointer" data-testid="draft-private">
                 <input type="checkbox" checked={isPrivate} onChange={(e) => setIsPrivate(e.target.checked)} className="mt-1 w-4 h-4 accent-amber-400" data-testid="draft-private-toggle" />
                 <span>
                   <span className="text-sm text-slate-200 flex items-center gap-1.5"><Lock className="w-3.5 h-3.5 text-amber-400" /> Private table</span>
                   <span className="block text-xs text-slate-500 mt-0.5">Hidden from Open tables and Drafting now. Players join with the invite link or the table code.</span>
                 </span>
-              </label>
+              </label>}
 
               {!vrdMode && <div data-testid="custom-cards">
                 <Label className="text-slate-300">Custom cards (optional)</Label>

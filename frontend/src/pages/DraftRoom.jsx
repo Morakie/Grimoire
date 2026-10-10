@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from "react-router-dom";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { buildExport } from "@/components/ExportDialog";
 import { useAuth } from "@/context/AuthContext";
 import { getBasics } from "@/lib/mtg";
@@ -15,6 +16,12 @@ const GUEST_KEY = "grimoire_guest_deck";
 const canHover = () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia("(hover: hover)").matches;
 
 function storeKey(sid) { return `grim_draft_${sid}`; }
+// Is it this browser's turn? Mirror tables pick for every seat from one browser, but "your turn"
+// (beep, suggestions, queue auto-pick) means only your own seat there.
+function onMySeat(st, m) {
+  return !!(st && m && st.status === "drafting" && st.current_seat_index != null && m.seats.includes(st.current_seat_index)
+    && (!st.mirror || st.current_seat_index === st.my_seat));
+}
 
 const COLOR_ORDER = { W: 0, U: 1, B: 2, R: 3, G: 4 };
 const TYPE_RANK = ["Creature", "Planeswalker", "Instant", "Sorcery", "Artifact", "Enchantment", "Battle", "Land"];
@@ -93,6 +100,13 @@ export default function DraftRoom() {
   const seatStripRef = useRef(null);
   const [hints, setHints] = useState(() => localStorage.getItem("grim_draft_hints") === "on");
   const [suggestions, setSuggestions] = useState([]);
+  // Mirror tables: search for cards outside the cube, and catch up from the group's sheet.
+  const [addQuery, setAddQuery] = useState("");
+  const [addResults, setAddResults] = useState(null);   // null = closed
+  const [adding, setAdding] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importing, setImporting] = useState(false);
   const [cardSize, setCardSize] = useState(() => localStorage.getItem("grim_draft_card_size") || "m");
   const [muted, setMuted] = useState(() => localStorage.getItem("grim_draft_muted") === "true");
   const [queue, setQueue] = useState(() => { try { return JSON.parse(localStorage.getItem(`grim_draft_queue_${shareId}`)) || []; } catch { return []; } });
@@ -141,6 +155,7 @@ export default function DraftRoom() {
   const pickedIds = useMemo(() => new Set((state?.picked_ids) || (state?.picks || []).map((p) => p.card_id)), [state]);
   // VRD: cards seen in the top list, searches and suggestions (queued ones are remembered across reloads).
   const isVrd = draft?.pool === "vintage";
+  const isMirror = !!(state?.mirror ?? draft?.mirror);
   const [vrdSeen, setVrdSeen] = useState(() => { try { return JSON.parse(localStorage.getItem(`grim_vrd_seen_${shareId}`)) || {}; } catch { return {}; } });
   const [vrdList, setVrdList] = useState([]);          // cards shown in the VRD picker (top list or search results)
   const [vrdSearch, setVrdSearch] = useState("");      // the search that produced vrdList ("" = top-rated list)
@@ -164,7 +179,7 @@ export default function DraftRoom() {
   // VRD drafts add cards to the draft's list as they are picked: fetch just the new ones.
   const cubeFetchRef = useRef(false);
   useEffect(() => {
-    if (!isVrd || !state?.picks?.length || cubeFetchRef.current) return;
+    if (!(isVrd || isMirror) || !state?.picks?.length || cubeFetchRef.current) return;
     const have = new Set((draft?.cube || []).map((c) => c.id));
     if (state.picks.every((p) => have.has(p.card_id))) return;
     cubeFetchRef.current = true;
@@ -175,7 +190,7 @@ export default function DraftRoom() {
       }))
       .catch(() => {})
       .finally(() => { cubeFetchRef.current = false; });
-  }, [isVrd, state, draft, shareId]);
+  }, [isVrd, isMirror, state, draft, shareId]);
 
   // VRD picker list: the highest-rated undrafted cards, or the results of a search.
   const vrdPickCount = state?.picks?.length || 0;
@@ -212,7 +227,7 @@ export default function DraftRoom() {
 
   // Beep + auto-pick when it becomes your turn.
   useEffect(() => {
-    const now = !!(state && me && state.status === "drafting" && state.current_seat_index != null && me.seats.includes(state.current_seat_index));
+    const now = onMySeat(state, me);
     if (now && !prevTurnRef.current && !muted) playBeep();
     prevTurnRef.current = now;
   }, [state, me, muted]);
@@ -233,18 +248,18 @@ export default function DraftRoom() {
   }, [state, me, shareId]);
 
   // Pick suggestions (same engine as the bots) when it's our turn and hints are on.
-  const turnSeat = state && me && state.status === "drafting" && state.current_seat_index != null
-    && me.seats.includes(state.current_seat_index) ? state.current_seat_index : null;
+  const turnSeat = onMySeat(state, me) ? state.current_seat_index : null;
+  const showHints = hints || isMirror;     // mirror tables exist to test the suggestions: always on for your seat
   const pickNo = state?.pick_index;
   useEffect(() => {
     setSuggestions([]);
-    if (!hints || turnSeat == null) return;
+    if (!showHints || turnSeat == null) return;
     let active = true;
     api.get(`/drafts/${shareId}/suggestions`, { params: { seat: turnSeat } })
       .then(({ data }) => { if (!active) return; if (data.cards) rememberCards(data.cards); setSuggestions(data.suggestions || []); })
       .catch(() => {});
     return () => { active = false; };
-  }, [hints, turnSeat, pickNo, shareId]);
+  }, [showHints, turnSeat, pickNo, shareId]);
 
   // Phones: keep the seat on the clock centred in the sideways-scrolling seat strip.
   const clockSeat = state?.current_seat_index;
@@ -419,11 +434,62 @@ export default function DraftRoom() {
   const shareUrl = `${window.location.origin}/draft/${shareId}`;
   const myTurn = me && state.current_seat_index != null && me.seats.includes(state.current_seat_index);
   const currentSeatName = state.current_seat_index != null ? state.seats.find((s) => s.index === state.current_seat_index)?.player_name : null;
+  const mineNow = onMySeat(state, me);
+  const turnText = isMirror
+    ? (mineNow ? `Your pick! · Seat ${state.current_seat_index + 1}` : `Picking for ${currentSeatName || "…"} · Seat ${state.current_seat_index + 1}`)
+    : (myTurn ? `Your pick! · Seat ${state.current_seat_index + 1}` : `${currentSeatName || "…"}'s pick`);
+  // Mirror stress test: how often the real pick was among the bot engine's top suggestions.
+  const agreement = (() => {
+    if (!isMirror) return null;
+    const logged = (state.picks || []).filter((p) => Array.isArray(p.bot_top) && p.bot_top.length);
+    const tally = (ps) => ({ n: ps.length, top3: ps.filter((p) => p.bot_top.includes(p.card_id)).length, top1: ps.filter((p) => p.bot_top[0] === p.card_id).length });
+    return { all: tally(logged), mine: tally(logged.filter((p) => p.seat_index === state.my_seat)) };
+  })();
+
+  const searchToAdd = async (e) => {
+    e?.preventDefault();
+    const q = addQuery.trim();
+    if (!q) return;
+    setAdding(true);
+    try {
+      const { data } = await api.get("/cards/search", { params: { q: isVrd ? `${q} legal:vintage game:paper -t:basic` : q } });
+      rememberCards(data.cards || []);
+      setAddResults((data.cards || []).slice(0, 24));
+    } catch { toast.error("Search failed"); setAddResults([]); }
+    finally { setAdding(false); }
+  };
+
+  const runImport = async () => {
+    // Cells copied from the sheet arrive tab-separated: send them as a grid (one column per seat) and
+    // the server works out the pick order. Otherwise it's one card name per line, in pick order.
+    const isGrid = importText.includes("\t");
+    const lines = importText.split(/\r?\n/);
+    const names = lines.map((l) => l.replace(/^\s*\d+[.)]\s+/, "").trim()).filter(Boolean);
+    const body = isGrid ? { host_token: hostToken, grid: lines.map((l) => l.split("\t")) } : { host_token: hostToken, names };
+    if (!isGrid && !names.length) return;
+    setImporting(true);
+    try {
+      const { data } = await api.post(`/drafts/${shareId}/mirror/import`, body, { timeout: 180000 });
+      setState(data);
+      if (data.stopped) {
+        // List mode: keep the lines that didn't go in so they can be fixed and sent again.
+        if (!isGrid) setImportText(names.slice(data.stopped.line - 1).join("\n"));
+        toast.error(`Added ${data.applied} pick${data.applied === 1 ? "" : "s"}, then stopped at "${data.stopped.name}": ${data.stopped.reason}`, { duration: 10000 });
+      } else if (isGrid && !data.applied) {
+        toast("Nothing new: every pick in the sheet is already entered");
+      } else {
+        toast.success(`Added ${data.applied} pick${data.applied === 1 ? "" : "s"}`);
+        setImportText("");
+        setImportOpen(false);
+      }
+    } catch (e) { toast.error(e.response?.data?.detail || "Import failed"); }
+    finally { setImporting(false); }
+  };
 
   // Auto-pick the top still-available queued card whenever it's our turn.
   autoPickRef.current = () => {
     if (inFlightRef.current) return;
-    if (!(state.status === "drafting" && me && state.current_seat_index != null && me.seats.includes(state.current_seat_index))) return;
+    if (!onMySeat(state, me)) return;
     const next = queue.map((id) => cubeById[id]).find((c) => c && !pickedIds.has(c.id) && !(isVrd && takenNames.has(c.name.toLowerCase())));
     if (next) { toast.success(`Auto-picked ${next.name} from your queue`); pick(next); }
   };
@@ -506,7 +572,43 @@ export default function DraftRoom() {
           : vrdWarming ? "Loading the top-rated card list (first VRD table only). Search works now; bots start in a few seconds."
           : "Top-rated undrafted cards. Search for anything Vintage-legal.") : `${availableCount} available`}</span>
       </div>
-      {hints && myTurn && suggestions.some((id) => cubeById[id] && !isTaken(cubeById[id])) && (
+      {isMirror && (
+        <div className="mb-3 rounded-lg border border-slate-800 bg-slate-900/50 p-2.5 space-y-2" data-testid="mirror-panel">
+          <div className="flex items-center gap-2 flex-wrap text-xs">
+            <span className="flex items-center gap-1 text-slate-300 font-semibold"><Copy className="w-3.5 h-3.5 text-amber-400" /> Mirror</span>
+            {agreement && agreement.all.n > 0 && (
+              <span className="text-slate-400" data-testid="mirror-agreement" title="Picks where the real card was in the bot's top suggestions (exact = its first choice)">
+                Bot agreed · you {agreement.mine.top3}/{agreement.mine.n} ({agreement.mine.top1} exact) · table {agreement.all.top3}/{agreement.all.n} ({agreement.all.top1} exact)
+              </span>
+            )}
+            {hostToken && (
+              <button type="button" data-testid="mirror-import-open" onClick={() => setImportOpen(true)} className="ml-auto text-xs px-2.5 py-1 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 hover:border-amber-400/60">Catch up from sheet</button>
+            )}
+          </div>
+          {!isVrd && (
+            <form onSubmit={searchToAdd} className="flex items-center gap-2" data-testid="mirror-add-search">
+              <Input value={addQuery} onChange={(e) => setAddQuery(e.target.value)} placeholder="Card not in the cube? Search all cards…" data-testid="mirror-add-input"
+                className="h-8 w-full sm:w-72 bg-slate-950 border-slate-700 text-slate-100 text-sm" />
+              <Button type="submit" size="sm" data-testid="mirror-add-go" disabled={adding} className="h-8 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">{adding ? <Loader2 className="w-4 h-4 animate-spin" /> : "Search"}</Button>
+              {addResults && <button type="button" onClick={() => { setAddResults(null); setAddQuery(""); }} className="text-xs text-slate-400 hover:text-amber-300">Close</button>}
+            </form>
+          )}
+          {!isVrd && addResults && (
+            addResults.length ? (
+              <div className="flex gap-2 overflow-x-auto pb-1" data-testid="mirror-add-results">
+                {addResults.map((c) => (
+                  <button key={c.id} type="button" data-testid={`mirror-add-${c.id}`} disabled={!myTurn || picking || pickedIds.has(c.id)}
+                    onClick={() => setConfirmCard(c)} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
+                    className="shrink-0 w-24 rounded-md overflow-hidden border border-slate-800 hover:border-amber-400/70 disabled:opacity-40" title={c.name}>
+                    {c.image ? <img src={c.image} alt={c.name} className="w-full" loading="lazy" /> : <div className="p-2 text-[11px] text-slate-200">{c.name}</div>}
+                  </button>
+                ))}
+              </div>
+            ) : <p className="text-xs text-slate-500">No cards found.</p>
+          )}
+        </div>
+      )}
+      {showHints && mineNow && suggestions.some((id) => cubeById[id] && !isTaken(cubeById[id])) && (
         <div className="mb-3 flex items-center gap-2 flex-wrap" data-testid="pick-suggestions">
           <span className="flex items-center gap-1 text-xs text-slate-500"><Lightbulb className="w-3.5 h-3.5 text-amber-400" /> Suggested</span>
           {suggestions.map((id) => cubeById[id]).filter((c) => c && !isTaken(c)).map((c) => (
@@ -844,8 +946,8 @@ export default function DraftRoom() {
             {state.status === "drafting" && (
               <div>
                 <div className="mb-4 flex items-center gap-3 flex-wrap">
-                  <div className={`hidden lg:block px-4 py-2 rounded-xl font-display font-semibold ${myTurn ? "bg-amber-400 text-stone-900" : "bg-slate-900 border border-slate-700 text-slate-200"}`} data-testid="turn-indicator">
-                    {myTurn ? `Your pick! · Seat ${state.current_seat_index + 1}` : `${currentSeatName || "…"}'s pick`} · {state.pick_index}/{state.order_len}
+                  <div className={`hidden lg:block px-4 py-2 rounded-xl font-display font-semibold ${(isMirror ? mineNow : myTurn) ? "bg-amber-400 text-stone-900" : "bg-slate-900 border border-slate-700 text-slate-200"}`} data-testid="turn-indicator">
+                    {turnText} · {state.pick_index}/{state.order_len}
                   </div>
                   {viewTabs([["pick", "Pick", LayoutGrid], ["table", "Draft Table", Table2], ["decks", "Decks", Eye]])}
                   <button data-testid="toggle-mini-table" onClick={() => setShowMiniTable((v) => !v)} className="hidden lg:flex text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 items-center gap-1.5"><Table2 className="w-3.5 h-3.5" /> {showMiniTable ? "Hide peek" : "Table peek"}</button>
@@ -899,8 +1001,8 @@ export default function DraftRoom() {
       {state.status !== "lobby" && (
         <nav className="lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-slate-800 bg-[#070c17]/95 backdrop-blur pb-[env(safe-area-inset-bottom)]" data-testid="mobile-bar">
           {state.status === "drafting" && (
-            <div className={`text-center text-xs font-display font-semibold py-1 ${myTurn ? "bg-amber-400 text-stone-900" : "text-slate-300"}`} data-testid="mobile-turn">
-              {myTurn ? `Your pick! · Seat ${state.current_seat_index + 1}` : `${currentSeatName || "…"}'s pick`} · {state.pick_index}/{state.order_len}
+            <div className={`text-center text-xs font-display font-semibold py-1 ${(isMirror ? mineNow : myTurn) ? "bg-amber-400 text-stone-900" : "text-slate-300"}`} data-testid="mobile-turn">
+              {turnText} · {state.pick_index}/{state.order_len}
             </div>
           )}
           <div className="flex">
@@ -987,10 +1089,27 @@ export default function DraftRoom() {
         </div>
       )}
 
+      {importOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" data-testid="mirror-import-dialog" onClick={() => !importing && setImportOpen(false)}>
+          <div className="bg-[#0b111e] border border-slate-700 rounded-2xl p-5 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-display text-lg font-bold">Catch up from the sheet</h3>
+            <p className="text-xs text-slate-400 mt-1">Copy the pick cells straight from the sheet (one column per player, in seat order) and paste them here. Picks already entered are skipped, so you can paste the whole grid again later. Or type one card per line in pick order, starting with pick {(state.pick_index || 0) + 1} ({currentSeatName || "next seat"}). Cards that aren't in the cube are looked up and added.</p>
+            <Textarea data-testid="mirror-import-text" value={importText} onChange={(e) => setImportText(e.target.value)} placeholder={"Black Lotus\nAncestral Recall\nTime Walk\n..."}
+              className="mt-3 min-h-[200px] bg-slate-950 border-slate-700 text-slate-100 font-mono text-sm" />
+            <div className="flex gap-2 mt-3">
+              <Button variant="outline" disabled={importing} onClick={() => setImportOpen(false)} className="flex-1 bg-slate-900 border-slate-700 text-slate-200">Cancel</Button>
+              <Button data-testid="mirror-import-go" disabled={importing || !importText.trim()} onClick={runImport} className="flex-1 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">
+                {importing ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : importText.includes("\t") ? "Add new picks from sheet" : `Add ${importText.split("\n").filter((l) => l.trim()).length} picks`}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {confirmCard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" data-testid="confirm-pick-dialog" onClick={() => setConfirmCard(null)}>
           <div className="bg-[#0b111e] border border-slate-700 rounded-2xl p-5 max-w-xs w-full text-center" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-display text-lg font-bold mb-3">Draft this card?</h3>
+            <h3 className="font-display text-lg font-bold mb-3">{isMirror && currentSeatName ? `Draft for ${currentSeatName}?` : "Draft this card?"}</h3>
             <div className="rounded-lg overflow-hidden border border-slate-800 mb-3">
               {(confirmCard.image || confirmCard.art_crop) ? <img src={confirmCard.image || confirmCard.art_crop} alt={confirmCard.name} className="w-full" /> : <div className="p-6 text-slate-200">{confirmCard.name}</div>}
             </div>
