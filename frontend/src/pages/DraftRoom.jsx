@@ -103,6 +103,11 @@ export default function DraftRoom() {
   const seatStripRef = useRef(null);
   const [hints, setHints] = useState(() => localStorage.getItem("grim_draft_hints") === "on");
   const [suggestions, setSuggestions] = useState([]);
+  const [suggestFor, setSuggestFor] = useState(null);     // seat the current suggestions are for
+  const [suggestLoading, setSuggestLoading] = useState(false);
+  const [suggestOpen, setSuggestOpen] = useState(false);  // the suggestions pop-up
+  // Mirror tables: suggest for every seat (not just yours) to watch how the bot reads each drafter.
+  const [suggestAll, setSuggestAll] = useState(() => { try { return localStorage.getItem("grim_mirror_suggest_all") === "on"; } catch { return false; } });
   // Mirror tables: search for cards outside the cube, and catch up from the group's sheet.
   const [addQuery, setAddQuery] = useState("");
   const [addResults, setAddResults] = useState(null);   // null = closed
@@ -252,18 +257,31 @@ export default function DraftRoom() {
   }, [state, me, shareId]);
 
   // Pick suggestions (same engine as the bots) when it's our turn and hints are on.
-  const turnSeat = onMySeat(state, me) ? state.current_seat_index : null;
+  const turnSeat = onMySeat(state, me) || (state?.mirror && suggestAll && state.status === "drafting" && me && state.current_seat_index != null)
+    ? state.current_seat_index : null;
+  const mySeatIdx = state?.my_seat;
   const showHints = hints || isMirror;     // mirror tables exist to test the suggestions: always on for your seat
   const pickNo = state?.pick_index;
   useEffect(() => {
     setSuggestions([]);
+    setSuggestOpen(false);
     if (!showHints || turnSeat == null) return;
     let active = true;
-    api.get(`/drafts/${shareId}/suggestions`, { params: { seat: turnSeat } })
-      .then(({ data }) => { if (!active) return; if (data.cards) rememberCards(data.cards); setSuggestions(data.suggestions || []); })
-      .catch(() => {});
+    setSuggestLoading(true);
+    api.get(`/drafts/${shareId}/suggestions`, { params: { seat: turnSeat }, timeout: 60000 })
+      .then(({ data }) => {
+        if (!active) return;
+        if (data.cards) rememberCards(data.cards);
+        setSuggestions(data.suggestions || []);
+        setSuggestFor(turnSeat);
+        // Mirror tables: pop the suggestions up rather than leaving them in a strip above a 500-card pool.
+        // (Only for your own seat: on other seats it would get in the way of copying their picks.)
+        if (isMirror && turnSeat === mySeatIdx && (data.suggestions || []).length) setSuggestOpen(true);
+      })
+      .catch(() => {})
+      .finally(() => { if (active) setSuggestLoading(false); });
     return () => { active = false; };
-  }, [showHints, turnSeat, pickNo, shareId]);
+  }, [showHints, turnSeat, pickNo, shareId, isMirror, mySeatIdx]);
 
   // Phones: keep the seat on the clock centred in the sideways-scrolling seat strip.
   const clockSeat = state?.current_seat_index;
@@ -587,6 +605,11 @@ export default function DraftRoom() {
                 Bot agreed · you {agreement.mine.top3}/{agreement.mine.n} ({agreement.mine.top1} exact) · table {agreement.all.top3}/{agreement.all.n} ({agreement.all.top1} exact)
               </span>
             )}
+            <label className="flex items-center gap-1.5 text-slate-400 cursor-pointer select-none" data-testid="mirror-suggest-all">
+              <input type="checkbox" checked={suggestAll} className="accent-amber-400 w-3.5 h-3.5"
+                onChange={(e) => { const v = e.target.checked; setSuggestAll(v); try { localStorage.setItem("grim_mirror_suggest_all", v ? "on" : "off"); } catch { /* storage blocked */ } }} />
+              Suggest for every seat
+            </label>
             {hostToken && (
               <button type="button" data-testid="mirror-import-open" onClick={() => setImportOpen(true)} className="ml-auto text-xs px-2.5 py-1 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 hover:border-amber-400/60">Catch up from sheet</button>
             )}
@@ -614,9 +637,13 @@ export default function DraftRoom() {
           )}
         </div>
       )}
-      {showHints && mineNow && suggestions.some((id) => cubeById[id] && !isTaken(cubeById[id])) && (
+      {isMirror && turnSeat != null && suggestLoading && (
+        <div className="mb-3 flex items-center gap-2 text-xs text-slate-500" data-testid="suggestions-loading"><Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" /> Working out suggestions… (the first one after a server restart can take a few seconds)</div>
+      )}
+      {showHints && turnSeat != null && suggestFor === state.current_seat_index && suggestions.some((id) => cubeById[id] && !isTaken(cubeById[id])) && (
         <div className="mb-3 flex items-center gap-2 flex-wrap" data-testid="pick-suggestions">
-          <span className="flex items-center gap-1 text-xs text-slate-500"><Lightbulb className="w-3.5 h-3.5 text-amber-400" /> Suggested</span>
+          <span className="flex items-center gap-1 text-xs text-slate-500"><Lightbulb className="w-3.5 h-3.5 text-amber-400" /> Suggested{isMirror && !mineNow ? ` for ${currentSeatName || "this seat"}` : ""}</span>
+          {isMirror && <button type="button" data-testid="suggestions-open" onClick={() => setSuggestOpen(true)} className="text-xs px-2.5 py-1 rounded-full border border-amber-400/50 text-amber-300 hover:bg-amber-400/10">Show cards</button>}
           {suggestions.map((id) => cubeById[id]).filter((c) => c && !isTaken(c)).map((c) => (
             <button key={c.id} data-testid={`suggestion-${c.id}`} onClick={() => setConfirmCard(c)} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
               className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-slate-700 bg-slate-900/60 text-slate-200 hover:border-amber-400/70 hover:text-amber-200 max-w-[60vw] sm:max-w-[220px]">
@@ -1096,6 +1123,29 @@ export default function DraftRoom() {
           </div>
         </div>
       )}
+
+      {suggestOpen && isMirror && state.status === "drafting" && suggestFor === state.current_seat_index && (() => {
+        const cards = suggestions.map((id) => cubeById[id]).filter((c) => c && !isTaken(c));
+        if (!cards.length) return null;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" data-testid="suggestions-dialog" onClick={() => setSuggestOpen(false)}>
+            <div className="bg-[#0b111e] border border-slate-700 rounded-2xl p-5 w-full max-w-2xl" onClick={(e) => e.stopPropagation()}>
+              <h3 className="font-display text-lg font-bold flex items-center gap-2"><Lightbulb className="w-5 h-5 text-amber-400" /> {mineNow ? "Suggested picks for you" : `Bot would take, for ${currentSeatName || "this seat"}`}</h3>
+              <p className="text-xs text-slate-500 mt-1">Best first. Tap one to draft it{mineNow ? "" : ` for ${currentSeatName || "this seat"}`}, or close this and pick something else.</p>
+              <div className="mt-4 grid grid-cols-3 gap-3">
+                {cards.map((c, i) => (
+                  <button key={c.id} type="button" data-testid={`suggestions-dialog-${c.id}`} onClick={() => { setSuggestOpen(false); setConfirmCard(c); }}
+                    className="text-left rounded-lg overflow-hidden border border-slate-800 hover:border-amber-400/70 bg-slate-900">
+                    {(c.image || c.art_crop) ? <img src={c.image || c.art_crop} alt={c.name} className="w-full" /> : <div className="p-4 text-sm text-slate-200">{c.name}</div>}
+                    <div className="px-2 py-1.5 text-xs text-slate-300 truncate"><span className="text-amber-300 font-semibold">{i + 1}.</span> {c.name}</div>
+                  </button>
+                ))}
+              </div>
+              <Button variant="outline" onClick={() => setSuggestOpen(false)} data-testid="suggestions-dialog-close" className="w-full mt-4 bg-slate-900 border-slate-700 text-slate-200">Close</Button>
+            </div>
+          </div>
+        );
+      })()}
 
       {importOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" data-testid="mirror-import-dialog" onClick={() => !importing && setImportOpen(false)}>

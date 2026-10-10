@@ -1089,6 +1089,13 @@ async def get_draft_state(share_id: str, x_player_token: Optional[str] = Header(
         d = await pack_auto_actions(d)
         return _pack_state(d, x_player_token)
     d = await maybe_bot_pick(d)
+    if d.get("status") == "drafting" and d["share_id"] not in _CARDS_CACHE and d["share_id"] not in _WARMING:
+        # After a server restart the bots' card index is rebuilt on first use (seconds on a small
+        # server): start that now, so pick suggestions are ready when someone asks.
+        _WARMING.add(d["share_id"])
+        task = asyncio.create_task(_cards(d["share_id"]))
+        _BACKGROUND.add(task)
+        task.add_done_callback(lambda t, sid=d["share_id"]: (_BACKGROUND.discard(t), _WARMING.discard(sid)))
     return draft_state(d, light=True)
 
 
@@ -1738,6 +1745,7 @@ def _warm_card_stats(cube: List[dict]) -> None:
 # and kept in memory (the cube never changes after the draft is created).
 _HEAVY = {"_id": 0, "cube": 0, "bot_stats": 0, "bot_combos": 0}
 _CARDS_CACHE: Dict[str, dict] = {}   # share_id -> {"cube", "ids", "index", "combos"}
+_WARMING: set = set()                # share_ids whose card index is being built in the background
 
 
 async def _draft(share_id: str) -> Optional[dict]:
