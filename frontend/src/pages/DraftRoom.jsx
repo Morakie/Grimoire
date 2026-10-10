@@ -71,7 +71,10 @@ export default function DraftRoom() {
   // Ignore responses older than what's on screen: a poll sent just before a pick can arrive just after
   // it and would briefly bring back the old pack. Pack drafts number every change ("rev").
   const revRef = useRef(-1);
-  const versionRef = useRef(null);     // last full state's version: lets pack-draft polls get a tiny "unchanged" reply
+  const versionRef = useRef(null);
+  // Bumped whenever a pick / undo / reassign / import comes back: a poll that was already on its way
+  // carries the state from before that change, so it's dropped instead of briefly undoing it.
+  const actionSeqRef = useRef(0);     // last full state's version: lets pack-draft polls get a tiny "unchanged" reply
   const setState = (next) => {
     if (typeof next === "function") { setRawState(next); return; }
     if (next && typeof next.rev === "number") {
@@ -137,8 +140,9 @@ export default function DraftRoom() {
         const headers = {};
         if (playerToken) headers["X-Player-Token"] = playerToken;
         if (versionRef.current) headers["X-Known-Version"] = versionRef.current;
+        const seq = actionSeqRef.current;
         const { data } = await api.get(`/drafts/${shareId}/state`, { headers, timeout: 15000 });
-        if (!active) return;
+        if (!active || seq !== actionSeqRef.current) return;
         if (data.unchanged) setState((s) => (s ? { ...s, server_time: data.server_time } : s));
         else setState(data);
       } catch {} finally { inFlight = false; }
@@ -341,6 +345,7 @@ export default function DraftRoom() {
     setPicking(true);
     try {
       const { data } = await api.post(`/drafts/${shareId}/pick`, { player_token: me.player_token, seat_index: seat, card_id: card.id });
+      actionSeqRef.current++;
       setState(data);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Pick failed");
@@ -367,11 +372,11 @@ export default function DraftRoom() {
   const toggleMute = () => setMuted((m) => { localStorage.setItem("grim_draft_muted", (!m).toString()); return !m; });
 
   const undoPick = async () => {
-    try { const { data } = await api.post(`/drafts/${shareId}/undo`, { host_token: hostToken }); setState(data); toast.success("Last pick undone"); }
+    try { const { data } = await api.post(`/drafts/${shareId}/undo`, { host_token: hostToken }); actionSeqRef.current++; setState(data); toast.success("Last pick undone"); }
     catch (e) { toast.error(e.response?.data?.detail || "Could not undo"); }
   };
   const doReassign = async (cardId) => {
-    try { const { data } = await api.post(`/drafts/${shareId}/reassign`, { host_token: hostToken, order: reassignPick.order, card_id: cardId }); setState(data); setReassignPick(null); setReassignQuery(""); toast.success("Pick reassigned"); }
+    try { const { data } = await api.post(`/drafts/${shareId}/reassign`, { host_token: hostToken, order: reassignPick.order, card_id: cardId }); actionSeqRef.current++; setState(data); setReassignPick(null); setReassignQuery(""); toast.success("Pick reassigned"); }
     catch (e) { toast.error(e.response?.data?.detail || "Could not reassign"); }
   };
 
@@ -470,6 +475,7 @@ export default function DraftRoom() {
     setImporting(true);
     try {
       const { data } = await api.post(`/drafts/${shareId}/mirror/import`, body, { timeout: 180000 });
+      actionSeqRef.current++;
       setState(data);
       if (data.stopped) {
         // List mode: keep the lines that didn't go in so they can be fixed and sent again.

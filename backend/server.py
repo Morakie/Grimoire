@@ -1477,7 +1477,8 @@ def _card_keys(c: dict) -> set:
     return {full, full.split(" // ")[0]}
 
 
-async def _rotisserie_pick(d: dict, seat: int, card_id: Optional[str] = None, card: Optional[dict] = None) -> dict:
+async def _rotisserie_pick(d: dict, seat: int, card_id: Optional[str] = None, card: Optional[dict] = None,
+                           log_now: bool = False) -> dict:
     """Make one rotisserie pick for `seat` (the caller has checked who may pick for it) and return the
     fresh draft. `card` is already-fetched card data for a card that may not be in the draft yet.
     Mirror tables may pick any real card: one that isn't in the cube is added to it on the spot."""
@@ -1509,15 +1510,17 @@ async def _rotisserie_pick(d: dict, seat: int, card_id: Optional[str] = None, ca
         same = _undrafted_by_name(d, cards["cube"], card_doc["name"])
         if same:
             card_id, card_doc = same["id"], None
-    bot_top: List[str] = []
-    if d.get("mirror"):
-        # Stress-test log: what the bots' engine would have taken for this seat right now.
+    # Mirror stress-test log: what the bots' engine would have taken for this seat right now. Use the
+    # cached answer when the page already asked (your own seat); otherwise work it out after the pick
+    # is saved so picking never waits on the bot engine.
+    bot_top = _SUGGEST_CACHE.get((share_id, pick_index, seat)) if d.get("mirror") else None
+    if d.get("mirror") and bot_top is None and log_now:
         try:
             bot_top = await _rotisserie_suggestions(d, seat)
         except Exception as exc:      # never block a pick over the log
             logger.warning("Mirror suggestion log failed: %s", exc)
     pick = {"order": pick_index, "seat_index": seat, "card_id": card_id, "ts": datetime.now(timezone.utc).isoformat()}
-    if d.get("mirror"):
+    if bot_top is not None:
         pick["bot_top"] = bot_top
     new_status = "complete" if pick_index + 1 >= len(d["order"]) else "drafting"
     push: Dict[str, Any] = {"picks": pick}
@@ -1532,7 +1535,22 @@ async def _rotisserie_pick(d: dict, seat: int, card_id: Optional[str] = None, ca
         await _vrd_add_card(share_id, card_doc)
     elif card_doc:
         _CARDS_CACHE.pop(share_id, None)    # the bots' card index picks up the new card on next use
+    if d.get("mirror") and bot_top is None:
+        task = asyncio.create_task(_log_bot_top(d, seat, pick))
+        _BACKGROUND.add(task)
+        task.add_done_callback(_BACKGROUND.discard)
     return await _draft(share_id)
+
+
+async def _log_bot_top(before: dict, seat: int, pick: dict) -> None:
+    """Background: record the bot engine's suggestions for a mirror pick (from the state before it)."""
+    try:
+        top = await _rotisserie_suggestions(before, seat)
+        # Only if that exact pick is still there (an undo may have removed it meanwhile).
+        await db.drafts.update_one({"share_id": before["share_id"], "picks": {"$elemMatch": {"order": pick["order"], "ts": pick["ts"]}}},
+                                   {"$set": {"picks.$.bot_top": top}})
+    except Exception as exc:
+        logger.warning("Mirror suggestion log failed: %s", exc)
 
 
 _ROUND_LABEL = re.compile(r"^\s*((r|rd|round|pick)\s*)?\d*\.?\s*$", re.I)
@@ -1620,7 +1638,7 @@ async def mirror_import(share_id: str, data: MirrorImportInput):
                        "reason": "Already drafted" if drafted else "No card by that name (check the spelling)"}
             break
         try:
-            d = await _rotisserie_pick(d, seat, card=hit or map_card(raw))
+            d = await _rotisserie_pick(d, seat, card=hit or map_card(raw), log_now=True)
         except HTTPException as exc:
             stopped = {"line": line, "name": name, "reason": exc.detail}
             break
