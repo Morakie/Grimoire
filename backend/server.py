@@ -16,6 +16,7 @@ import bcrypt
 import jwt
 import httpx
 import csv
+import hashlib
 import re
 import certifi
 from pathlib import Path
@@ -1321,8 +1322,9 @@ async def start_draft(share_id: str):
         _warm_vrd_pool()            # bots' card knowledge lives in the shared VRD pool (loads in the background)
     else:
         # Both lookups can take several seconds for a cube the server hasn't seen before: run them together.
-        combos, stats = await asyncio.gather(fetch_combos(build_card_index(d["cube"])), _stats())
-        update["bot_combos"] = [c.to_dict() for c in combos]
+        combo_dicts, stats = await asyncio.gather(_cube_combos(share_id, d["cube"], budget_s=12.0 if has_bots else 3.0), _stats())
+        if combo_dicts is not None:
+            update["bot_combos"] = combo_dicts
         if stats is not None:
             update["bot_stats"] = stats
     if update.get("packs"):
@@ -1361,6 +1363,42 @@ async def build_from_pool(share_id: str, seat: int, size: int = 40, x_player_tok
     pool = [c for c in cards["cube"] if c["id"] in picked and not c.get("is_custom")]
     index = cards["index"]
     return await run_in_threadpool(suggest_deck, pool, index, size)
+
+_COMBOS_CACHE: Dict[str, list] = {}   # cube signature -> combo dicts (Commander Spellbook)
+
+
+async def _cube_combos(share_id: str, cube: List[dict], budget_s: float) -> Optional[list]:
+    """Spellbook combos for a cube, remembered per cube so restarting the same cube is instant. If the
+    lookup takes longer than `budget_s`, the draft starts without them and they're added when they
+    arrive (bots and suggestions work fine meanwhile, just without combo awareness)."""
+    sig = hashlib.sha1("\n".join(sorted(c.get("name", "") for c in cube if not c.get("is_custom"))).encode()).hexdigest()
+    if sig in _COMBOS_CACHE:
+        return _COMBOS_CACHE[sig]
+
+    async def fetch() -> list:
+        combos = await fetch_combos(build_card_index(cube))
+        out = [c.to_dict() for c in combos]
+        if len(_COMBOS_CACHE) > 50:
+            _COMBOS_CACHE.clear()
+        _COMBOS_CACHE[sig] = out
+        return out
+
+    task = asyncio.create_task(fetch())
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout=budget_s)
+    except asyncio.TimeoutError:
+        async def attach():
+            try:
+                combos = await task
+            except Exception:
+                return
+            await db.drafts.update_one({"share_id": share_id}, {"$set": {"bot_combos": combos}})
+            _CARDS_CACHE.pop(share_id, None)
+        bg = asyncio.create_task(attach())
+        _BACKGROUND.add(bg)
+        bg.add_done_callback(_BACKGROUND.discard)
+        return None
+
 
 async def _vrd_card(card_id: str, cards: dict) -> dict:
     """A VRD pick's card data, checked: Vintage-legal, on paper, not a basic land."""
