@@ -327,15 +327,13 @@ export default function DraftRoom() {
   // Pick suggestions (same engine as the bots) for the seat on the clock, when it's ours to pick.
   const turnSeat = onMySeat(state, me) || (state?.mirror && suggestAll && state.status === "drafting" && me && state.current_seat_index != null)
     ? state.current_seat_index : null;
-  const mySeatIdx = state?.my_seat;
   const pickNo = state?.pick_index;
   const suggestKey = turnSeat != null ? `${pickNo}:${turnSeat}` : null;
   suggestKeyRef.current = suggestKey;
-  // Mirror tables: a new pick closes the pop-up (it opens again by itself on your seat). Elsewhere an
-  // open pop-up just follows along to the next pick.
+  // Mirror tables: a new pick closes the pop-up. Elsewhere an open pop-up just follows along to the next pick.
   useEffect(() => { if (isMirror) setSuggestOpen(false); }, [pickNo, isMirror]);
-  // Fetch when the lightbulb is opened, or straight away on mirror tables (they exist to test the
-  // suggestions, and pop them up on your own seat by themselves).
+  // Fetch when the lightbulb is opened, or ahead of time on mirror tables (so the bulb opens instantly
+  // and its dot shows they're ready). The pop-up itself only ever opens from the lightbulb.
   useEffect(() => {
     if (!suggestKey || !(isMirror || suggestOpen) || suggest.key === suggestKey) return;
     const key = suggestKey;
@@ -347,7 +345,6 @@ export default function DraftRoom() {
         if (suggestKeyRef.current !== key) return;
         const ids = data.suggestions || [];
         setSuggest({ key, ids, loading: false, failed: false });
-        if (isMirror && seat === mySeatIdx && ids.length) setSuggestOpen(true);
       })
       .catch(() => { if (suggestKeyRef.current === key) setSuggest({ key, ids: [], loading: false, failed: true }); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
