@@ -58,6 +58,10 @@ TUNING: Dict[str, float] = {
     "wincon_weight": 0.35,      # value of a strong threat for a deck with no win condition at all
     "wincon_combo_weight": 0.8, # only fairly popular combos count as a way to win (Spellbook weight 0.6-1)
     # payoffs that need support (Urza without artifacts, storm without rituals...)
+    # plans: what a pool is building (Flash + fatties, fetches + landfall...) and leaning into it
+    "plan_weight": 0.35,        # bonus for a card that fills a plan the pool has committed to
+    "plan_conflict_cut": 0.5,   # payoffs for a weaker plan lose this share x (strongest plan - their plan)
+    "plan_start": 4, "plan_full": 10,   # owned cards before plans start to matter / fully matter
     "unsupported_cut": 0.7,     # share of such a card's rating lost when the pool has none of its support
     "support_after": 6,         # picks before that cut fully applies (early picks keep options open)
 }
@@ -71,6 +75,64 @@ DEPENDENT_PAYOFFS: Dict[str, Tuple[Tuple[str, ...], int]] = {
     "land_recursion": (("fetchland", "landfall"), 3),
 }
 _DEPENDENT_ROLES = frozenset(DEPENDENT_PAYOFFS)
+
+# Plans: (roles on one side, how many make that side complete, roles on the other side, how many).
+# A pool's strength in a plan is half from each side, so a pool with Flash and no fatty is a half-built
+# "cheat" plan that badly wants a fatty.
+PLANS: Dict[str, Tuple[Tuple[str, ...], int, Tuple[str, ...], int]] = {
+    "reanimator": (("reanimate",), 2, ("fatty",), 2),
+    "cheat": (("cheat",), 1, ("fatty",), 2),
+    "artifact_cheat": (("artifact_cheat",), 1, ("big_artifact",), 1),
+    "artifacts": (("artifact",), 6, ("artifact_payoff",), 2),
+    "storm": (("ritual", "fast_mana"), 4, ("storm_payoff",), 1),
+    "blink": (("etb",), 4, ("flicker",), 2),
+    "stoneforge": (("equip_fetch",), 1, ("equipment",), 2),
+    "lands": (("fetchland", "land_sac", "extra_land"), 5, ("land_recursion", "landfall"), 2),
+    "aristocrats": (("sac_outlet",), 1, ("death_payoff", "token_maker"), 3),
+    "tokens": (("anthem",), 1, ("token_maker",), 4),
+}
+# The plan each "needs support" payoff belongs to (for the off-plan cut).
+_PAYOFF_PLAN = {"artifact_payoff": "artifacts", "storm_payoff": "storm", "flicker": "blink",
+                "equip_fetch": "stoneforge", "land_recursion": "lands"}
+
+
+def plan_fill(role_counts: Dict[str, int]) -> Dict[str, Tuple[float, float]]:
+    """Per plan: how complete each side is in this pool (0..1, 0..1)."""
+    out = {}
+    for name, (a_roles, a_need, b_roles, b_need) in PLANS.items():
+        a = sum(role_counts.get(r, 0) for r in a_roles)
+        b = sum(role_counts.get(r, 0) for r in b_roles)
+        out[name] = (min(1.0, a / a_need), min(1.0, b / b_need))
+    return out
+
+
+def plan_strengths(fill: Dict[str, Tuple[float, float]]) -> Dict[str, float]:
+    return {name: 0.5 * (fa + fb) for name, (fa, fb) in fill.items()}
+
+
+def plan_value(card: CardInfo, fill: Dict[str, Tuple[float, float]], strengths: Dict[str, float]) -> float:
+    """0..1: how much this card fills a plan the pool has started (more for the side that's missing)."""
+    best = 0.0
+    for name, (a_roles, _, b_roles, _) in PLANS.items():
+        s = strengths[name]
+        if s < 0.3:
+            continue
+        fa, fb = fill[name]
+        if card.roles & set(a_roles):
+            best = max(best, s * (0.4 + 0.6 * (1 - fa)))
+        if card.roles & set(b_roles):
+            best = max(best, s * (0.4 + 0.6 * (1 - fb)))
+    return best
+
+
+def plan_conflict(card: CardInfo, strengths: Dict[str, float]) -> float:
+    """How far a payoff's own plan trails the pool's strongest other plan (0 = on plan)."""
+    own_plans = {_PAYOFF_PLAN[r] for r in card.roles & _DEPENDENT_ROLES if r in _PAYOFF_PLAN}
+    if not own_plans:
+        return 0.0
+    own = max(strengths[p] for p in own_plans)
+    other = max((s for p, s in strengths.items() if p not in own_plans), default=0.0)
+    return max(0.0, other - own)
 
 
 def support_factor(card: CardInfo, role_counts: Dict[str, int], ramp: float, cut: float) -> float:
@@ -473,6 +535,9 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     role_counts = _role_counts(mine)
     strengths = package_strengths(role_counts)
     support_ramp = min(1.0, n / k("support_after"))
+    fill = plan_fill(role_counts)
+    plans = plan_strengths(fill)
+    plan_ramp = min(1.0, max(0.0, (n - k("plan_start")) / max(1.0, k("plan_full") - k("plan_start"))))
     counts = pool_counts(mine)
     w_power = (1.0 - k("power_late_drop") * t) * p.w("power")
     w_combo = (k("combo_base") + k("combo_growth") * min(1.0, 2 * t)) * p.w("combo")
@@ -496,12 +561,15 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         power = max(card.power, 0.0)
         if card.roles & _DEPENDENT_ROLES and support_ramp:
             power *= support_factor(card, role_counts, support_ramp, k("unsupported_cut"))
+            if plan_ramp:
+                power *= 1.0 - k("plan_conflict_cut") * plan_ramp * plan_conflict(card, plans)
         if card.is_land and card.is_fixing:
             damp = k("early_fixing_damp")
             power *= damp + (1 - damp) * min(1.0, 2 * t)    # spells first, fixing later
         base = (w_power * power
                 + w_combo * combo_value(card, owned, remaining, ctx.combos, fit_of)
                 + package_value(card, None, strengths)
+                + k("plan_weight") * plan_ramp * plan_value(card, fill, plans)
                 + k("partner_weight") * p.w("combo") * partner_value(card, owned, fit_of)
                 + w_needs * needs_value(card, mine, p, counts))
         if wincon_gap:
