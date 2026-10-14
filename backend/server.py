@@ -350,35 +350,67 @@ async def _collection_lookup(hc: httpx.AsyncClient, identifiers: List[dict]) -> 
     return out
 
 _OLDEST_CACHE: Dict[str, dict] = {}   # oracle_id -> oldest paper printing (raw Scryfall card)
+_PACE_LOCK = asyncio.Lock()
+_PACE_LAST = [0.0]
+
+
+async def _scryfall_pace() -> None:
+    """At most one Scryfall request start per 100 ms across concurrent lookups (Scryfall asks for
+    50-100 ms between requests), so a few lookups can run side by side without being rude."""
+    async with _PACE_LOCK:
+        wait = _PACE_LAST[0] + 0.1 - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _PACE_LAST[0] = time.monotonic()
+
+
+async def _oldest_chunk(hc: httpx.AsyncClient, oracle_ids: List[str]) -> None:
+    """Find the first paper printing for up to 20 oracle ids (one search, a few pages). Only a lookup
+    that completes is remembered, so a Scryfall hiccup never pins a card to a later printing."""
+    query = "(" + " or ".join(f"oracleid:{o}" for o in oracle_ids) + ") not:reprint game:paper"
+    url, params, best = f"{SCRYFALL}/cards/search", {"q": query, "unique": "prints", "order": "released", "dir": "asc"}, {}
+    for _ in range(4):   # at most a few pages
+        r = None
+        for attempt in range(3):
+            await _scryfall_pace()
+            try:
+                r = await hc.get(url, params=params)
+            except httpx.HTTPError:
+                r = None
+            if r is not None and r.status_code not in (429, 500, 502, 503, 504):
+                break
+            await asyncio.sleep(0.5 * (attempt + 1))
+        if r is None or r.status_code not in (200, 404):
+            return                                   # give up on this chunk: keep default printings
+        payload = r.json() if r.status_code == 200 else {}
+        for c in payload.get("data", []):
+            o = c.get("oracle_id")
+            cur = best.get(o)
+            # earliest release wins; a regular printing beats a promo from the same moment
+            if cur is None or (cur.get("promo") and not c.get("promo") and c.get("released_at") == cur.get("released_at")):
+                best[o] = c
+        if not payload.get("has_more"):
+            break
+        url, params = payload["next_page"], None
+    for o in oracle_ids:
+        _OLDEST_CACHE[o] = best.get(o) or {}
 
 
 async def _prefer_oldest(hc: httpx.AsyncClient, cards: List[dict]) -> List[dict]:
     """Swap each card for its first paper printing (original art), when Scryfall has one.
-    Used wherever a list names cards without pinning a printing."""
-    wanted = list(dict.fromkeys(c["oracle_id"] for c in cards if c.get("oracle_id") and c["oracle_id"] not in _OLDEST_CACHE))
-    for i in range(0, len(wanted), 20):
-        await asyncio.sleep(0.1)
-        query = "(" + " or ".join(f"oracleid:{o}" for o in wanted[i:i + 20]) + ") not:reprint game:paper"
-        url, params, best = f"{SCRYFALL}/cards/search", {"q": query, "unique": "prints", "order": "released", "dir": "asc"}, {}
-        for _ in range(4):   # at most a few pages
-            r = await hc.get(url, params=params)
-            if r.status_code != 200:
-                break
-            payload = r.json()
-            for c in payload.get("data", []):
-                o = c.get("oracle_id")
-                cur = best.get(o)
-                # earliest release wins; a regular printing beats a promo from the same moment
-                if cur is None or (cur.get("promo") and not c.get("promo") and c.get("released_at") == cur.get("released_at")):
-                    best[o] = c
-            if not payload.get("has_more"):
-                break
-            url, params = payload["next_page"], None
-            await asyncio.sleep(0.1)
-        for o in wanted[i:i + 20]:
-            _OLDEST_CACHE[o] = best.get(o) or {}
+    Used wherever a list names cards without pinning a printing. Searches run three at a time."""
     if len(_OLDEST_CACHE) > 20000:
         _OLDEST_CACHE.clear()
+    wanted = list(dict.fromkeys(c["oracle_id"] for c in cards if c.get("oracle_id") and c["oracle_id"] not in _OLDEST_CACHE))
+    sem = asyncio.Semaphore(3)
+
+    async def run(chunk):
+        async with sem:
+            try:
+                await _oldest_chunk(hc, chunk)
+            except Exception as exc:     # odd answer from Scryfall: those cards keep their default printing
+                logger.warning("Oldest-printing lookup failed: %s", exc)
+    await asyncio.gather(*(run(wanted[i:i + 20]) for i in range(0, len(wanted), 20)))
     return [(_OLDEST_CACHE.get(c.get("oracle_id")) or c) for c in cards]
 
 
@@ -440,29 +472,81 @@ async def card_collection(data: CollectionInput):
         return await _resolve_entries(data.entries)
     return await _collection_by_names(data.names)
 
+_NAME_CACHE_DAYS = 30
+
+
 async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
     """Resolve card names (e.g. a cube list), using each card's original printing. Misses get a
-    second chance through the front face and fuzzy matching (e.g. split cards like "Life // Death")."""
+    second chance through the front face and fuzzy matching (e.g. split cards like "Life // Death").
+
+    Resolved names are remembered in Mongo (`card_names`, a month), so a cube the server has seen
+    before loads without asking Scryfall again; only new names are looked up."""
     names = [" ".join(n.split())[:150] for n in names if n and n.strip()][:800]
-    raw = []
-    missed = []
-    async with http_client.client() as hc:
-        for i in range(0, len(names), 75):
-            if i:
-                await asyncio.sleep(0.1)
-            cards, miss = await _collection_batch(hc, names[i:i + 75])
-            raw.extend(cards)
-            missed.extend(miss)
+    keys = list(dict.fromkeys(_name_key(n) for n in names))
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=_NAME_CACHE_DAYS)).isoformat()
+    known: Dict[str, dict] = {}
+    if keys:
+        async for doc in db.card_names.find({"key": {"$in": keys}, "at": {"$gte": cutoff}}, {"_id": 0, "key": 1, "card": 1}):
+            known[doc["key"]] = doc["card"]
+    todo = list(dict.fromkeys(n for n in names if _name_key(n) not in known))
+    extra: List[dict] = []          # cards Scryfall returned that we couldn't tie back to a requested name
+    missed: List[str] = []
+    fresh: Dict[str, dict] = {}     # name key -> mapped card, to remember
+    if todo:
+        raw: List[dict] = []
+        async with http_client.client() as hc:
+            for i in range(0, len(todo), 75):
+                if i:
+                    await asyncio.sleep(0.1)
+                cards, miss = await _collection_batch(hc, todo[i:i + 75])
+                raw.extend(cards)
+                missed.extend(miss)
+            try:
+                raw = await _prefer_oldest(hc, raw)
+            except httpx.HTTPError as exc:   # keep Scryfall's default printings
+                logger.warning("Oldest-printing lookup failed: %s", exc)
+        by_key: Dict[str, dict] = {}
+        for c in raw:
+            for k in _name_keys(c):
+                by_key.setdefault(_name_key(k), c)
+        tied = set()
+        for n in todo:
+            k = _name_key(n)
+            c = by_key.get(k) or by_key.get(k.split(" // ")[0].strip())
+            if c:
+                fresh[k] = map_card(c)
+                tied.add(c["id"])
+        extra = [map_card(c) for c in raw if c["id"] not in tied]
+        if missed:
+            retry = await _resolve_entries([CollectionEntry(key=str(i), name=n.split("//")[0].strip()) for i, n in enumerate(missed)])
+            for i, n in enumerate(missed):
+                card = retry["resolved"].get(str(i))
+                if card:
+                    fresh[_name_key(n)] = card
+            missed = [n for i, n in enumerate(missed) if str(i) not in retry["resolved"]]
+        await _remember_names(fresh)
+    out, seen = [], set()
+    for n in names:
+        c = known.get(_name_key(n)) or fresh.get(_name_key(n))
+        if c and c["id"] not in seen:
+            seen.add(c["id"])
+            out.append(c)
+    out += [c for c in extra if c["id"] not in seen]
+    return {"cards": out, "not_found": missed}
+
+
+async def _remember_names(fresh: Dict[str, dict]) -> None:
+    """Save name -> card (original printing) for next time. Cards whose original-printing lookup
+    didn't finish are skipped, so they get another try later."""
+    from pymongo import UpdateOne
+    now = datetime.now(timezone.utc).isoformat()
+    ops = [UpdateOne({"key": k}, {"$set": {"key": k, "card": {f: v for f, v in c.items() if f != "prices"}, "at": now}}, upsert=True)
+           for k, c in fresh.items() if c.get("oracle_id") in _OLDEST_CACHE]
+    if ops:
         try:
-            raw = await _prefer_oldest(hc, raw)
-        except httpx.HTTPError as exc:   # keep Scryfall's default printings
-            logger.warning("Oldest-printing lookup failed: %s", exc)
-    found = [map_card(c) for c in raw]
-    if missed:
-        retry = await _resolve_entries([CollectionEntry(key=str(i), name=n.split("//")[0].strip()) for i, n in enumerate(missed)])
-        found.extend(retry["resolved"].values())
-        missed = [missed[int(k)] for k in range(len(missed)) if str(k) not in retry["resolved"]]
-    return {"cards": found, "not_found": missed}
+            await db.card_names.bulk_write(ops, ordered=False)
+        except Exception as exc:     # a cache, never a reason to fail the lookup
+            logger.warning("Couldn't save card name cache: %s", exc)
 
 class ExtrasInput(BaseModel):
     ids: List[str] = Field(default=[], max_length=400)
@@ -2271,6 +2355,7 @@ async def startup():
     await db.drafts.create_index("share_id", unique=True)
     await db.drafts.create_index("join_code", sparse=True)
     await db.card_stats.create_index("key", unique=True)
+    await db.card_names.create_index("key", unique=True)
     await db.cubes.create_index("id", unique=True)
     await db.cubes.create_index("user_id")
     # Optional seed account (handy for local dev and tests). Only created when both values
