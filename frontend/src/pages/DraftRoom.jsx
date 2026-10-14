@@ -32,7 +32,8 @@ const CARD_SIZES = [
   { k: "m", label: "M", cols: "lg:grid-cols-5" },
   { k: "l", label: "L", cols: "lg:grid-cols-4" },
 ];
-const SORTS = [{ k: "elo", label: "Rank" }, { k: "name", label: "Name" }, { k: "color", label: "Color" }, { k: "type", label: "Type" }, { k: "cmc", label: "CMC" }];
+// Type and CMC group by colour first (all white cards, then blue, ...), then sort within each colour.
+const SORTS = [{ k: "elo", label: "Rank" }, { k: "name", label: "Name" }, { k: "type", label: "Color · Type" }, { k: "cmc", label: "Color · CMC" }];
 const cardCols = (c) => (c?.colors?.length ? c.colors : (c?.color_identity || []));
 const colorKey = (c) => { const cols = cardCols(c); if (!cols.length) return 99; if (cols.length > 1) return 50 + cols.length; return COLOR_ORDER[cols[0]] ?? 90; };
 const typeKey = (c) => { const t = c?.type_line || ""; const i = TYPE_RANK.findIndex((x) => t.includes(x)); return i < 0 ? 99 : i; };
@@ -379,9 +380,8 @@ export default function DraftRoom() {
       const custom = (b.is_custom ? 1 : 0) - (a.is_custom ? 1 : 0);
       if (custom) return custom;
       if (sortBy === "elo") return (b.elo || 0) - (a.elo || 0) || a.name.localeCompare(b.name);
-      if (sortBy === "color") return colorKey(a) - colorKey(b) || typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
-      if (sortBy === "type") return typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
-      if (sortBy === "cmc") return (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
+      if (sortBy === "type") return colorKey(a) - colorKey(b) || typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
+      if (sortBy === "cmc") return colorKey(a) - colorKey(b) || (a.cmc || 0) - (b.cmc || 0) || typeKey(a) - typeKey(b) || a.name.localeCompare(b.name);
       return a.name.localeCompare(b.name);
     };
     const taken = (c) => pickedIds.has(c.id) || (isVrd && takenNames.has(c.name.toLowerCase()));
@@ -675,7 +675,7 @@ export default function DraftRoom() {
           </div>
         )}
         <Select value={sortBy} onValueChange={setSortBy}>
-          <SelectTrigger data-testid="sort-select" aria-label="Sort cards" className="w-[8.5rem] h-10 shrink-0 justify-start gap-1.5 bg-slate-950 border-slate-700 text-slate-200 text-sm [&>svg:last-child]:ml-auto">
+          <SelectTrigger data-testid="sort-select" aria-label="Sort cards" className="w-[10rem] h-10 shrink-0 justify-start gap-1.5 bg-slate-950 border-slate-700 text-slate-200 text-sm [&>svg:last-child]:ml-auto">
             <ArrowDownWideNarrow className="w-4 h-4 text-slate-500 shrink-0" /><SelectValue />
           </SelectTrigger>
           <SelectContent className="bg-slate-900 border-slate-700 text-slate-200">
