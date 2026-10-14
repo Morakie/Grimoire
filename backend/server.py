@@ -3,11 +3,13 @@ import sys
 print(f"grimoire python {sys.version}", file=sys.stderr, flush=True)
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Header
+from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import json
 import logging
 import time
 import uuid
@@ -69,6 +71,13 @@ api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+def fast_json(data: Any) -> Response:
+    """JSON straight from json.dumps. FastAPI otherwise walks every value of a returned dict through
+    jsonable_encoder first, which costs milliseconds per card on a small server: a 500-card cube or a
+    full draft took seconds just to encode. Use for large replies (card lists, drafts, decks)."""
+    return Response(json.dumps(data, separators=(",", ":"), default=str), media_type="application/json")
+
 
 # ----------------------- Auth helpers -----------------------
 
@@ -469,8 +478,8 @@ async def _resolve_entries(entries: List[CollectionEntry], oldest: bool = True) 
 @api_router.post("/cards/collection")
 async def card_collection(data: CollectionInput):
     if data.entries:
-        return await _resolve_entries(data.entries)
-    return await _collection_by_names(data.names)
+        return fast_json(await _resolve_entries(data.entries))
+    return fast_json(await _collection_by_names(data.names))
 
 _NAME_CACHE_DAYS = 30
 
@@ -683,12 +692,12 @@ async def create_deck(data: DeckInput, user: dict = Depends(get_current_user)):
 @api_router.get("/decks")
 async def list_decks(user: dict = Depends(get_current_user)):
     decks = await db.decks.find({"user_id": user["id"]}).sort("updated_at", -1).to_list(500)
-    return [deck_to_public(d, user.get("name", "")) for d in decks]
+    return fast_json([deck_to_public(d, user.get("name", "")) for d in decks])
 
 @api_router.get("/decks/{deck_id}")
 async def get_deck(deck_id: str, user: dict = Depends(get_current_user)):
     deck = await _get_owned_deck(deck_id, user)
-    return deck_to_public(deck, user.get("name", ""))
+    return fast_json(deck_to_public(deck, user.get("name", "")))
 
 @api_router.put("/decks/{deck_id}")
 async def update_deck(deck_id: str, data: DeckInput, user: dict = Depends(get_current_user)):
@@ -821,7 +830,7 @@ async def list_cubes(user: dict = Depends(get_current_user)):
 @api_router.get("/cubes/{cube_id}")
 async def get_cube(cube_id: str, user: dict = Depends(get_current_user)):
     c = await _owned_cube(cube_id, user)
-    return {**cube_summary(c), "cards": c.get("cards", [])}
+    return fast_json({**cube_summary(c), "cards": c.get("cards", [])})
 
 
 @api_router.post("/cubes")
@@ -1129,7 +1138,7 @@ async def create_draft(data: DraftCreate):
     out = {**draft_state(draft), "host_token": draft["host_token"]}
     if me:
         out["player"] = {"player_token": me["token"], "player_id": me["id"], "name": me["name"], "seats": me["seats"]}
-    return out
+    return fast_json(out)
 
 @api_router.get("/drafts/open")
 async def list_open_drafts():
@@ -1172,7 +1181,7 @@ async def get_draft(share_id: str):
     d = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "bot_stats": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
-    return draft_state(d)
+    return fast_json(draft_state(d))
 
 @api_router.get("/drafts/{share_id}/state")
 async def get_draft_state(share_id: str, x_player_token: Optional[str] = Header(default=None),
@@ -1193,11 +1202,11 @@ async def get_draft_state(share_id: str, x_player_token: Optional[str] = Header(
         raise HTTPException(status_code=404, detail="Draft not found")
     if d.get("mode") == "packs":
         d = await pack_auto_actions(d)
-        return _pack_state(d, x_player_token)
+        return fast_json(_pack_state(d, x_player_token))
     d = await maybe_bot_pick(d)
     if d.get("status") == "drafting":
         _warm_cards(share_id)
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 def _warm_cards(share_id: str) -> None:
@@ -1344,7 +1353,7 @@ async def pack_autopick(share_id: str, data: PackAutopickInput):
         card = await run_in_threadpool(_auto_choice, d, data.seat_index, random.Random(), index, combos)
         pd.apply_pick(d, data.seat_index, card, auto=True)
         if await _save_pack_draft(d):
-            return draft_state(d, light=True)
+            return fast_json(draft_state(d, light=True))
     raise HTTPException(status_code=409, detail="Busy, try again")
 
 
@@ -1361,7 +1370,7 @@ async def _pack_pick(share_id: str, data: "PickInput") -> dict:
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         if await _save_pack_draft(d):
-            return _pack_state(d, data.player_token)
+            return fast_json(_pack_state(d, data.player_token))
     raise HTTPException(status_code=409, detail="Busy, try again")
 
 def _claim_reply(d: dict, p: dict) -> dict:
@@ -1488,7 +1497,7 @@ async def start_draft(share_id: str):
     await db.drafts.update_one({"share_id": share_id}, {"$set": update})
     _CARDS_CACHE.pop(share_id, None)      # rebuild the bots' card index with the fresh stats
     d = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "bot_stats": 0})
-    return draft_state(d)
+    return fast_json(draft_state(d))
 
 @api_router.post("/drafts/{share_id}/cancel")
 async def cancel_draft(share_id: str, data: CancelInput):
@@ -1577,7 +1586,7 @@ async def draft_cube_since(share_id: str, start: int = 0):
     doc = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "share_id": 1, "cube": {"$slice": [max(start, 0), 1000]}})
     if not doc:
         raise HTTPException(status_code=404, detail="Draft not found")
-    return {"cards": doc.get("cube", []), "start": max(start, 0)}
+    return fast_json({"cards": doc.get("cube", []), "start": max(start, 0)})
 
 
 @api_router.get("/drafts/{share_id}/vrd/top")
@@ -1605,7 +1614,7 @@ async def make_pick(share_id: str, data: PickInput):
     if not player or data.seat_index not in player["seats"]:
         raise HTTPException(status_code=403, detail="You do not control this seat")
     d = await _rotisserie_pick(d, data.seat_index, card_id=data.card_id)
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 async def _scryfall_card(identifier: dict) -> Optional[dict]:
@@ -1796,7 +1805,7 @@ async def mirror_import(share_id: str, data: MirrorImportInput):
             stopped = {"line": line, "name": name, "reason": exc.detail}
             break
         applied += 1
-    return {**draft_state(d, light=True), "applied": applied, "stopped": stopped}
+    return fast_json({**draft_state(d, light=True), "applied": applied, "stopped": stopped})
 
 
 @api_router.post("/drafts/{share_id}/undo")
@@ -1822,7 +1831,7 @@ async def undo_pick(share_id: str, data: CancelInput):
         raise HTTPException(status_code=409, detail="Someone just picked; try again")
     _forget_suggestions(share_id)
     d = await _draft(share_id)
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 @api_router.post("/drafts/{share_id}/reassign")
@@ -1852,7 +1861,7 @@ async def reassign_pick(share_id: str, data: AdminPickInput):
         raise HTTPException(status_code=409, detail="That pick just changed; try again")
     _forget_suggestions(share_id)
     d = await _draft(share_id)
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 @api_router.post("/drafts/{share_id}/swap")
@@ -1886,7 +1895,7 @@ async def swap_picks(share_id: str, data: SwapInput):
         raise HTTPException(status_code=409, detail="Those picks just changed; try again")
     _forget_suggestions(share_id)
     d = await _draft(share_id)
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 def _forget_suggestions(share_id: str) -> None:
@@ -1928,7 +1937,7 @@ async def post_chat(share_id: str, data: ChatInput):
     await db.drafts.update_one({"share_id": share_id}, {"$push": {"messages": {"$each": [msg], "$slice": -200}},
                                                          "$set": {"updated_at": msg["ts"]}})
     d = await _draft(share_id)
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 # ----------------------- Startup -----------------------
@@ -2271,7 +2280,7 @@ async def add_bot(share_id: str, data: BotInput):
     # Card names only: building the bots' whole card index here would be wasted work in the lobby.
     names_doc = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "cube.name": 1, "cube.is_custom": 1}) or {}
     _warm_card_stats(names_doc.get("cube", []))
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 @api_router.post("/drafts/{share_id}/bots/remove")
@@ -2298,7 +2307,7 @@ async def remove_bot(share_id: str, data: BotRemoveInput):
                 s["player_name"] = p["name"]
     d["players"] = players
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": players, "updated_at": datetime.now(timezone.utc).isoformat()}})
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 _SIM_CACHE: Dict[str, Any] = {}   # cube_id -> (cards, not_found, combos); simulation only
