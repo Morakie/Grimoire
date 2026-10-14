@@ -801,6 +801,7 @@ class MirrorImportInput(BaseModel):
 class ClaimInput(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     player_token: Optional[str] = None
+    host_token: Optional[str] = None   # sent by the browser that created the table: this player becomes the host
 
 class PickInput(BaseModel):
     player_token: str
@@ -1019,6 +1020,7 @@ async def create_draft(data: DraftCreate):
         "picks": [],
         "messages": [],
         "host_token": str(uuid.uuid4()),
+        "host_player_id": None,      # set when the host claims a seat (claiming it again restores host controls)
         "created_at": now,
         "updated_at": now,
     }
@@ -1034,7 +1036,7 @@ async def create_draft(data: DraftCreate):
         for s in draft["seats"]:
             s["player_id"], s["player_name"] = me["id"], data.seat_names[s["index"]]
         draft["players"] = [me]
-        draft.update(mirror=True, my_seat=data.my_seat)
+        draft.update(mirror=True, my_seat=data.my_seat, host_player_id=me["id"])
     if data.pool == "vintage":
         _warm_vrd_pool()
     else:
@@ -1278,27 +1280,47 @@ async def _pack_pick(share_id: str, data: "PickInput") -> dict:
             return _pack_state(d, data.player_token)
     raise HTTPException(status_code=409, detail="Busy, try again")
 
+def _claim_reply(d: dict, p: dict) -> dict:
+    """What a player's browser keeps. The host's own seat also gets the host key back, so claiming that
+    seat in a new browser (by name) restores the host controls."""
+    out = {"player_token": p["token"], "player_id": p["id"], "name": p["name"], "seats": p["seats"]}
+    if d.get("host_player_id") == p["id"]:
+        out["host_token"] = d["host_token"]
+    return out
+
+
+async def _set_host_player(d: dict, p: dict, host_token: Optional[str]) -> None:
+    """The first player claimed from the browser holding the host key becomes the host player."""
+    if host_token and host_token == d.get("host_token") and not d.get("host_player_id"):
+        await db.drafts.update_one({"share_id": d["share_id"], "host_player_id": None}, {"$set": {"host_player_id": p["id"]}})
+        d["host_player_id"] = p["id"]
+
+
 @api_router.post("/drafts/{share_id}/claim")
 async def claim_seats(share_id: str, data: ClaimInput):
     d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
-    if d["status"] != "lobby":
-        raise HTTPException(status_code=400, detail="Draft already started")
+    if d["status"] == "cancelled":
+        raise HTTPException(status_code=400, detail="This table was closed")
+    name = data.name.strip()
     if d.get("mirror"):
-        p = next((p for p in d["players"] if data.player_token and p["token"] == data.player_token), None)
+        p = next((p for p in d["players"] if (data.player_token and p["token"] == data.player_token)
+                  or p["name"].lower() == name.lower()), None)
         if not p:
             raise HTTPException(status_code=403, detail="This is a mirror table: only its host picks")
-        return {"player_token": p["token"], "player_id": p["id"], "name": p["name"], "seats": p["seats"]}
-    name = data.name.strip()
-    # Reattach by token or by existing name
+        return _claim_reply(d, p)
+    # Reattach by token or by existing name (also once the draft has started, e.g. from a new browser)
     for p in d["players"]:
         if p.get("is_bot"):
             if _display_name(p["name"]).lower() == name.lower():
                 raise HTTPException(status_code=400, detail="A bot at this table has that name; pick another")
             continue
         if (data.player_token and p["token"] == data.player_token) or p["name"].lower() == name.lower():
-            return {"player_token": p["token"], "player_id": p["id"], "name": p["name"], "seats": p["seats"]}
+            await _set_host_player(d, p, data.host_token)
+            return _claim_reply(d, p)
+    if d["status"] != "lobby":
+        raise HTTPException(status_code=400, detail="The draft has started: claim with the name you joined with")
     if len(d["players"]) >= d["num_players"]:
         raise HTTPException(status_code=400, detail="All player slots are taken")
     # Spread each player's seats evenly across the snake so no one holds both
@@ -1311,9 +1333,11 @@ async def claim_seats(share_id: str, data: ClaimInput):
         if s["index"] in assigned:
             s["player_id"] = pid
             s["player_name"] = name
-    d["players"].append({"id": pid, "token": token, "name": name, "seats": assigned})
+    player = {"id": pid, "token": token, "name": name, "seats": assigned}
+    d["players"].append(player)
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": d["players"], "updated_at": datetime.now(timezone.utc).isoformat()}})
-    return {"player_token": token, "player_id": pid, "name": name, "seats": assigned}
+    await _set_host_player(d, player, data.host_token)
+    return _claim_reply(d, player)
 
 def _shuffle_seats(d: dict) -> None:
     """Randomise who sits where when the draft starts (seats stay spread around the snake)."""

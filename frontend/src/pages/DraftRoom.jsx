@@ -130,6 +130,7 @@ export default function DraftRoom() {
   };
   const [me, setMe] = useState(() => { try { return JSON.parse(localStorage.getItem(storeKey(shareId))) || null; } catch { return null; } });
   const [claimName, setClaimName] = useState("");
+  const [rejoinHidden, setRejoinHidden] = useState(false);   // spectator dismissed the "rejoin" box
   const [query, setQuery] = useState("");
   const [picking, setPicking] = useState(false);
   const [chatText, setChatText] = useState("");
@@ -166,7 +167,9 @@ export default function DraftRoom() {
   const [cardSize, setCardSize] = useState(() => localStorage.getItem("grim_draft_card_size") || "m");
   const [muted, setMuted] = useState(() => localStorage.getItem("grim_draft_muted") === "true");
   const [queue, setQueue] = useState(() => { try { return JSON.parse(localStorage.getItem(`grim_draft_queue_${shareId}`)) || []; } catch { return []; } });
-  const hostToken = useMemo(() => { try { return localStorage.getItem(`grim_draft_host_${shareId}`); } catch { return null; } }, [shareId]);
+  // The host key: kept by the browser that created the table, and handed back when the host claims
+  // their seat again in another browser.
+  const [hostToken, setHostToken] = useState(() => { try { return localStorage.getItem(`grim_draft_host_${shareId}`); } catch { return null; } });
   const prevTurnRef = useRef(false);
   const autoPickRef = useRef(() => {});
   const inFlightRef = useRef(false);
@@ -403,6 +406,35 @@ export default function DraftRoom() {
     </div>
   );
 
+  const claim = async () => {
+    if (!claimName.trim()) { toast.error("Enter your name"); return; }
+    try {
+      const { data: { host_token: newHost, ...data } } = await api.post(`/drafts/${shareId}/claim`,
+        { name: claimName.trim(), player_token: me?.player_token, host_token: hostToken || undefined });
+      localStorage.setItem(storeKey(shareId), JSON.stringify(data));
+      setMe(data);
+      if (newHost && newHost !== hostToken) {
+        try { localStorage.setItem(`grim_draft_host_${shareId}`, newHost); } catch { /* storage blocked */ }
+        setHostToken(newHost);
+        toast.success("Welcome back, host: your host controls are back");
+      }
+      toast.success(state?.status === "lobby" ? `Claimed seat(s): ${data.seats.map((s) => s + 1).join(", ")}` : `Back in your seat(s): ${data.seats.map((s) => s + 1).join(", ")}`);
+    } catch (e) { toast.error(e.response?.data?.detail || "Could not claim"); }
+  };
+  // Watching a table you're part of (new browser, cleared storage)? Rejoin with the name you used.
+  const rejoinBar = !me && !rejoinHidden && (state.status === "drafting" || state.status === "complete") ? (
+    <div className="fixed z-40 left-1/2 -translate-x-1/2 bottom-[7.5rem] lg:bottom-6 w-[min(94vw,30rem)] rounded-xl border border-sky-400/40 bg-[#0b111e]/95 backdrop-blur p-3 shadow-2xl" data-testid="rejoin-bar">
+      <div className="flex items-start gap-2 mb-2">
+        <p className="flex-1 text-xs text-slate-300"><Eye className="w-3.5 h-3.5 inline mr-1 text-sky-300" />You're watching. Already at this table? Rejoin with the name you used{isMirror ? " for your seat" : ""}.</p>
+        <button type="button" data-testid="rejoin-dismiss" onClick={() => setRejoinHidden(true)} aria-label="Just watching" title="Just watching" className="text-slate-500 hover:text-white"><X className="w-4 h-4" /></button>
+      </div>
+      <form onSubmit={(e) => { e.preventDefault(); claim(); }} className="flex gap-2">
+        <Input data-testid="rejoin-name" value={claimName} onChange={(e) => setClaimName(e.target.value)} placeholder="Your name" className="h-9 bg-slate-950 border-slate-700 text-slate-100" />
+        <Button type="submit" data-testid="rejoin-submit" className="h-9 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold shrink-0">Rejoin</Button>
+      </form>
+    </div>
+  ) : null;
+
   if (draft.mode === "packs" && state.status === "drafting") {
     const closeTable = async () => {
       if (!window.confirm("Close this table for everyone? This cannot be undone.")) return;
@@ -410,21 +442,15 @@ export default function DraftRoom() {
       catch (e) { toast.error(e.response?.data?.detail || "Could not close table"); }
     };
     return (
-      <PackDraftView shareId={shareId} draft={draft} state={state} setState={setState} me={me} hostToken={hostToken}
-        muted={muted} onToggleMute={() => setMuted((m) => { localStorage.setItem("grim_draft_muted", (!m).toString()); return !m; })}
-        onBeep={playBeep} onCancel={closeTable} shareUrl={`${window.location.origin}/draft/${shareId}`} />
+      <>
+        <PackDraftView shareId={shareId} draft={draft} state={state} setState={setState} me={me} hostToken={hostToken}
+          muted={muted} onToggleMute={() => setMuted((m) => { localStorage.setItem("grim_draft_muted", (!m).toString()); return !m; })}
+          onBeep={playBeep} onCancel={closeTable} shareUrl={`${window.location.origin}/draft/${shareId}`} />
+        {rejoinBar}
+      </>
     );
   }
 
-  const claim = async () => {
-    if (!claimName.trim()) { toast.error("Enter your name"); return; }
-    try {
-      const { data } = await api.post(`/drafts/${shareId}/claim`, { name: claimName.trim(), player_token: me?.player_token });
-      localStorage.setItem(storeKey(shareId), JSON.stringify(data));
-      setMe(data);
-      toast.success(`Claimed seat(s): ${data.seats.map((s) => s + 1).join(", ")}`);
-    } catch (e) { toast.error(e.response?.data?.detail || "Could not claim"); }
-  };
 
   const start = async () => {
     if (starting) return;
@@ -1200,6 +1226,8 @@ export default function DraftRoom() {
           </div>
         </div>
       )}
+
+      {rejoinBar}
 
       {previewCard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6" data-testid="card-preview-dialog" onClick={() => setPreviewCard(null)}>
