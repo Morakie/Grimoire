@@ -339,10 +339,11 @@ def build(out_path: str, max_files: int | None = None, workers: int = 16, force:
     p_b_given_a = (co + M * b) / (avail_given_a + M)
     lift = np.divide(p_b_given_a, b, out=np.zeros_like(co), where=b > 0)
     np.fill_diagonal(lift, 0)
+    cubes_with_both = avail.T @ avail          # a pair must show up across many cubes, not one busy one
     synergy = {}
     for a in range(K):
         row = lift[a]
-        cand = np.where((row >= 1.4) & (co[a] >= 100))[0]
+        cand = np.where((row >= 1.4) & (co[a] >= 100) & (cubes_with_both[a] >= 40))[0]
         if not len(cand):
             continue
         best = cand[np.argsort(-row[cand])][:12]
