@@ -533,7 +533,9 @@ async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
                 if card:
                     fresh[_name_key(n)] = card
             missed = [n for i, n in enumerate(missed) if str(i) not in retry["resolved"]]
-        await _remember_names(fresh)
+        saved = await _remember_names(fresh)
+    else:
+        saved = 0
     out, seen = [], set()
     for n in names:
         c = known.get(_name_key(n)) or fresh.get(_name_key(n))
@@ -541,21 +543,24 @@ async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
             seen.add(c["id"])
             out.append(c)
     out += [c for c in extra if c["id"] not in seen]
-    return {"cards": out, "not_found": missed}
+    return {"cards": out, "not_found": missed, "cache": {"hits": len(known), "looked_up": len(todo), "saved": saved}}
 
 
-async def _remember_names(fresh: Dict[str, dict]) -> None:
+async def _remember_names(fresh: Dict[str, dict]) -> int:
     """Save name -> card (original printing) for next time. Cards whose original-printing lookup
     didn't finish are skipped, so they get another try later."""
     from pymongo import UpdateOne
     now = datetime.now(timezone.utc).isoformat()
     ops = [UpdateOne({"key": k}, {"$set": {"key": k, "card": {f: v for f, v in c.items() if f != "prices"}, "at": now}}, upsert=True)
            for k, c in fresh.items() if c.get("oracle_id") in _OLDEST_CACHE]
-    if ops:
-        try:
-            await db.card_names.bulk_write(ops, ordered=False)
-        except Exception as exc:     # a cache, never a reason to fail the lookup
-            logger.warning("Couldn't save card name cache: %s", exc)
+    if not ops:
+        return 0
+    try:
+        res = await db.card_names.bulk_write(ops, ordered=False)
+        return res.upserted_count + res.modified_count
+    except Exception as exc:     # a cache, never a reason to fail the lookup
+        logger.warning("Couldn't save card name cache: %s", exc)
+        return -1
 
 class ExtrasInput(BaseModel):
     ids: List[str] = Field(default=[], max_length=400)
