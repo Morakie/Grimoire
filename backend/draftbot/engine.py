@@ -59,8 +59,8 @@ TUNING: Dict[str, float] = {
     "wincon_combo_weight": 0.8, # only fairly popular combos count as a way to win (Spellbook weight 0.6-1)
     # payoffs that need support (Urza without artifacts, storm without rituals...)
     # plans: what a pool is building (Flash + fatties, fetches + landfall...) and leaning into it
-    "plan_weight": 0.35,        # bonus for a card that fills a plan the pool has committed to
-    "plan_conflict_cut": 0.5,   # payoffs for a weaker plan lose this share x (strongest plan - their plan)
+    "plan_weight": 0.15,        # bonus for a card that fills a plan the pool has committed to
+    "plan_conflict_cut": 0.75,  # payoffs for a weaker plan lose this share x (strongest plan - their plan)
     "plan_start": 4, "plan_full": 10,   # owned cards before plans start to matter / fully matter
     "unsupported_cut": 0.7,     # share of such a card's rating lost when the pool has none of its support
     "support_after": 6,         # picks before that cut fully applies (early picks keep options open)

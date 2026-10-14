@@ -194,3 +194,18 @@ def test_cube_meta_synergy_becomes_partners_within_the_cube():
     assert synergy_strength(2.0) == 0.0
     assert "not in cube" not in str(p)
     assert cube_partners(cards, {"synergy": {}}) == {}
+
+
+def test_plans_half_built_cheat_plan_wants_a_fatty_and_lands_pool_cuts_artifact_payoffs():
+    from draftbot.engine import plan_fill, plan_strengths, plan_value, plan_conflict
+    from draftbot.features import CardInfo
+    def card(roles):
+        return CardInfo(id="x", name="x", cmc=1, types=frozenset(), need=frozenset(), produces=frozenset(),
+                        identity=frozenset(), elo=1500, power=0.5, roles=frozenset(roles))
+    cheat_pool = {"cheat": 1}
+    fill = plan_fill(cheat_pool); st = plan_strengths(fill)
+    assert st["cheat"] == 0.5 and plan_value(card({"fatty"}), fill, st) > 0.4
+    lands_pool = {"fetchland": 4, "land_sac": 3, "landfall": 1, "artifact": 3}
+    st = plan_strengths(plan_fill(lands_pool))
+    assert st["lands"] > st["artifacts"] and plan_conflict(card({"artifact_payoff"}), st) > 0.4
+    assert plan_conflict(card({"land_recursion"}), st) == 0.0
