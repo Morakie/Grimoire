@@ -9,7 +9,7 @@ import { buildExport } from "@/components/ExportDialog";
 import { useAuth } from "@/context/AuthContext";
 import { getBasics } from "@/lib/mtg";
 import PackDraftView from "@/components/PackDraftView";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, Megaphone } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, ArrowRight, Megaphone } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -1266,8 +1266,33 @@ export default function DraftRoom() {
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4" data-testid="host-notice" onClick={() => setHostNotes([])}>
           <div className="bg-[#0b111e] border border-sky-400/40 rounded-2xl p-5 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
             <h3 className="font-display text-lg font-bold flex items-center gap-2"><Megaphone className="w-5 h-5 text-sky-300" /> The host changed the draft</h3>
-            <ul className="mt-3 space-y-2">
-              {hostNotes.map((m) => <li key={m.id} className="text-sm text-slate-200" data-testid="host-notice-item">{m.text}</li>)}
+            <ul className="mt-3 space-y-4 max-h-[65vh] overflow-y-auto">
+              {hostNotes.map((m) => {
+                const cards = (m.cards || []).map((x) => ({ ...x, card: cubeById[x.card_id] }));
+                const Arrow = m.kind === "swap" ? ArrowLeftRight : ArrowRight;
+                return (
+                  <li key={m.id} data-testid="host-notice-item">
+                    {cards.length > 0 && (
+                      <div className="flex items-center justify-center gap-2 sm:gap-3 mb-2" data-testid={`host-notice-cards-${m.kind || "note"}`}>
+                        {cards.map((x, i) => (
+                          <React.Fragment key={i}>
+                            {i > 0 && <Arrow className="w-6 h-6 text-amber-400 shrink-0" aria-label={m.kind === "swap" ? "swapped with" : "changed to"} />}
+                            <figure className="w-28 sm:w-32 min-w-0">
+                              <div className={`rounded-lg overflow-hidden border border-slate-700 bg-slate-900 aspect-[0.716] flex items-center justify-center ${m.kind === "undo" ? "opacity-60 grayscale" : ""}`}>
+                                {x.card && (x.card.image || x.card.art_crop)
+                                  ? <img src={x.card.image || x.card.art_crop} alt={x.card.name} className="w-full h-full object-cover" />
+                                  : <span className="text-xs text-slate-300 p-2 text-center">{x.card?.name || "Card"}</span>}
+                              </div>
+                              <figcaption className="text-[11px] text-slate-400 mt-1 text-center truncate">{x.label}</figcaption>
+                            </figure>
+                          </React.Fragment>
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-sm text-slate-200 text-center">{m.text}</p>
+                  </li>
+                );
+              })}
             </ul>
             <Button data-testid="host-notice-ok" onClick={() => setHostNotes([])} className="w-full mt-4 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">OK</Button>
           </div>

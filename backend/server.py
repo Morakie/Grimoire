@@ -1704,7 +1704,8 @@ async def undo_pick(share_id: str, data: CancelInput):
         raise HTTPException(status_code=400, detail="No picks to undo")
     last = d["picks"][-1]
     names = await _card_names(share_id)
-    note = _host_note(f"Host undid {_pick_label(d, last)} ({names.get(last['card_id'], 'a card')})")
+    note = _host_note(f"Host undid {_pick_label(d, last)} ({names.get(last['card_id'], 'a card')})",
+                      "undo", [{"card_id": last["card_id"], "label": _pick_label(d, last)}])
     # Only if nobody picked meanwhile: remove exactly that last pick.
     res = await db.drafts.update_one({"share_id": share_id, "picks": {"$size": len(d["picks"])}},
                                      {"$pop": {"picks": 1}, "$push": {"messages": {"$each": [note], "$slice": -200}},
@@ -1732,7 +1733,8 @@ async def reassign_pick(share_id: str, data: AdminPickInput):
     if any(p["card_id"] == data.card_id for p in d["picks"] if p["order"] != data.order):
         raise HTTPException(status_code=409, detail="Card already drafted")
     names = await _card_names(share_id)
-    note = _host_note(f"Host changed {_pick_label(d, pk)} from {names.get(pk['card_id'], 'a card')} to {names.get(data.card_id, 'a card')}")
+    note = _host_note(f"Host changed {_pick_label(d, pk)} from {names.get(pk['card_id'], 'a card')} to {names.get(data.card_id, 'a card')}",
+                      "change", [{"card_id": pk["card_id"], "label": "Was"}, {"card_id": data.card_id, "label": "Now"}])
     i = d["picks"].index(pk)
     res = await db.drafts.update_one({"share_id": share_id, f"picks.{i}.card_id": pk["card_id"]},
                                      {"$set": {f"picks.{i}.card_id": data.card_id, "updated_at": note["ts"]},
@@ -1764,7 +1766,8 @@ async def swap_picks(share_id: str, data: SwapInput):
         raise HTTPException(status_code=400, detail="Pick two cards from different seats")
     names = await _card_names(share_id)
     note = _host_note(f"Host swapped {_pick_label(d, a)} ({names.get(a['card_id'], 'a card')}) with "
-                      f"{_pick_label(d, b)} ({names.get(b['card_id'], 'a card')})")
+                      f"{_pick_label(d, b)} ({names.get(b['card_id'], 'a card')})",
+                      "swap", [{"card_id": a["card_id"], "label": _pick_label(d, a)}, {"card_id": b["card_id"], "label": _pick_label(d, b)}])
     res = await db.drafts.update_one(
         {"share_id": share_id, f"picks.{ia}.card_id": a["card_id"], f"picks.{ib}.card_id": b["card_id"]},
         {"$set": {f"picks.{ia}.card_id": b["card_id"], f"picks.{ib}.card_id": a["card_id"], "updated_at": note["ts"]},
@@ -1775,9 +1778,11 @@ async def swap_picks(share_id: str, data: SwapInput):
     return draft_state(d, light=True)
 
 
-def _host_note(text: str) -> dict:
-    """A table message announcing a host change (pages show these as a pop-up for everyone else)."""
-    return {"id": str(uuid.uuid4()), "name": "Host", "text": text, "ts": datetime.now(timezone.utc).isoformat(), "system": "host"}
+def _host_note(text: str, kind: str, cards: List[dict]) -> dict:
+    """A table message announcing a host change (pages show these as a pop-up for everyone else, with
+    the cards involved: swap A <-> B, change old -> new, undo of one card)."""
+    return {"id": str(uuid.uuid4()), "name": "Host", "text": text, "ts": datetime.now(timezone.utc).isoformat(),
+            "system": "host", "kind": kind, "cards": cards}
 
 
 def _pick_label(d: dict, pick: dict) -> str:
