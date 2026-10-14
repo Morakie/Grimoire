@@ -57,7 +57,31 @@ TUNING: Dict[str, float] = {
     "wincon_start": 0.3,        # share of picks made before the bot checks it has a way to win
     "wincon_weight": 0.35,      # value of a strong threat for a deck with no win condition at all
     "wincon_combo_weight": 0.8, # only fairly popular combos count as a way to win (Spellbook weight 0.6-1)
+    # payoffs that need support (Urza without artifacts, storm without rituals...)
+    "unsupported_cut": 0.4,     # share of such a card's rating lost when the pool has none of its support
+    "support_after": 6,         # picks before that cut fully applies (early picks keep options open)
 }
+
+# Payoff role -> (roles that support it, how many supporting cards make it fully live).
+DEPENDENT_PAYOFFS: Dict[str, Tuple[Tuple[str, ...], int]] = {
+    "artifact_payoff": (("artifact",), 4),
+    "storm_payoff": (("ritual", "fast_mana", "cantrip"), 5),
+    "flicker": (("etb",), 3),
+    "equip_fetch": (("equipment",), 2),
+    "land_recursion": (("fetchland", "landfall"), 3),
+}
+_DEPENDENT_ROLES = frozenset(DEPENDENT_PAYOFFS)
+
+
+def support_factor(card: CardInfo, role_counts: Dict[str, int], ramp: float, cut: float) -> float:
+    """How much of a payoff's rating counts for this pool: full with enough support, down to (1 - cut)
+    with none. A card with several payoff roles takes its best-supported one."""
+    best = 0.0
+    for role in card.roles & _DEPENDENT_ROLES:
+        support, needed = DEPENDENT_PAYOFFS[role]
+        have = sum(role_counts.get(r, 0) for r in support)
+        best = max(best, min(1.0, have / needed))
+    return 1.0 - cut * ramp * (1.0 - best)
 
 LANES: List[FrozenSet[str]] = (
     [frozenset(c) for c in COLORS]
@@ -446,7 +470,9 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
             fit_cache[cid] = fit_of_card(ctx.index[cid]) if cid in ctx.index else 0.0
         return fit_cache[cid]
 
-    strengths = package_strengths(_role_counts(mine))
+    role_counts = _role_counts(mine)
+    strengths = package_strengths(role_counts)
+    support_ramp = min(1.0, n / k("support_after"))
     counts = pool_counts(mine)
     w_power = (1.0 - k("power_late_drop") * t) * p.w("power")
     w_combo = (k("combo_base") + k("combo_growth") * min(1.0, 2 * t)) * p.w("combo")
@@ -468,6 +494,8 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         card = ctx.index[cid]
         fit = fit_of(cid)
         power = max(card.power, 0.0)
+        if card.roles & _DEPENDENT_ROLES and support_ramp:
+            power *= support_factor(card, role_counts, support_ramp, k("unsupported_cut"))
         if card.is_land and card.is_fixing:
             damp = k("early_fixing_damp")
             power *= damp + (1 - damp) * min(1.0, 2 * t)    # spells first, fixing later
