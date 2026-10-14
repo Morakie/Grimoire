@@ -554,10 +554,14 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         ramp = min(1.0, (t - k("wincon_start")) / 0.25)
         wincon_gap = max(0.0, 1.0 - plan_score) * ramp * k("wincon_weight")
 
+    # A pool that can cheat or reanimate fatties doesn't need to cast them: their colours stop mattering.
+    cheat_plan = max(plans["cheat"], plans["reanimator"])
     rows = []
     for cid in remaining:
         card = ctx.index[cid]
         fit = fit_of(cid)
+        if cheat_plan >= 0.3 and plan_ramp and ("fatty" in card.roles or ("big_artifact" in card.roles and plans["artifact_cheat"] >= 0.3)):
+            fit = max(fit, 0.5 + 0.5 * cheat_plan)
         power = max(card.power, 0.0)
         if card.roles & _DEPENDENT_ROLES and support_ramp:
             power *= support_factor(card, role_counts, support_ramp, k("unsupported_cut"))
