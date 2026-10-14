@@ -2358,15 +2358,28 @@ async def add_bot(share_id: str, data: BotInput):
 
 @api_router.post("/drafts/{share_id}/bots/remove")
 async def remove_bot(share_id: str, data: BotRemoveInput):
+    return await _remove_player(share_id, data, bots_only=True)
+
+
+@api_router.post("/drafts/{share_id}/players/remove")
+async def kick_player(share_id: str, data: BotRemoveInput):
+    """Host, in the lobby: remove a bot or a person (frees their seat). The host can't remove themselves."""
+    return await _remove_player(share_id, data, bots_only=False)
+
+
+async def _remove_player(share_id: str, data: "BotRemoveInput", bots_only: bool):
     d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
     if d.get("host_token") != data.host_token:
-        raise HTTPException(status_code=403, detail="Only the host can remove bots")
-    if d["status"] != "lobby":
-        raise HTTPException(status_code=400, detail="Draft already started")
-    if not any(p["id"] == data.player_id and p.get("is_bot") for p in d["players"]):
-        raise HTTPException(status_code=404, detail="Bot not found")
+        raise HTTPException(status_code=403, detail="Only the host can remove players")
+    if d["status"] != "lobby" or d.get("mirror"):
+        raise HTTPException(status_code=400, detail="Players can only be removed in the lobby")
+    target = next((p for p in d["players"] if p["id"] == data.player_id), None)
+    if not target or (bots_only and not target.get("is_bot")):
+        raise HTTPException(status_code=404, detail="Player not found")
+    if target["id"] == d.get("host_player_id"):
+        raise HTTPException(status_code=400, detail="That's the host's seat")
     # Rebuild seat assignments in the current order so seat spreading stays correct.
     players = [p for p in d["players"] if p["id"] != data.player_id]
     _seat_in_order(d, players)

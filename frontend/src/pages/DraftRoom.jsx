@@ -9,7 +9,7 @@ import { buildExport } from "@/components/ExportDialog";
 import { useAuth } from "@/context/AuthContext";
 import { getBasics } from "@/lib/mtg";
 import PackDraftView from "@/components/PackDraftView";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, ArrowRight, Megaphone, Shuffle, ListOrdered } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, ArrowRight, Megaphone, Shuffle, ListOrdered, UserX } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -299,6 +299,20 @@ export default function DraftRoom() {
   // it keeps picking across consecutive turns, wheel-backs and multi-seat players.
   useEffect(() => { if (state && me) autoPickRef.current(); }, [state, me, queue]);
 
+  // Removed from the table by the host (lobby only): forget our seat so the join screen shows again.
+  const seenSelfRef = useRef(null);   // player id we've seen listed at the table (a fresh claim isn't listed yet)
+  useEffect(() => {
+    if (!me || !state || state.status !== "lobby" || state.mirror) return;
+    const listed = (state.players || []).some((p) => p.id === me.player_id);
+    if (listed) { seenSelfRef.current = me.player_id; return; }
+    if (seenSelfRef.current === me.player_id) {
+      seenSelfRef.current = null;
+      try { localStorage.removeItem(storeKey(shareId)); } catch { /* storage blocked */ }
+      setMe(null);
+      toast("The host removed you from this table. You can join again if there's a free seat.");
+    }
+  }, [state, me, shareId]);
+
   // Seats are shuffled when the draft starts: keep our stored seat list in sync with the server's.
   useEffect(() => {
     if (!me || !state) return;
@@ -512,6 +526,11 @@ export default function DraftRoom() {
     setSeating("host", ids);
   };
 
+  const kickPlayer = async (p) => {
+    if (!window.confirm(`Remove ${p.name} from the table? Their seat opens up for someone else.`)) return;
+    try { const { data } = await api.post(`/drafts/${shareId}/players/remove`, { host_token: hostToken, player_id: p.id }); setState((s) => ({ ...s, ...data })); }
+    catch (e) { toast.error(e.response?.data?.detail || "Could not remove the player"); }
+  };
   const removeBot = async (playerId) => {
     try { const { data } = await api.post(`/drafts/${shareId}/bots/remove`, { host_token: hostToken, player_id: playerId }); setState((s) => ({ ...s, ...data })); }
     catch (e) { toast.error(e.response?.data?.detail || "Could not remove the bot"); }
@@ -1168,6 +1187,9 @@ export default function DraftRoom() {
                           )}
                           {p.is_bot && hostToken && (
                             <button data-testid={`remove-bot-${p.id}`} onClick={() => removeBot(p.id)} title="Remove bot" className="p-1 text-slate-500 hover:text-red-400"><X className="w-3.5 h-3.5" /></button>
+                          )}
+                          {!p.is_bot && hostToken && !isMirror && p.id !== me?.player_id && (
+                            <button data-testid={`kick-player-${p.id}`} onClick={() => kickPlayer(p)} title="Remove from the table" className="p-1 text-slate-500 hover:text-red-400"><UserX className="w-3.5 h-3.5" /></button>
                           )}
                         </span>
                       </li>
