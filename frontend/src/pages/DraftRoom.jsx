@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { buildExport } from "@/components/ExportDialog";
 import { useAuth } from "@/context/AuthContext";
 import { getBasics } from "@/lib/mtg";
@@ -15,6 +16,12 @@ const GUEST_KEY = "grimoire_guest_deck";
 const canHover = () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia("(hover: hover)").matches;
 
 function storeKey(sid) { return `grim_draft_${sid}`; }
+// Is it this browser's turn? Mirror tables pick for every seat from one browser, but "your turn"
+// (beep, suggestions, queue auto-pick) means only your own seat there.
+function onMySeat(st, m) {
+  return !!(st && m && st.status === "drafting" && st.current_seat_index != null && m.seats.includes(st.current_seat_index)
+    && (!st.mirror || st.current_seat_index === st.my_seat));
+}
 
 const COLOR_ORDER = { W: 0, U: 1, B: 2, R: 3, G: 4 };
 const TYPE_RANK = ["Creature", "Planeswalker", "Instant", "Sorcery", "Artifact", "Enchantment", "Battle", "Land"];
@@ -34,6 +41,43 @@ const colorClass = (c) => {
   if (cols.length > 1) return "bg-gradient-to-r from-amber-500 to-yellow-600 text-stone-900";
   return { W: "bg-amber-50 text-stone-900", U: "bg-blue-700 text-white", B: "bg-stone-900 text-slate-200", R: "bg-red-700 text-white", G: "bg-green-700 text-white" }[cols[0]] || "bg-slate-600 text-white";
 };
+
+// The card pool grid. Memoised: hovering a card, typing in chat or a poll that changed nothing must not
+// rebuild hundreds of cards. Everything passed in is either a stable setter or changes only when the
+// pool, the picks, the queue or the turn really change.
+const PoolGrid = memo(function PoolGrid({ cards, pickedIds, takenNames, isVrd, myTurn, picking, queue, hoverable, colsClass,
+  setHoverCard, setConfirmCard, setPreviewCard, setQueue }) {
+  const queued = useMemo(() => new Set(queue), [queue]);
+  return (
+    <div className={`grid grid-cols-3 sm:grid-cols-4 ${colsClass} gap-2 sm:gap-3`} data-testid="available-cards">
+      {cards.map((c) => {
+        const isPicked = pickedIds.has(c.id) || (isVrd && takenNames.has(c.name.toLowerCase()));
+        const clickable = myTurn && !isPicked && !picking;
+        const inQueue = queued.has(c.id);
+        return (
+          <div key={c.id} data-testid={`pool-card-${c.id}`} onMouseEnter={() => setHoverCard(c)}
+            onMouseLeave={() => setHoverCard((h) => (h?.id === c.id ? null : h))}
+            onClick={() => { if (clickable) setConfirmCard(c); else if (!hoverable) setPreviewCard(c); }}
+            className={`group relative rounded-lg overflow-hidden border transition-colors ${isPicked ? "border-slate-800 opacity-40 grayscale cursor-not-allowed" : clickable ? "border-slate-800 hover:border-amber-400/70 cursor-pointer" : "border-slate-800 cursor-default"}`}>
+            <div className="aspect-[0.716] bg-slate-800 flex items-center justify-center">
+              {(c.image || c.art_crop) ? <img src={c.image || c.art_crop} alt={c.name} loading="lazy" decoding="async" className="w-full h-full object-cover" /> : <div className="p-2 text-center text-xs font-medium text-slate-200 leading-tight">{c.name}</div>}
+            </div>
+            {isPicked ? (
+              <div className="absolute inset-0 flex items-center justify-center"><span data-testid={`picked-badge-${c.id}`} className="px-2 py-0.5 rounded bg-slate-950/80 text-[10px] uppercase tracking-wide text-slate-300 border border-slate-700">Picked</span></div>
+            ) : (
+              <button data-testid={`queue-${c.id}`} onClick={(e) => { e.stopPropagation(); setQueue((q) => (q.includes(c.id) ? q.filter((x) => x !== c.id) : [...q, c.id])); }}
+                title={inQueue ? "Remove from queue" : "Queue for later"}
+                className={`absolute top-1 right-1 ${hoverable ? "w-6 h-6" : "w-8 h-8"} rounded flex items-center justify-center transition-opacity ${inQueue ? "bg-amber-400 text-stone-900" : `bg-black/70 text-slate-200 ${hoverable ? "opacity-0 group-hover:opacity-100" : ""} hover:bg-amber-400 hover:text-stone-900`}`}>
+                {inQueue ? <BookmarkCheck className="w-3.5 h-3.5" /> : <BookmarkPlus className="w-3.5 h-3.5" />}
+              </button>
+            )}
+            {clickable && <div className="absolute inset-0 bg-amber-400/0 group-hover:bg-amber-400/15 transition-colors pointer-events-none" />}
+          </div>
+        );
+      })}
+    </div>
+  );
+});
 
 function playBeep() {
   try {
@@ -64,14 +108,17 @@ export default function DraftRoom() {
   // Ignore responses older than what's on screen: a poll sent just before a pick can arrive just after
   // it and would briefly bring back the old pack. Pack drafts number every change ("rev").
   const revRef = useRef(-1);
-  const versionRef = useRef(null);     // last full state's version: lets pack-draft polls get a tiny "unchanged" reply
+  const versionRef = useRef(null);     // last full state's version: lets polls get a tiny "unchanged" reply
+  // Bumped whenever a pick / undo / reassign / import comes back: a poll that was already on its way
+  // carries the state from before that change, so it's dropped instead of briefly undoing it.
+  const actionSeqRef = useRef(0);
   const setState = (next) => {
     if (typeof next === "function") { setRawState(next); return; }
     if (next && typeof next.rev === "number") {
       if (next.rev < revRef.current) return;
       revRef.current = next.rev;
     }
-    versionRef.current = next?.mode === "packs" && next?.status === "drafting" ? next.version : null;
+    versionRef.current = next?.version && next?.status !== "cancelled" ? next.version : null;
     setRawState(next);
   };
   const [me, setMe] = useState(() => { try { return JSON.parse(localStorage.getItem(storeKey(shareId))) || null; } catch { return null; } });
@@ -93,6 +140,18 @@ export default function DraftRoom() {
   const seatStripRef = useRef(null);
   const [hints, setHints] = useState(() => localStorage.getItem("grim_draft_hints") === "on");
   const [suggestions, setSuggestions] = useState([]);
+  const [suggestFor, setSuggestFor] = useState(null);     // seat the current suggestions are for
+  const [suggestLoading, setSuggestLoading] = useState(false);
+  const [suggestOpen, setSuggestOpen] = useState(false);  // the suggestions pop-up
+  // Mirror tables: suggest for every seat (not just yours) to watch how the bot reads each drafter.
+  const [suggestAll, setSuggestAll] = useState(() => { try { return localStorage.getItem("grim_mirror_suggest_all") === "on"; } catch { return false; } });
+  // Mirror tables: search for cards outside the cube, and catch up from the group's sheet.
+  const [addQuery, setAddQuery] = useState("");
+  const [addResults, setAddResults] = useState(null);   // null = closed
+  const [adding, setAdding] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importing, setImporting] = useState(false);
   const [cardSize, setCardSize] = useState(() => localStorage.getItem("grim_draft_card_size") || "m");
   const [muted, setMuted] = useState(() => localStorage.getItem("grim_draft_muted") === "true");
   const [queue, setQueue] = useState(() => { try { return JSON.parse(localStorage.getItem(`grim_draft_queue_${shareId}`)) || []; } catch { return []; } });
@@ -123,9 +182,12 @@ export default function DraftRoom() {
         const headers = {};
         if (playerToken) headers["X-Player-Token"] = playerToken;
         if (versionRef.current) headers["X-Known-Version"] = versionRef.current;
+        const seq = actionSeqRef.current;
         const { data } = await api.get(`/drafts/${shareId}/state`, { headers, timeout: 15000 });
-        if (!active) return;
-        if (data.unchanged) setState((s) => (s ? { ...s, server_time: data.server_time } : s));
+        if (!active || seq !== actionSeqRef.current) return;
+        // Unchanged: keep the same state object so nothing re-renders (pack drafts still need the
+        // server clock for their pick timers).
+        if (data.unchanged) setState((s) => (s && s.mode === "packs" && s.status === "drafting" ? { ...s, server_time: data.server_time } : s));
         else setState(data);
       } catch {} finally { inFlight = false; }
     };
@@ -141,6 +203,7 @@ export default function DraftRoom() {
   const pickedIds = useMemo(() => new Set((state?.picked_ids) || (state?.picks || []).map((p) => p.card_id)), [state]);
   // VRD: cards seen in the top list, searches and suggestions (queued ones are remembered across reloads).
   const isVrd = draft?.pool === "vintage";
+  const isMirror = !!(state?.mirror ?? draft?.mirror);
   const [vrdSeen, setVrdSeen] = useState(() => { try { return JSON.parse(localStorage.getItem(`grim_vrd_seen_${shareId}`)) || {}; } catch { return {}; } });
   const [vrdList, setVrdList] = useState([]);          // cards shown in the VRD picker (top list or search results)
   const [vrdSearch, setVrdSearch] = useState("");      // the search that produced vrdList ("" = top-rated list)
@@ -164,7 +227,7 @@ export default function DraftRoom() {
   // VRD drafts add cards to the draft's list as they are picked: fetch just the new ones.
   const cubeFetchRef = useRef(false);
   useEffect(() => {
-    if (!isVrd || !state?.picks?.length || cubeFetchRef.current) return;
+    if (!(isVrd || isMirror) || !state?.picks?.length || cubeFetchRef.current) return;
     const have = new Set((draft?.cube || []).map((c) => c.id));
     if (state.picks.every((p) => have.has(p.card_id))) return;
     cubeFetchRef.current = true;
@@ -175,7 +238,7 @@ export default function DraftRoom() {
       }))
       .catch(() => {})
       .finally(() => { cubeFetchRef.current = false; });
-  }, [isVrd, state, draft, shareId]);
+  }, [isVrd, isMirror, state, draft, shareId]);
 
   // VRD picker list: the highest-rated undrafted cards, or the results of a search.
   const vrdPickCount = state?.picks?.length || 0;
@@ -212,7 +275,7 @@ export default function DraftRoom() {
 
   // Beep + auto-pick when it becomes your turn.
   useEffect(() => {
-    const now = !!(state && me && state.status === "drafting" && state.current_seat_index != null && me.seats.includes(state.current_seat_index));
+    const now = onMySeat(state, me);
     if (now && !prevTurnRef.current && !muted) playBeep();
     prevTurnRef.current = now;
   }, [state, me, muted]);
@@ -233,18 +296,31 @@ export default function DraftRoom() {
   }, [state, me, shareId]);
 
   // Pick suggestions (same engine as the bots) when it's our turn and hints are on.
-  const turnSeat = state && me && state.status === "drafting" && state.current_seat_index != null
-    && me.seats.includes(state.current_seat_index) ? state.current_seat_index : null;
+  const turnSeat = onMySeat(state, me) || (state?.mirror && suggestAll && state.status === "drafting" && me && state.current_seat_index != null)
+    ? state.current_seat_index : null;
+  const mySeatIdx = state?.my_seat;
+  const showHints = hints || isMirror;     // mirror tables exist to test the suggestions: always on for your seat
   const pickNo = state?.pick_index;
   useEffect(() => {
     setSuggestions([]);
-    if (!hints || turnSeat == null) return;
+    setSuggestOpen(false);
+    if (!showHints || turnSeat == null) return;
     let active = true;
-    api.get(`/drafts/${shareId}/suggestions`, { params: { seat: turnSeat } })
-      .then(({ data }) => { if (!active) return; if (data.cards) rememberCards(data.cards); setSuggestions(data.suggestions || []); })
-      .catch(() => {});
+    setSuggestLoading(true);
+    api.get(`/drafts/${shareId}/suggestions`, { params: { seat: turnSeat }, timeout: 60000 })
+      .then(({ data }) => {
+        if (!active) return;
+        if (data.cards) rememberCards(data.cards);
+        setSuggestions(data.suggestions || []);
+        setSuggestFor(turnSeat);
+        // Mirror tables: pop the suggestions up rather than leaving them in a strip above a 500-card pool.
+        // (Only for your own seat: on other seats it would get in the way of copying their picks.)
+        if (isMirror && turnSeat === mySeatIdx && (data.suggestions || []).length) setSuggestOpen(true);
+      })
+      .catch(() => {})
+      .finally(() => { if (active) setSuggestLoading(false); });
     return () => { active = false; };
-  }, [hints, turnSeat, pickNo, shareId]);
+  }, [showHints, turnSeat, pickNo, shareId, isMirror, mySeatIdx]);
 
   // Phones: keep the seat on the clock centred in the sideways-scrolling seat strip.
   const clockSeat = state?.current_seat_index;
@@ -254,6 +330,27 @@ export default function DraftRoom() {
     const el = strip.querySelector(`[data-testid="seat-${clockSeat}"]`);
     if (el) strip.scrollLeft = el.offsetLeft - strip.clientWidth / 2 + el.clientWidth / 2;
   }, [clockSeat]);
+
+  // The pool as shown: filtered and sorted only when one of its inputs changes (not on every render).
+  const poolCards = useMemo(() => {
+    const cmp = (a, b) => {
+      // Custom (uploaded) cards always sit at the top of the pool, whatever the sort.
+      const custom = (b.is_custom ? 1 : 0) - (a.is_custom ? 1 : 0);
+      if (custom) return custom;
+      if (sortBy === "elo") return (b.elo || 0) - (a.elo || 0) || a.name.localeCompare(b.name);
+      if (sortBy === "color") return colorKey(a) - colorKey(b) || typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
+      if (sortBy === "type") return typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
+      if (sortBy === "cmc") return (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
+      return a.name.localeCompare(b.name);
+    };
+    const taken = (c) => pickedIds.has(c.id) || (isVrd && takenNames.has(c.name.toLowerCase()));
+    const q = query.trim().toLowerCase();
+    return (isVrd ? vrdList : (draft?.cube || []))
+      .filter((c) => isVrd || !q || c.name.toLowerCase().includes(q))
+      .filter((c) => !hidePicked || !taken(c))
+      .slice()
+      .sort(isVrd && !vrdSearch && sortBy === "elo" ? () => 0 : cmp);
+  }, [isVrd, vrdList, draft, query, hidePicked, pickedIds, takenNames, sortBy, vrdSearch]);
 
   if (!draft || !state) return <div className="h-screen flex items-center justify-center bg-[#060a14]"><Loader2 className="w-8 h-8 text-amber-400 animate-spin" /></div>;
 
@@ -326,6 +423,7 @@ export default function DraftRoom() {
     setPicking(true);
     try {
       const { data } = await api.post(`/drafts/${shareId}/pick`, { player_token: me.player_token, seat_index: seat, card_id: card.id });
+      actionSeqRef.current++;
       setState(data);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Pick failed");
@@ -352,11 +450,11 @@ export default function DraftRoom() {
   const toggleMute = () => setMuted((m) => { localStorage.setItem("grim_draft_muted", (!m).toString()); return !m; });
 
   const undoPick = async () => {
-    try { const { data } = await api.post(`/drafts/${shareId}/undo`, { host_token: hostToken }); setState(data); toast.success("Last pick undone"); }
+    try { const { data } = await api.post(`/drafts/${shareId}/undo`, { host_token: hostToken }); actionSeqRef.current++; setState(data); toast.success("Last pick undone"); }
     catch (e) { toast.error(e.response?.data?.detail || "Could not undo"); }
   };
   const doReassign = async (cardId) => {
-    try { const { data } = await api.post(`/drafts/${shareId}/reassign`, { host_token: hostToken, order: reassignPick.order, card_id: cardId }); setState(data); setReassignPick(null); setReassignQuery(""); toast.success("Pick reassigned"); }
+    try { const { data } = await api.post(`/drafts/${shareId}/reassign`, { host_token: hostToken, order: reassignPick.order, card_id: cardId }); actionSeqRef.current++; setState(data); setReassignPick(null); setReassignQuery(""); toast.success("Pick reassigned"); }
     catch (e) { toast.error(e.response?.data?.detail || "Could not reassign"); }
   };
 
@@ -419,31 +517,68 @@ export default function DraftRoom() {
   const shareUrl = `${window.location.origin}/draft/${shareId}`;
   const myTurn = me && state.current_seat_index != null && me.seats.includes(state.current_seat_index);
   const currentSeatName = state.current_seat_index != null ? state.seats.find((s) => s.index === state.current_seat_index)?.player_name : null;
+  const mineNow = onMySeat(state, me);
+  const turnText = isMirror
+    ? (mineNow ? `Your pick! · Seat ${state.current_seat_index + 1}` : `Picking for ${currentSeatName || "…"} · Seat ${state.current_seat_index + 1}`)
+    : (myTurn ? `Your pick! · Seat ${state.current_seat_index + 1}` : `${currentSeatName || "…"}'s pick`);
+  // Mirror stress test: how often the real pick was among the bot engine's top suggestions.
+  const agreement = (() => {
+    if (!isMirror) return null;
+    const logged = (state.picks || []).filter((p) => Array.isArray(p.bot_top) && p.bot_top.length);
+    const tally = (ps) => ({ n: ps.length, top3: ps.filter((p) => p.bot_top.includes(p.card_id)).length, top1: ps.filter((p) => p.bot_top[0] === p.card_id).length });
+    return { all: tally(logged), mine: tally(logged.filter((p) => p.seat_index === state.my_seat)) };
+  })();
+
+  const searchToAdd = async (e) => {
+    e?.preventDefault();
+    const q = addQuery.trim();
+    if (!q) return;
+    setAdding(true);
+    try {
+      const { data } = await api.get("/cards/search", { params: { q: isVrd ? `${q} legal:vintage game:paper -t:basic` : q } });
+      rememberCards(data.cards || []);
+      setAddResults((data.cards || []).slice(0, 24));
+    } catch { toast.error("Search failed"); setAddResults([]); }
+    finally { setAdding(false); }
+  };
+
+  const runImport = async () => {
+    // Cells copied from the sheet arrive tab-separated: send them as a grid (one column per seat) and
+    // the server works out the pick order. Otherwise it's one card name per line, in pick order.
+    const isGrid = importText.includes("\t");
+    const lines = importText.split(/\r?\n/);
+    const names = lines.map((l) => l.replace(/^\s*\d+[.)]\s+/, "").trim()).filter(Boolean);
+    const body = isGrid ? { host_token: hostToken, grid: lines.map((l) => l.split("\t")) } : { host_token: hostToken, names };
+    if (!isGrid && !names.length) return;
+    setImporting(true);
+    try {
+      const { data } = await api.post(`/drafts/${shareId}/mirror/import`, body, { timeout: 180000 });
+      actionSeqRef.current++;
+      setState(data);
+      if (data.stopped) {
+        // List mode: keep the lines that didn't go in so they can be fixed and sent again.
+        if (!isGrid) setImportText(names.slice(data.stopped.line - 1).join("\n"));
+        toast.error(`Added ${data.applied} pick${data.applied === 1 ? "" : "s"}, then stopped at "${data.stopped.name}": ${data.stopped.reason}`, { duration: 10000 });
+      } else if (isGrid && !data.applied) {
+        toast("Nothing new: every pick in the sheet is already entered");
+      } else {
+        toast.success(`Added ${data.applied} pick${data.applied === 1 ? "" : "s"}`);
+        setImportText("");
+        setImportOpen(false);
+      }
+    } catch (e) { toast.error(e.response?.data?.detail || "Import failed"); }
+    finally { setImporting(false); }
+  };
 
   // Auto-pick the top still-available queued card whenever it's our turn.
   autoPickRef.current = () => {
     if (inFlightRef.current) return;
-    if (!(state.status === "drafting" && me && state.current_seat_index != null && me.seats.includes(state.current_seat_index))) return;
+    if (!onMySeat(state, me)) return;
     const next = queue.map((id) => cubeById[id]).find((c) => c && !pickedIds.has(c.id) && !(isVrd && takenNames.has(c.name.toLowerCase())));
     if (next) { toast.success(`Auto-picked ${next.name} from your queue`); pick(next); }
   };
 
-  const comparator = (a, b) => {
-    // Custom (uploaded) cards always sit at the top of the pool, whatever the sort.
-    const custom = (b.is_custom ? 1 : 0) - (a.is_custom ? 1 : 0);
-    if (custom) return custom;
-    if (sortBy === "elo") return (b.elo || 0) - (a.elo || 0) || a.name.localeCompare(b.name);
-    if (sortBy === "color") return colorKey(a) - colorKey(b) || typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
-    if (sortBy === "type") return typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
-    if (sortBy === "cmc") return (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
-    return a.name.localeCompare(b.name);
-  };
   const isTaken = (c) => pickedIds.has(c.id) || (isVrd && takenNames.has(c.name.toLowerCase()));
-  const poolCards = (isVrd ? vrdList : (draft.cube || []))
-    .filter((c) => isVrd || !query.trim() || c.name.toLowerCase().includes(query.toLowerCase()))
-    .filter((c) => !hidePicked || !isTaken(c))
-    .slice()
-    .sort(isVrd && !vrdSearch && sortBy === "elo" ? () => 0 : comparator);
   const availableCount = isVrd ? vrdList.filter((c) => !isTaken(c)).length : (draft.cube || []).filter((c) => !pickedIds.has(c.id)).length;
 
   const pickFeed = (state.picks || []).map((p) => {
@@ -506,9 +641,54 @@ export default function DraftRoom() {
           : vrdWarming ? "Loading the top-rated card list (first VRD table only). Search works now; bots start in a few seconds."
           : "Top-rated undrafted cards. Search for anything Vintage-legal.") : `${availableCount} available`}</span>
       </div>
-      {hints && myTurn && suggestions.some((id) => cubeById[id] && !isTaken(cubeById[id])) && (
+      {isMirror && (
+        <div className="mb-3 rounded-lg border border-slate-800 bg-slate-900/50 p-2.5 space-y-2" data-testid="mirror-panel">
+          <div className="flex items-center gap-2 flex-wrap text-xs">
+            <span className="flex items-center gap-1 text-slate-300 font-semibold"><Copy className="w-3.5 h-3.5 text-amber-400" /> Mirror</span>
+            {agreement && agreement.all.n > 0 && (
+              <span className="text-slate-400" data-testid="mirror-agreement" title="Picks where the real card was in the bot's top suggestions (exact = its first choice)">
+                Bot agreed · you {agreement.mine.top3}/{agreement.mine.n} ({agreement.mine.top1} exact) · table {agreement.all.top3}/{agreement.all.n} ({agreement.all.top1} exact)
+              </span>
+            )}
+            <label className="flex items-center gap-1.5 text-slate-400 cursor-pointer select-none" data-testid="mirror-suggest-all">
+              <input type="checkbox" checked={suggestAll} className="accent-amber-400 w-3.5 h-3.5"
+                onChange={(e) => { const v = e.target.checked; setSuggestAll(v); try { localStorage.setItem("grim_mirror_suggest_all", v ? "on" : "off"); } catch { /* storage blocked */ } }} />
+              Suggest for every seat
+            </label>
+            {hostToken && (
+              <button type="button" data-testid="mirror-import-open" onClick={() => setImportOpen(true)} className="ml-auto text-xs px-2.5 py-1 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 hover:border-amber-400/60">Catch up from sheet</button>
+            )}
+          </div>
+          {!isVrd && (
+            <form onSubmit={searchToAdd} className="flex items-center gap-2" data-testid="mirror-add-search">
+              <Input value={addQuery} onChange={(e) => setAddQuery(e.target.value)} placeholder="Card not in the cube? Search all cards…" data-testid="mirror-add-input"
+                className="h-8 w-full sm:w-72 bg-slate-950 border-slate-700 text-slate-100 text-sm" />
+              <Button type="submit" size="sm" data-testid="mirror-add-go" disabled={adding} className="h-8 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">{adding ? <Loader2 className="w-4 h-4 animate-spin" /> : "Search"}</Button>
+              {addResults && <button type="button" onClick={() => { setAddResults(null); setAddQuery(""); }} className="text-xs text-slate-400 hover:text-amber-300">Close</button>}
+            </form>
+          )}
+          {!isVrd && addResults && (
+            addResults.length ? (
+              <div className="flex gap-2 overflow-x-auto pb-1" data-testid="mirror-add-results">
+                {addResults.map((c) => (
+                  <button key={c.id} type="button" data-testid={`mirror-add-${c.id}`} disabled={!myTurn || picking || pickedIds.has(c.id)}
+                    onClick={() => setConfirmCard(c)} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
+                    className="shrink-0 w-24 rounded-md overflow-hidden border border-slate-800 hover:border-amber-400/70 disabled:opacity-40" title={c.name}>
+                    {c.image ? <img src={c.image} alt={c.name} className="w-full" loading="lazy" /> : <div className="p-2 text-[11px] text-slate-200">{c.name}</div>}
+                  </button>
+                ))}
+              </div>
+            ) : <p className="text-xs text-slate-500">No cards found.</p>
+          )}
+        </div>
+      )}
+      {isMirror && turnSeat != null && suggestLoading && (
+        <div className="mb-3 flex items-center gap-2 text-xs text-slate-500" data-testid="suggestions-loading"><Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" /> Working out suggestions… (the first one after a server restart can take a few seconds)</div>
+      )}
+      {showHints && turnSeat != null && suggestFor === state.current_seat_index && suggestions.some((id) => cubeById[id] && !isTaken(cubeById[id])) && (
         <div className="mb-3 flex items-center gap-2 flex-wrap" data-testid="pick-suggestions">
-          <span className="flex items-center gap-1 text-xs text-slate-500"><Lightbulb className="w-3.5 h-3.5 text-amber-400" /> Suggested</span>
+          <span className="flex items-center gap-1 text-xs text-slate-500"><Lightbulb className="w-3.5 h-3.5 text-amber-400" /> Suggested{isMirror && !mineNow ? ` for ${currentSeatName || "this seat"}` : ""}</span>
+          {isMirror && <button type="button" data-testid="suggestions-open" onClick={() => setSuggestOpen(true)} className="text-xs px-2.5 py-1 rounded-full border border-amber-400/50 text-amber-300 hover:bg-amber-400/10">Show cards</button>}
           {suggestions.map((id) => cubeById[id]).filter((c) => c && !isTaken(c)).map((c) => (
             <button key={c.id} data-testid={`suggestion-${c.id}`} onClick={() => setConfirmCard(c)} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
               className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-slate-700 bg-slate-900/60 text-slate-200 hover:border-amber-400/70 hover:text-amber-200 max-w-[60vw] sm:max-w-[220px]">
@@ -518,32 +698,9 @@ export default function DraftRoom() {
         </div>
       )}
       <div className="lg:max-h-[calc(100vh-280px)] lg:overflow-y-auto lg:pr-1 lg:-mr-1">
-        <div className={`grid grid-cols-3 sm:grid-cols-4 ${(CARD_SIZES.find((z) => z.k === cardSize) || CARD_SIZES[1]).cols} gap-2 sm:gap-3`} data-testid="available-cards">
-          {poolCards.map((c) => {
-            const isPicked = isTaken(c);
-            const clickable = myTurn && !isPicked && !picking;
-            const queued = queue.includes(c.id);
-            return (
-              <div key={c.id} data-testid={`pool-card-${c.id}`} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
-                onClick={() => { if (clickable) setConfirmCard(c); else if (!hoverable) setPreviewCard(c); }}
-                className={`group relative rounded-lg overflow-hidden border transition-colors ${isPicked ? "border-slate-800 opacity-40 grayscale cursor-not-allowed" : clickable ? "border-slate-800 hover:border-amber-400/70 cursor-pointer" : "border-slate-800 cursor-default"}`}>
-                <div className="aspect-[0.716] bg-slate-800 flex items-center justify-center">
-                  {(c.image || c.art_crop) ? <img src={c.image || c.art_crop} alt={c.name} loading="lazy" className="w-full h-full object-cover" /> : <div className="p-2 text-center text-xs font-medium text-slate-200 leading-tight">{c.name}</div>}
-                </div>
-                {isPicked ? (
-                  <div className="absolute inset-0 flex items-center justify-center"><span data-testid={`picked-badge-${c.id}`} className="px-2 py-0.5 rounded bg-slate-950/80 text-[10px] uppercase tracking-wide text-slate-300 border border-slate-700">Picked</span></div>
-                ) : (
-                  <button data-testid={`queue-${c.id}`} onClick={(e) => { e.stopPropagation(); toggleQueue(c.id); }}
-                    title={queued ? "Remove from queue" : "Queue for later"}
-                    className={`absolute top-1 right-1 ${hoverable ? "w-6 h-6" : "w-8 h-8"} rounded flex items-center justify-center transition-opacity ${queued ? "bg-amber-400 text-stone-900" : `bg-black/70 text-slate-200 ${hoverable ? "opacity-0 group-hover:opacity-100" : ""} hover:bg-amber-400 hover:text-stone-900`}`}>
-                    {queued ? <BookmarkCheck className="w-3.5 h-3.5" /> : <BookmarkPlus className="w-3.5 h-3.5" />}
-                  </button>
-                )}
-                {clickable && <div className="absolute inset-0 bg-amber-400/0 group-hover:bg-amber-400/15 transition-colors pointer-events-none" />}
-              </div>
-            );
-          })}
-        </div>
+        <PoolGrid cards={poolCards} pickedIds={pickedIds} takenNames={takenNames} isVrd={isVrd} myTurn={!!myTurn} picking={picking}
+          queue={queue} hoverable={hoverable} colsClass={(CARD_SIZES.find((z) => z.k === cardSize) || CARD_SIZES[1]).cols}
+          setHoverCard={setHoverCard} setConfirmCard={setConfirmCard} setPreviewCard={setPreviewCard} setQueue={setQueue} />
       </div>
     </div>
   );
@@ -607,7 +764,7 @@ export default function DraftRoom() {
         <div className="flex items-center gap-2 flex-wrap mb-4">
           <span className="text-xs text-slate-500">View deck:</span>
           {seatsSorted.map((s) => {
-            const mine = me?.seats?.includes(s.index);
+            const mine = isMirror ? s.index === state.my_seat : me?.seats?.includes(s.index);
             return (
               <button key={s.index} data-testid={`deck-seat-${s.index}`} onClick={() => setDeckSeat(s.index)}
                 className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${activeSeat === s.index ? "border-amber-400 text-amber-300 bg-amber-400/10" : "border-slate-700 text-slate-400 hover:text-slate-200"}`}>
@@ -749,7 +906,7 @@ export default function DraftRoom() {
         <div ref={seatStripRef} className="relative flex gap-2 overflow-x-auto -mx-3 px-3 pb-1 mb-4 sm:mx-0 sm:px-0 sm:pb-0 sm:mb-6 sm:grid sm:grid-cols-2 lg:grid-cols-4 sm:gap-3 sm:overflow-visible" data-testid="seat-grid">
           {seatsSorted.map((s) => {
             const isCurrent = state.current_seat_index === s.index;
-            const mine = me?.seats?.includes(s.index);
+            const mine = isMirror ? s.index === state.my_seat : me?.seats?.includes(s.index);
             const last = seatPicks(s.index).slice(-1)[0];
             return (
               <div key={s.index} data-testid={`seat-${s.index}`} className={`rounded-xl border p-2.5 sm:p-3 min-w-[148px] shrink-0 sm:min-w-0 ${isCurrent ? "border-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.15)]" : "border-slate-800"} bg-slate-900/50`}>
@@ -784,11 +941,13 @@ export default function DraftRoom() {
           <div className="min-w-0 space-y-6">
             {state.status === "lobby" && (
               <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 max-w-md" data-testid="lobby-panel">
-                <h2 className="font-display text-xl font-bold mb-2">Join the draft</h2>
+                <h2 className="font-display text-xl font-bold mb-2">{isMirror ? "Mirror table" : "Join the draft"}</h2>
                 <p className="text-sm text-slate-400 mb-4">
                   {state.pool === "vintage" && <span className="block text-amber-300/90 mb-1" data-testid="lobby-format-vrd">Vintage Rotisserie Draft · every Vintage-legal card</span>}
                   {state.mode === "packs" && <span className="block text-amber-300/90 mb-1" data-testid="lobby-format">Pack draft · {state.pack_count} packs of {state.pack_size}{state.timer === "off" ? " · no timer" : " · pick timer on"}</span>}
-                  Enter your name to claim your seat(s). {state.seats_per_player} seat(s) each. {state.players.length}/{state.num_players} players in.
+                  {isMirror
+                    ? "You pick for every seat from this browser. Start when ready, then use Catch up from sheet for picks already made."
+                    : <>Enter your name to claim your seat(s). {state.seats_per_player} seat(s) each. {state.players.length}/{state.num_players} players in.</>}
                 </p>
                 <div className="mb-4 rounded-lg border border-slate-800 bg-slate-950 p-3">
                   <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1.5">Invite players</div>
@@ -844,8 +1003,8 @@ export default function DraftRoom() {
             {state.status === "drafting" && (
               <div>
                 <div className="mb-4 flex items-center gap-3 flex-wrap">
-                  <div className={`hidden lg:block px-4 py-2 rounded-xl font-display font-semibold ${myTurn ? "bg-amber-400 text-stone-900" : "bg-slate-900 border border-slate-700 text-slate-200"}`} data-testid="turn-indicator">
-                    {myTurn ? `Your pick! · Seat ${state.current_seat_index + 1}` : `${currentSeatName || "…"}'s pick`} · {state.pick_index}/{state.order_len}
+                  <div className={`hidden lg:block px-4 py-2 rounded-xl font-display font-semibold ${(isMirror ? mineNow : myTurn) ? "bg-amber-400 text-stone-900" : "bg-slate-900 border border-slate-700 text-slate-200"}`} data-testid="turn-indicator">
+                    {turnText} · {state.pick_index}/{state.order_len}
                   </div>
                   {viewTabs([["pick", "Pick", LayoutGrid], ["table", "Draft Table", Table2], ["decks", "Decks", Eye]])}
                   <button data-testid="toggle-mini-table" onClick={() => setShowMiniTable((v) => !v)} className="hidden lg:flex text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 items-center gap-1.5"><Table2 className="w-3.5 h-3.5" /> {showMiniTable ? "Hide peek" : "Table peek"}</button>
@@ -899,8 +1058,8 @@ export default function DraftRoom() {
       {state.status !== "lobby" && (
         <nav className="lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-slate-800 bg-[#070c17]/95 backdrop-blur pb-[env(safe-area-inset-bottom)]" data-testid="mobile-bar">
           {state.status === "drafting" && (
-            <div className={`text-center text-xs font-display font-semibold py-1 ${myTurn ? "bg-amber-400 text-stone-900" : "text-slate-300"}`} data-testid="mobile-turn">
-              {myTurn ? `Your pick! · Seat ${state.current_seat_index + 1}` : `${currentSeatName || "…"}'s pick`} · {state.pick_index}/{state.order_len}
+            <div className={`text-center text-xs font-display font-semibold py-1 ${(isMirror ? mineNow : myTurn) ? "bg-amber-400 text-stone-900" : "text-slate-300"}`} data-testid="mobile-turn">
+              {turnText} · {state.pick_index}/{state.order_len}
             </div>
           )}
           <div className="flex">
@@ -987,10 +1146,50 @@ export default function DraftRoom() {
         </div>
       )}
 
+      {suggestOpen && isMirror && state.status === "drafting" && suggestFor === state.current_seat_index && (() => {
+        const cards = suggestions.map((id) => cubeById[id]).filter((c) => c && !isTaken(c));
+        if (!cards.length) return null;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" data-testid="suggestions-dialog" onClick={() => setSuggestOpen(false)}>
+            <div className="bg-[#0b111e] border border-slate-700 rounded-2xl p-5 w-full max-w-2xl" onClick={(e) => e.stopPropagation()}>
+              <h3 className="font-display text-lg font-bold flex items-center gap-2"><Lightbulb className="w-5 h-5 text-amber-400" /> {mineNow ? "Suggested picks for you" : `Bot would take, for ${currentSeatName || "this seat"}`}</h3>
+              <p className="text-xs text-slate-500 mt-1">Best first. Tap one to draft it{mineNow ? "" : ` for ${currentSeatName || "this seat"}`}, or close this and pick something else.</p>
+              <div className="mt-4 grid grid-cols-3 gap-3">
+                {cards.map((c, i) => (
+                  <button key={c.id} type="button" data-testid={`suggestions-dialog-${c.id}`} onClick={() => { setSuggestOpen(false); setConfirmCard(c); }}
+                    className="text-left rounded-lg overflow-hidden border border-slate-800 hover:border-amber-400/70 bg-slate-900">
+                    {(c.image || c.art_crop) ? <img src={c.image || c.art_crop} alt={c.name} className="w-full" /> : <div className="p-4 text-sm text-slate-200">{c.name}</div>}
+                    <div className="px-2 py-1.5 text-xs text-slate-300 truncate"><span className="text-amber-300 font-semibold">{i + 1}.</span> {c.name}</div>
+                  </button>
+                ))}
+              </div>
+              <Button variant="outline" onClick={() => setSuggestOpen(false)} data-testid="suggestions-dialog-close" className="w-full mt-4 bg-slate-900 border-slate-700 text-slate-200">Close</Button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {importOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" data-testid="mirror-import-dialog" onClick={() => !importing && setImportOpen(false)}>
+          <div className="bg-[#0b111e] border border-slate-700 rounded-2xl p-5 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-display text-lg font-bold">Catch up from the sheet</h3>
+            <p className="text-xs text-slate-400 mt-1">Copy the pick cells straight from the sheet (one column per player, in seat order) and paste them here. Picks already entered are skipped, so you can paste the whole grid again later. Or type one card per line in pick order, starting with pick {(state.pick_index || 0) + 1} ({currentSeatName || "next seat"}). Cards that aren't in the cube are looked up and added.</p>
+            <Textarea data-testid="mirror-import-text" value={importText} onChange={(e) => setImportText(e.target.value)} placeholder={"Black Lotus\nAncestral Recall\nTime Walk\n..."}
+              className="mt-3 min-h-[200px] bg-slate-950 border-slate-700 text-slate-100 font-mono text-sm" />
+            <div className="flex gap-2 mt-3">
+              <Button variant="outline" disabled={importing} onClick={() => setImportOpen(false)} className="flex-1 bg-slate-900 border-slate-700 text-slate-200">Cancel</Button>
+              <Button data-testid="mirror-import-go" disabled={importing || !importText.trim()} onClick={runImport} className="flex-1 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">
+                {importing ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : importText.includes("\t") ? "Add new picks from sheet" : `Add ${importText.split("\n").filter((l) => l.trim()).length} picks`}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {confirmCard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" data-testid="confirm-pick-dialog" onClick={() => setConfirmCard(null)}>
           <div className="bg-[#0b111e] border border-slate-700 rounded-2xl p-5 max-w-xs w-full text-center" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-display text-lg font-bold mb-3">Draft this card?</h3>
+            <h3 className="font-display text-lg font-bold mb-3">{isMirror && currentSeatName ? `Draft for ${currentSeatName}?` : "Draft this card?"}</h3>
             <div className="rounded-lg overflow-hidden border border-slate-800 mb-3">
               {(confirmCard.image || confirmCard.art_crop) ? <img src={confirmCard.image || confirmCard.art_crop} alt={confirmCard.name} className="w-full" /> : <div className="p-6 text-slate-200">{confirmCard.name}</div>}
             </div>

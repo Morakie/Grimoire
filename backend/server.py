@@ -9,6 +9,7 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import time
 import uuid
 import asyncio
 import random
@@ -16,6 +17,8 @@ import bcrypt
 import jwt
 import httpx
 import csv
+import hashlib
+import re
 import certifi
 from pathlib import Path
 from pydantic import BaseModel, EmailStr, Field
@@ -33,6 +36,7 @@ import packdraft as pd
 import vrd
 from draftbot.simulate import run_draft, summarise
 import commander as cmdr
+import http_client
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -151,7 +155,8 @@ async def register(data: RegisterInput):
     user = {
         "id": str(uuid.uuid4()),
         "email": email,
-        "password_hash": hash_password(data.password),
+        # bcrypt takes a few hundred ms on purpose: run it off the event loop so other requests keep flowing
+        "password_hash": await run_in_threadpool(hash_password, data.password),
         "name": data.name or email.split("@")[0],
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -163,7 +168,7 @@ async def register(data: RegisterInput):
 async def login(data: LoginInput):
     email = data.email.lower()
     user = await db.users.find_one({"email": email})
-    if not user or not verify_password(data.password, user["password_hash"]):
+    if not user or not await run_in_threadpool(verify_password, data.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     token = create_token(user["id"], user["email"])
     return {"token": token, "user": public_user(user)}
@@ -249,7 +254,7 @@ async def search_cards(
     query = " ".join(parts).strip()
     if not query:
         raise HTTPException(status_code=400, detail="Empty search")
-    async with httpx.AsyncClient(timeout=15.0, headers=HEADERS) as hc:
+    async with http_client.client() as hc:
         r = await hc.get(f"{SCRYFALL}/cards/search", params={"q": query, "page": page, "unique": "cards"})
         if r.status_code == 404:
             return {"cards": [], "has_more": False, "total": 0}
@@ -264,7 +269,7 @@ async def search_cards(
 
 @api_router.get("/cards/printings")
 async def card_printings(name: str):
-    async with httpx.AsyncClient(timeout=15.0, headers=HEADERS) as hc:
+    async with http_client.client() as hc:
         r = await hc.get(f"{SCRYFALL}/cards/search", params={"q": f'!"{name}"', "unique": "prints", "order": "released", "dir": "asc"})
         if r.status_code != 200:
             return {"printings": []}
@@ -288,18 +293,51 @@ def _name_keys(c: Dict[str, Any]) -> List[str]:
     keys += [f.get("name", "") for f in c.get("card_faces") or []]
     return [k.strip().lower() for k in keys if k]
 
+class ScryfallRejected(HTTPException):
+    """Scryfall refused the request itself (4xx other than 429), e.g. a malformed card name in a batch."""
+
+
 async def _scryfall_post(hc: httpx.AsyncClient, path: str, body: dict) -> httpx.Response:
-    """POST to Scryfall, retrying briefly when it is busy (429 / 5xx). Raises a 502 if it still fails,
-    so a Scryfall hiccup is reported instead of silently dropping cards."""
-    for attempt in range(3):
-        r = await hc.post(f"{SCRYFALL}{path}", json=body)
-        if r.status_code == 200:
+    """POST to Scryfall, retrying with backoff when it is busy (429 / 5xx / no answer). Raises a 502 if
+    it still fails, so a Scryfall hiccup is reported instead of silently dropping cards."""
+    r = None
+    for attempt in range(4):
+        try:
+            r = await hc.post(f"{SCRYFALL}{path}", json=body)
+        except httpx.HTTPError as exc:
+            logger.warning("Scryfall %s: %s", path, exc)
+            r = None
+        if r is not None and r.status_code == 200:
             return r
-        if r.status_code not in (429, 500, 502, 503, 504):
-            break
-        await asyncio.sleep(1.0 * (attempt + 1))
-    logger.warning("Scryfall %s failed: %s", path, r.status_code)
+        if r is not None and r.status_code not in (429, 500, 502, 503, 504):
+            logger.warning("Scryfall %s rejected (%s): %s", path, r.status_code, r.text[:300])
+            raise ScryfallRejected(status_code=502, detail="Scryfall couldn't read part of the card list")
+        await asyncio.sleep(min(1.0 * 2 ** attempt, 6.0))
+    logger.warning("Scryfall %s failed: %s", path, r.status_code if r is not None else "no answer")
     raise HTTPException(status_code=502, detail="Scryfall is busy, please try again in a moment")
+
+
+async def _collection_post(hc: httpx.AsyncClient, identifiers: List[dict]) -> tuple:
+    """One /cards/collection call (up to 75 identifiers) -> (cards, not_found identifiers). If Scryfall
+    rejects the batch because of one odd entry, split it to find that entry and report it as not found
+    instead of failing the whole lookup."""
+    try:
+        r = await _scryfall_post(hc, "/cards/collection", {"identifiers": identifiers})
+    except ScryfallRejected:
+        if len(identifiers) == 1:
+            return [], list(identifiers)
+        mid = len(identifiers) // 2
+        a_cards, a_miss = await _collection_post(hc, identifiers[:mid])
+        b_cards, b_miss = await _collection_post(hc, identifiers[mid:])
+        return a_cards + b_cards, a_miss + b_miss
+    payload = r.json()
+    return payload.get("data", []), payload.get("not_found", [])
+
+
+async def _collection_batch(hc: httpx.AsyncClient, names: List[str]) -> tuple:
+    """Look up up to 75 names; returns (cards, names not found)."""
+    cards, miss = await _collection_post(hc, [{"name": n} for n in names])
+    return cards, [nf["name"] for nf in miss if nf.get("name")]
 
 
 async def _collection_lookup(hc: httpx.AsyncClient, identifiers: List[dict]) -> List[dict]:
@@ -307,8 +345,8 @@ async def _collection_lookup(hc: httpx.AsyncClient, identifiers: List[dict]) -> 
     for i in range(0, len(identifiers), 75):
         if i:
             await asyncio.sleep(0.1)
-        r = await _scryfall_post(hc, "/cards/collection", {"identifiers": identifiers[i:i + 75]})
-        out.extend(r.json().get("data", []))
+        cards, _ = await _collection_post(hc, identifiers[i:i + 75])
+        out.extend(cards)
     return out
 
 _OLDEST_CACHE: Dict[str, dict] = {}   # oracle_id -> oldest paper printing (raw Scryfall card)
@@ -348,7 +386,7 @@ async def _resolve_entries(entries: List[CollectionEntry], oldest: bool = True) 
     """Resolve import entries in three passes: exact printing, exact name, fuzzy name."""
     entries = entries[:400]
     resolved: Dict[str, dict] = {}
-    async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
+    async with http_client.client() as hc:
         # Pass 1: exact printing for entries that specify set + collector number.
         pinned = [e for e in entries if e.set and e.collector_number]
         if pinned:
@@ -405,17 +443,16 @@ async def card_collection(data: CollectionInput):
 async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
     """Resolve card names (e.g. a cube list), using each card's original printing. Misses get a
     second chance through the front face and fuzzy matching (e.g. split cards like "Life // Death")."""
-    names = [n for n in names if n and n.strip()][:800]
+    names = [" ".join(n.split())[:150] for n in names if n and n.strip()][:800]
     raw = []
     missed = []
-    async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
+    async with http_client.client() as hc:
         for i in range(0, len(names), 75):
             if i:
                 await asyncio.sleep(0.1)
-            r = await _scryfall_post(hc, "/cards/collection", {"identifiers": [{"name": n} for n in names[i:i + 75]]})
-            payload = r.json()
-            raw.extend(payload.get("data", []))
-            missed.extend(nf["name"] for nf in payload.get("not_found", []) if nf.get("name"))
+            cards, miss = await _collection_batch(hc, names[i:i + 75])
+            raw.extend(cards)
+            missed.extend(miss)
         try:
             raw = await _prefer_oldest(hc, raw)
         except httpx.HTTPError as exc:   # keep Scryfall's default printings
@@ -443,7 +480,7 @@ async def card_extras(data: ExtrasInput):
     ids = list(dict.fromkeys(i for i in data.ids if i))
     now = datetime.now(timezone.utc).timestamp()
     stale = [i for i in ids if i not in _EXTRAS_CACHE or now - _EXTRAS_CACHE[i][0] > _EXTRAS_TTL]
-    async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
+    async with http_client.client() as hc:
         if stale:
             printings = await _collection_lookup(hc, [{"id": i} for i in stale])
             # Price each card by Scryfall's default (usually current, in-print) printing: decks default
@@ -506,7 +543,7 @@ async def basic_lands():
 async def card_autocomplete(q: str = ""):
     if len(q.strip()) < 2:
         return {"suggestions": []}
-    async with httpx.AsyncClient(timeout=10.0, headers=HEADERS) as hc:
+    async with http_client.client() as hc:
         r = await hc.get(f"{SCRYFALL}/cards/autocomplete", params={"q": q.strip()})
         if r.status_code != 200:
             return {"suggestions": []}
@@ -750,6 +787,16 @@ class DraftCreate(BaseModel):
     timer: str = Field(default="shrinking", pattern="^(shrinking|off)$")
     pool: str = Field(default="cube", pattern="^(cube|vintage)$")   # "vintage" = VRD: every Vintage-legal paper card
     cube: List[dict] = []
+    # Mirror table: the host re-enters a draft happening elsewhere (e.g. a spreadsheet), picking for every
+    # seat from one browser. Seats are named in draft order; `my_seat` gets the pick suggestions.
+    mirror: bool = False
+    seat_names: List[str] = []
+    my_seat: int = 0
+
+class MirrorImportInput(BaseModel):
+    host_token: str
+    names: List[str] = Field(default_factory=list, max_length=1000)   # card names in pick order
+    grid: List[List[str]] = Field(default_factory=list, max_length=500)  # or cells pasted from the sheet
 
 class ClaimInput(BaseModel):
     name: str = Field(min_length=1, max_length=40)
@@ -822,6 +869,8 @@ def draft_state(d: dict, light: bool = False) -> dict:
         "messages": d.get("messages", [])[-50:],
         "mode": d.get("mode", "rotisserie"),
         "pool": d.get("pool", "cube"),
+        "mirror": bool(d.get("mirror")),
+        "my_seat": d.get("my_seat"),
         "rev": d.get("rev", 0),
         "version": f'{d.get("rev", 0)}|{d.get("updated_at")}',   # changes on every write (picks, chat, seats)
     }
@@ -907,6 +956,15 @@ async def find_by_code(code: str):
 
 @api_router.post("/drafts")
 async def create_draft(data: DraftCreate):
+    if data.mirror:
+        names = [n.strip()[:40] or f"Seat {i + 1}" for i, n in enumerate(data.seat_names)]
+        if data.mode != "rotisserie":
+            raise HTTPException(status_code=400, detail="Mirror tables are rotisserie only")
+        if not 2 <= len(names) <= 64:
+            raise HTTPException(status_code=400, detail="List 2 to 64 seats, one name per line, in draft order")
+        if not 0 <= data.my_seat < len(names):
+            raise HTTPException(status_code=400, detail="Pick which seat is yours")
+        data.seat_names, data.num_seats, data.num_players, data.num_bots, data.private = names, len(names), 1, 0, True
     if data.num_seats % data.num_players != 0:
         raise HTTPException(status_code=400, detail="Seats must divide evenly among players")
     if data.pool == "vintage":
@@ -955,12 +1013,24 @@ async def create_draft(data: DraftCreate):
         rng = random.Random()
         for _ in range(data.num_bots):
             _seat_bot(draft, rng)
+    me = None
+    if data.mirror:
+        # One player (the host) holds every seat; each seat keeps the real drafter's name.
+        me = {"id": str(uuid.uuid4()), "token": str(uuid.uuid4()), "name": data.seat_names[data.my_seat],
+              "seats": list(range(data.num_seats))}
+        for s in draft["seats"]:
+            s["player_id"], s["player_name"] = me["id"], data.seat_names[s["index"]]
+        draft["players"] = [me]
+        draft.update(mirror=True, my_seat=data.my_seat)
     if data.pool == "vintage":
         _warm_vrd_pool()
     else:
         _warm_card_stats(draft["cube"])
     await db.drafts.insert_one(draft)
-    return {**draft_state(draft), "host_token": draft["host_token"]}
+    out = {**draft_state(draft), "host_token": draft["host_token"]}
+    if me:
+        out["player"] = {"player_token": me["token"], "player_id": me["id"], "name": me["name"], "seats": me["seats"]}
+    return out
 
 @api_router.get("/drafts/open")
 async def list_open_drafts():
@@ -1008,12 +1078,16 @@ async def get_draft(share_id: str):
 @api_router.get("/drafts/{share_id}/state")
 async def get_draft_state(share_id: str, x_player_token: Optional[str] = Header(default=None),
                           x_known_version: Optional[str] = Header(default=None)):
-    # Pack drafts poll every second or so. If nothing changed since the caller's last response and no
-    # bot or timer is due to act, answer from a ~2 KB summary instead of loading the whole draft.
+    # Every page at the table polls every second or two. If nothing changed since the caller's last
+    # response and no bot or timer is due to act, answer from a tiny summary instead of loading and
+    # resending the whole draft (picks, chat, seats).
     if x_known_version:
-        probe = await db.drafts.find_one({"share_id": share_id}, _PACK_PROBE)
-        if probe and probe.get("mode") == "packs" and probe.get("status") == "drafting" \
-                and f'{probe.get("rev", 0)}|{probe.get("updated_at")}' == x_known_version and not _pack_action_due(probe):
+        probe = await db.drafts.find_one({"share_id": share_id}, _STATE_PROBE)
+        if probe and probe.get("status") in ("lobby", "drafting", "complete") \
+                and f'{probe.get("rev", 0)}|{probe.get("updated_at")}' == x_known_version \
+                and not (_pack_action_due(probe) if probe.get("mode") == "packs" else _probe_bot_up(probe)):
+            if probe.get("status") == "drafting" and probe.get("mode") != "packs":
+                _warm_cards(share_id)
             return {"unchanged": True, "version": x_known_version, "server_time": datetime.now(timezone.utc).isoformat()}
     d = await _draft(share_id)
     if not d:
@@ -1022,14 +1096,35 @@ async def get_draft_state(share_id: str, x_player_token: Optional[str] = Header(
         d = await pack_auto_actions(d)
         return _pack_state(d, x_player_token)
     d = await maybe_bot_pick(d)
+    if d.get("status") == "drafting":
+        _warm_cards(share_id)
     return draft_state(d, light=True)
+
+
+def _warm_cards(share_id: str) -> None:
+    """After a server restart the bots' card index is rebuilt on first use (seconds on a small server):
+    start that in the background, so pick suggestions are ready when someone asks."""
+    if share_id in _CARDS_CACHE or share_id in _WARMING:
+        return
+    _WARMING.add(share_id)
+    task = asyncio.create_task(_cards(share_id))
+    _BACKGROUND.add(task)
+    task.add_done_callback(lambda t, sid=share_id: (_BACKGROUND.discard(t), _WARMING.discard(sid)))
 
 
 # ===================== Pack drafts =====================
 
-_PACK_PROBE = {"_id": 0, "share_id": 1, "rev": 1, "updated_at": 1, "status": 1, "mode": 1,
-               "packs.queues": 1, "packs.since": 1, "packs.contents": 1, "packs.timer": 1,
-               "players.seats": 1, "players.is_bot": 1}
+_STATE_PROBE = {"_id": 0, "share_id": 1, "rev": 1, "updated_at": 1, "status": 1, "mode": 1,
+                "packs.queues": 1, "packs.since": 1, "packs.contents": 1, "packs.timer": 1,
+                "players.seats": 1, "players.is_bot": 1,
+                # rotisserie: the seat on the clock, without sending the whole pick list
+                "on_clock": {"$arrayElemAt": [{"$ifNull": ["$order", []]}, {"$size": {"$ifNull": ["$picks", []]}}]}}
+
+
+def _probe_bot_up(probe: dict) -> bool:
+    """Rotisserie: whether a bot holds the seat on the clock (then the full poll runs, so it picks)."""
+    seat = probe.get("on_clock")
+    return seat is not None and any(p.get("is_bot") and seat in p.get("seats", []) for p in probe.get("players", []))
 
 
 def _bot_due(share_id: str, seat: int, since: Optional[str], now: datetime) -> bool:
@@ -1177,6 +1272,11 @@ async def claim_seats(share_id: str, data: ClaimInput):
         raise HTTPException(status_code=404, detail="Draft not found")
     if d["status"] != "lobby":
         raise HTTPException(status_code=400, detail="Draft already started")
+    if d.get("mirror"):
+        p = next((p for p in d["players"] if data.player_token and p["token"] == data.player_token), None)
+        if not p:
+            raise HTTPException(status_code=403, detail="This is a mirror table: only its host picks")
+        return {"player_token": p["token"], "player_id": p["id"], "name": p["name"], "seats": p["seats"]}
     name = data.name.strip()
     # Reattach by token or by existing name
     for p in d["players"]:
@@ -1219,7 +1319,8 @@ async def start_draft(share_id: str):
         raise HTTPException(status_code=400, detail="Already started")
     if any(s["player_id"] is None for s in d["seats"]):
         raise HTTPException(status_code=400, detail="Not all seats are claimed yet")
-    _shuffle_seats(d)
+    if not d.get("mirror"):         # mirror tables keep the real table's seating
+        _shuffle_seats(d)
     now = datetime.now(timezone.utc).isoformat()
     if d.get("mode") == "packs":
         try:
@@ -1249,8 +1350,9 @@ async def start_draft(share_id: str):
         _warm_vrd_pool()            # bots' card knowledge lives in the shared VRD pool (loads in the background)
     else:
         # Both lookups can take several seconds for a cube the server hasn't seen before: run them together.
-        combos, stats = await asyncio.gather(fetch_combos(build_card_index(d["cube"])), _stats())
-        update["bot_combos"] = [c.to_dict() for c in combos]
+        combo_dicts, stats = await asyncio.gather(_cube_combos(share_id, d["cube"], budget_s=12.0 if has_bots else 3.0), _stats())
+        if combo_dicts is not None:
+            update["bot_combos"] = combo_dicts
         if stats is not None:
             update["bot_stats"] = stats
     if update.get("packs"):
@@ -1290,12 +1392,48 @@ async def build_from_pool(share_id: str, seat: int, size: int = 40, x_player_tok
     index = cards["index"]
     return await run_in_threadpool(suggest_deck, pool, index, size)
 
+_COMBOS_CACHE: Dict[str, list] = {}   # cube signature -> combo dicts (Commander Spellbook)
+
+
+async def _cube_combos(share_id: str, cube: List[dict], budget_s: float) -> Optional[list]:
+    """Spellbook combos for a cube, remembered per cube so restarting the same cube is instant. If the
+    lookup takes longer than `budget_s`, the draft starts without them and they're added when they
+    arrive (bots and suggestions work fine meanwhile, just without combo awareness)."""
+    sig = hashlib.sha1("\n".join(sorted(c.get("name", "") for c in cube if not c.get("is_custom"))).encode()).hexdigest()
+    if sig in _COMBOS_CACHE:
+        return _COMBOS_CACHE[sig]
+
+    async def fetch() -> list:
+        combos = await fetch_combos(build_card_index(cube))
+        out = [c.to_dict() for c in combos]
+        if len(_COMBOS_CACHE) > 50:
+            _COMBOS_CACHE.clear()
+        _COMBOS_CACHE[sig] = out
+        return out
+
+    task = asyncio.create_task(fetch())
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout=budget_s)
+    except asyncio.TimeoutError:
+        async def attach():
+            try:
+                combos = await task
+            except Exception:
+                return
+            await db.drafts.update_one({"share_id": share_id}, {"$set": {"bot_combos": combos}})
+            _CARDS_CACHE.pop(share_id, None)
+        bg = asyncio.create_task(attach())
+        _BACKGROUND.add(bg)
+        bg.add_done_callback(_BACKGROUND.discard)
+        return None
+
+
 async def _vrd_card(card_id: str, cards: dict) -> dict:
     """A VRD pick's card data, checked: Vintage-legal, on paper, not a basic land."""
     hit = next((c for c in cards["pool_cards"] if c["id"] == card_id), None) if card_id in cards["pool_ids"] else None
     if hit:
         return hit
-    async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
+    async with http_client.client() as hc:
         found = await _collection_lookup(hc, [{"id": card_id}])
     if not found:
         raise HTTPException(status_code=400, detail="Card not found on Scryfall")
@@ -1338,29 +1476,80 @@ async def make_pick(share_id: str, data: PickInput):
         raise HTTPException(status_code=404, detail="Draft not found")
     if d.get("mode") == "packs":
         return await _pack_pick(share_id, data)
+    player = next((p for p in d["players"] if p["token"] == data.player_token), None)
+    if not player or data.seat_index not in player["seats"]:
+        raise HTTPException(status_code=403, detail="You do not control this seat")
+    d = await _rotisserie_pick(d, data.seat_index, card_id=data.card_id)
+    return draft_state(d, light=True)
+
+
+async def _scryfall_card(identifier: dict) -> Optional[dict]:
+    async with http_client.client() as hc:
+        found = await _collection_lookup(hc, [identifier])
+    return found[0] if found else None
+
+
+def _undrafted_by_name(d: dict, cube: List[dict], name: str) -> Optional[dict]:
+    """An undrafted cube card with this name (full name or front face, any case)."""
+    key = _name_key(name)
+    taken = {p["card_id"] for p in d.get("picks", [])}
+    return next((c for c in cube if c["id"] not in taken and key in _card_keys(c)), None)
+
+
+def _name_key(name: str) -> str:
+    return " ".join(str(name).replace("\u2019", "'").split()).lower()
+
+
+def _card_keys(c: dict) -> set:
+    full = _name_key(c.get("name", ""))
+    return {full, full.split(" // ")[0]}
+
+
+async def _rotisserie_pick(d: dict, seat: int, card_id: Optional[str] = None, card: Optional[dict] = None,
+                           log_now: bool = False) -> dict:
+    """Make one rotisserie pick for `seat` (the caller has checked who may pick for it) and return the
+    fresh draft. `card` is already-fetched card data for a card that may not be in the draft yet.
+    Mirror tables may pick any real card: one that isn't in the cube is added to it on the spot."""
+    share_id = d["share_id"]
     if d["status"] != "drafting":
         raise HTTPException(status_code=400, detail="Draft is not active")
     pick_index = len(d["picks"])
     if pick_index >= len(d["order"]):
         raise HTTPException(status_code=400, detail="Draft is complete")
-    current_seat = d["order"][pick_index]
-    if data.seat_index != current_seat:
+    if seat != d["order"][pick_index]:
         raise HTTPException(status_code=409, detail="It is not that seat's turn")
-    player = next((p for p in d["players"] if p["token"] == data.player_token), None)
-    if not player or data.seat_index not in player["seats"]:
-        raise HTTPException(status_code=403, detail="You do not control this seat")
-    picked_ids = {p["card_id"] for p in d["picks"]}
-    if data.card_id in picked_ids:
+    card_id = card_id or (card or {}).get("id")
+    if card_id in {p["card_id"] for p in d["picks"]}:
         raise HTTPException(status_code=409, detail="Card already taken")
     cards = await _cards(share_id)
     card_doc = None
     if cards.get("vintage"):
-        card_doc = await _vrd_card(data.card_id, cards)
+        card_doc = card or await _vrd_card(card_id, cards)
         if card_doc["name"].lower() in _taken_names(d, cards["cube"]):
             raise HTTPException(status_code=409, detail=f"{card_doc['name']} has already been drafted")
-    elif data.card_id not in cards["ids"]:
-        raise HTTPException(status_code=400, detail="Card not in cube")
-    pick = {"order": pick_index, "seat_index": data.seat_index, "card_id": data.card_id, "ts": datetime.now(timezone.utc).isoformat()}
+    elif card_id not in cards["ids"]:
+        if not d.get("mirror"):
+            raise HTTPException(status_code=400, detail="Card not in cube")
+        raw = None if card else await _scryfall_card({"id": card_id})
+        if not card and not raw:
+            raise HTTPException(status_code=400, detail="Card not found on Scryfall")
+        card_doc = card or map_card(raw)
+        # Another printing of it already in the cube and still undrafted? Take that one instead.
+        same = _undrafted_by_name(d, cards["cube"], card_doc["name"])
+        if same:
+            card_id, card_doc = same["id"], None
+    # Mirror stress-test log: what the bots' engine would have taken for this seat right now. Use the
+    # cached answer when the page already asked (your own seat); otherwise work it out after the pick
+    # is saved so picking never waits on the bot engine.
+    bot_top = _SUGGEST_CACHE.get((share_id, pick_index, seat)) if d.get("mirror") else None
+    if d.get("mirror") and bot_top is None and log_now:
+        try:
+            bot_top = await _rotisserie_suggestions(d, seat)
+        except Exception as exc:      # never block a pick over the log
+            logger.warning("Mirror suggestion log failed: %s", exc)
+    pick = {"order": pick_index, "seat_index": seat, "card_id": card_id, "ts": datetime.now(timezone.utc).isoformat()}
+    if bot_top is not None:
+        pick["bot_top"] = bot_top
     new_status = "complete" if pick_index + 1 >= len(d["order"]) else "drafting"
     push: Dict[str, Any] = {"picks": pick}
     if card_doc:
@@ -1370,10 +1559,119 @@ async def make_pick(share_id: str, data: PickInput):
                                      {"$push": push, "$set": {"status": new_status, "updated_at": pick["ts"]}})
     if not res.modified_count:
         raise HTTPException(status_code=409, detail="Someone else picked first; try again")
-    if card_doc:
+    if card_doc and cards.get("vintage"):
         await _vrd_add_card(share_id, card_doc)
+    elif card_doc:
+        _CARDS_CACHE.pop(share_id, None)    # the bots' card index picks up the new card on next use
+    if d.get("mirror") and bot_top is None:
+        task = asyncio.create_task(_log_bot_top(d, seat, pick))
+        _BACKGROUND.add(task)
+        task.add_done_callback(_BACKGROUND.discard)
+    return await _draft(share_id)
+
+
+async def _log_bot_top(before: dict, seat: int, pick: dict) -> None:
+    """Background: record the bot engine's suggestions for a mirror pick (from the state before it)."""
+    try:
+        top = await _rotisserie_suggestions(before, seat)
+        # Only if that exact pick is still there (an undo may have removed it meanwhile).
+        await db.drafts.update_one({"share_id": before["share_id"], "picks": {"$elemMatch": {"order": pick["order"], "ts": pick["ts"]}}},
+                                   {"$set": {"picks.$.bot_top": top, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    except Exception as exc:
+        logger.warning("Mirror suggestion log failed: %s", exc)
+
+
+_ROUND_LABEL = re.compile(r"^\s*((r|rd|round|pick)\s*)?\d*\.?\s*$", re.I)
+
+
+def _grid_to_names(d: dict, grid: List[List[str]]) -> List[str]:
+    """Cells pasted from the group's sheet (one column per seat, in seat order, each seat's picks top to
+    bottom) -> the card names still to enter, in pick order. Picks already entered are skipped, so the
+    whole grid can be pasted again as the sheet grows. A header row of seat names and a leading column
+    of round numbers are ignored."""
+    seat_names = {_name_key(s.get("player_name") or "") for s in d["seats"]}
+    n = d["num_seats"]
+    rows = [[c.strip() for c in r] for r in grid]
+    rows = [r for r in rows if any(r)]
+    # Header rows: mostly seat names.
+    rows = [r for r in rows if 2 * sum(_name_key(c) in seat_names for c in r if c) < len([c for c in r if c])]
+    # A leading column of round / pick numbers ("1", "R2", "Round 3", "Pick 4.") when rows are wider than the table.
+    if rows and all(len(r) > n and _ROUND_LABEL.match(r[0]) for r in rows):
+        rows = [r[1:] for r in rows]
+    columns: List[List[str]] = [[] for _ in range(n)]
+    for r in rows:
+        for seat, cell in enumerate(r[:n]):
+            if cell and not _ROUND_LABEL.match(cell):
+                columns[seat].append(cell)
+    taken = [0] * n
+    for p in d.get("picks", []):
+        taken[p["seat_index"]] += 1
+    out: List[str] = []
+    for seat in d["order"][len(d.get("picks", [])):]:
+        if taken[seat] >= len(columns[seat]):
+            break                      # that seat's next pick isn't in the sheet yet
+        out.append(columns[seat][taken[seat]])
+        taken[seat] += 1
+    return out
+
+
+@api_router.post("/drafts/{share_id}/mirror/import")
+async def mirror_import(share_id: str, data: MirrorImportInput):
+    """Mirror tables: catch up on picks already made elsewhere. `names` are card names in pick order
+    (one per pick, starting with the next pick). Stops at the first name it can't place."""
     d = await _draft(share_id)
-    return draft_state(d, light=True)
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("host_token") != data.host_token:
+        raise HTTPException(status_code=403, detail="Only the host can import picks")
+    if not d.get("mirror"):
+        raise HTTPException(status_code=400, detail="Only mirror tables can import picks")
+    if d["status"] != "drafting":
+        raise HTTPException(status_code=400, detail="Start the draft first")
+    names = _grid_to_names(d, data.grid) if data.grid else [n.strip() for n in data.names if n and n.strip()]
+    cards = await _cards(share_id)
+    # Look up every name that isn't in the draft's list yet in one Scryfall batch (original printing).
+    known = set().union(*[_card_keys(c) for c in cards["cube"]]) if cards["cube"] else set()
+    if cards.get("vintage"):
+        known |= set().union(*[_card_keys(c) for c in cards["pool_cards"]]) if cards["pool_cards"] else set()
+    missing = list(dict.fromkeys(n for n in names if _name_key(n) not in known))
+    found: Dict[str, dict] = {}
+    if missing:
+        async with http_client.client() as hc:
+            raws = []
+            for i in range(0, len(missing), 75):
+                raws += await _collection_lookup(hc, [{"name": n} for n in missing[i:i + 75]])
+                await asyncio.sleep(0.1)
+            raws = await _prefer_oldest(hc, raws)
+        for raw in raws:
+            if cards.get("vintage") and (vrd.is_basic(raw) or not vrd.is_legal(raw)):
+                continue
+            for k in _card_keys(raw):
+                found[k] = raw
+    applied = 0
+    stopped = None
+    for line, name in enumerate(names, start=1):
+        if d["status"] != "drafting":
+            stopped = {"line": line, "name": name, "reason": "The draft is already complete"}
+            break
+        seat = d["order"][len(d["picks"])]
+        cards = await _cards(share_id)
+        hit = _undrafted_by_name(d, cards["cube"], name)
+        if not hit and cards.get("vintage"):
+            hit = _undrafted_by_name(d, cards["pool_cards"], name)
+        raw = None if hit else found.get(_name_key(name))
+        if not hit and not raw:
+            drafted = any(_name_key(name) in _card_keys(c) for c in cards["cube"])
+            stopped = {"line": line, "name": name,
+                       "reason": "Already drafted" if drafted else "No card by that name (check the spelling)"}
+            break
+        try:
+            d = await _rotisserie_pick(d, seat, card=hit or map_card(raw), log_now=True)
+        except HTTPException as exc:
+            stopped = {"line": line, "name": name, "reason": exc.detail}
+            break
+        applied += 1
+    return {**draft_state(d, light=True), "applied": applied, "stopped": stopped}
 
 
 @api_router.post("/drafts/{share_id}/undo")
@@ -1468,6 +1766,7 @@ def _warm_card_stats(cube: List[dict]) -> None:
 # and kept in memory (the cube never changes after the draft is created).
 _HEAVY = {"_id": 0, "cube": 0, "bot_stats": 0, "bot_combos": 0}
 _CARDS_CACHE: Dict[str, dict] = {}   # share_id -> {"cube", "ids", "index", "combos"}
+_WARMING: set = set()                # share_ids whose card index is being built in the background
 
 
 async def _draft(share_id: str) -> Optional[dict]:
@@ -1479,11 +1778,11 @@ def _warm_vrd_pool() -> None:
     """Start loading (or, the very first time, building) the VRD bots' pool in the background.
     Only VRD tables call this; nothing ever waits for it (see vrd.py)."""
     async def lookup(ids):
-        async with httpx.AsyncClient(timeout=30.0, headers=HEADERS) as hc:
+        async with http_client.client() as hc:
             return await _collection_lookup(hc, ids)
 
     async def oldest(cards):
-        async with httpx.AsyncClient(timeout=30.0, headers=HEADERS) as hc:
+        async with http_client.client() as hc:
             return await _prefer_oldest(hc, cards)
     vrd.warm(db, lookup, map_card, fetch_combos, build_card_index, oldest)
 
@@ -1576,41 +1875,99 @@ def _bot_delay(share_id: str, pick_index) -> float:
     return scale * (0.8 + random.Random(f"{share_id}:{pick_index}").random() * 0.9)
 
 
+_BOT_LOCKS: Dict[str, asyncio.Lock] = {}   # share_id -> lock: one request at a time works out a table's bot picks
+
+
 async def maybe_bot_pick(d: dict) -> dict:
-    """Let bots on the clock pick. With no delay configured, several consecutive bot picks happen in
-    one poll (bounded so a request never runs long); otherwise one pick per poll once it's due."""
-    deadline = datetime.now(timezone.utc) + timedelta(seconds=1.5)
-    while True:
-        before = len(d.get("picks", []))
-        d = await _bot_pick_once(d)
-        if len(d.get("picks", [])) == before or datetime.now(timezone.utc) > deadline:
-            return d
-
-
-async def _bot_pick_once(d: dict) -> dict:
-    if d.get("status") != "drafting":
+    """Let bots on the clock pick. Every player's page polls, so several polls often arrive while a bot
+    is on the clock: only one of them works out the bot picks (the rest return straight away and see
+    the picks on their next poll). With no delay configured, a run of consecutive bot picks is worked
+    out in memory and saved in one write (bounded so a request never runs long)."""
+    if d.get("status") != "drafting" or not _bot_on_clock(d):
         return d
+    if len(_BOT_LOCKS) > 200:      # forget idle tables' locks (never one that's in use)
+        for sid in [k for k, v in _BOT_LOCKS.items() if not v.locked()]:
+            del _BOT_LOCKS[sid]
+    lock = _BOT_LOCKS.setdefault(d["share_id"], asyncio.Lock())
+    if lock.locked():
+        return d
+    async with lock:
+        fresh = await _draft(d["share_id"])     # another poll may have just made these picks
+        if not fresh or len(fresh.get("picks", [])) != len(d.get("picks", [])):
+            return fresh or d
+        d = fresh
+        start = len(d.get("picks", []))
+        deadline = datetime.now(timezone.utc) + timedelta(seconds=1.5)
+        new_picks: List[dict] = []
+        new_cards: List[dict] = []
+        while datetime.now(timezone.utc) <= deadline:
+            made = await _bot_pick_once(d)
+            if not made:
+                break
+            pick, card_doc = made
+            d["picks"].append(pick)              # later bots in this run see the earlier picks
+            new_picks.append(pick)
+            if card_doc:
+                d.setdefault("_new_cube", []).append(card_doc)
+                new_cards.append(card_doc)
+            if pick["order"] + 1 >= len(d["order"]):
+                break
+        if not new_picks:
+            return d
+        status = "complete" if start + len(new_picks) >= len(d["order"]) else "drafting"
+        push: Dict[str, Any] = {"picks": {"$each": new_picks}}
+        if new_cards:
+            push["cube"] = {"$each": new_cards}
+        # Only succeeds if nobody else picked in the meantime (a person, an undo, a reassign).
+        res = await db.drafts.update_one(
+            {"share_id": d["share_id"], "status": "drafting", "picks": {"$size": start}},
+            {"$push": push, "$set": {"status": status, "updated_at": new_picks[-1]["ts"]}},
+        )
+        if res.modified_count:
+            for card_doc in new_cards:
+                await _vrd_add_card(d["share_id"], card_doc)
+        return await _draft(d["share_id"])
+
+
+def _bot_on_clock(d: dict) -> bool:
     pick_index = len(d.get("picks", []))
     if pick_index >= len(d.get("order", [])):
-        return d
+        return False
+    seat = d["order"][pick_index]
+    return any(p.get("is_bot") and seat in p["seats"] for p in d.get("players", []))
+
+
+async def _bot_pick_once(d: dict):
+    """The next bot pick for draft `d` (in memory, not saved), or None if no bot is due to pick.
+    Returns (pick, card_doc) where card_doc is set for VRD picks (the draft's card list grows)."""
+    if d.get("status") != "drafting":
+        return None
+    pick_index = len(d.get("picks", []))
+    if pick_index >= len(d.get("order", [])):
+        return None
     seat = d["order"][pick_index]
     bot = next((p for p in d["players"] if p.get("is_bot") and seat in p["seats"]), None)
     if not bot:
-        return d
+        return None
     last = d["picks"][-1]["ts"] if d.get("picks") else d.get("started_at") or d["updated_at"]
     due = datetime.fromisoformat(last) + timedelta(seconds=_bot_delay(d["share_id"], pick_index))
     if datetime.now(timezone.utc) < due:
-        return d
+        return None
 
     cards = await _cards(d["share_id"])
     if cards.get("vintage") and not cards["pool_cards"]:
-        return d                    # VRD bots wait a moment for their card pool to load
+        return None                 # VRD bots wait a moment for their card pool to load
     index, combos = cards["index"], cards["combos"]
     picks_by_seat: Dict[int, List[str]] = {s["index"]: [] for s in d["seats"]}
     for p in d["picks"]:
         picks_by_seat.setdefault(p["seat_index"], []).append(p["card_id"])
     taken = {p["card_id"] for p in d["picks"]}
-    remaining = _remaining_ids(d, cards)
+    if cards.get("vintage") and d.get("_new_cube"):
+        # VRD picks made earlier in this run aren't in the cached card list yet: count their names as taken.
+        names = _taken_names(d, cards["cube"] + d["_new_cube"])
+        remaining = [c["id"] for c in cards["pool_cards"] if c["id"] not in taken and c["name"].lower() not in names]
+    else:
+        remaining = _remaining_ids(d, cards)
     rng = random.Random(f"{d['share_id']}:{pick_index}:{bot['id']}")
     if remaining:
         ctx = BotContext(index, combos, remaining, picks_by_seat, seat, d["order"], pick_index,
@@ -1618,27 +1975,16 @@ async def _bot_pick_once(d: dict) -> dict:
         card_id = await run_in_threadpool(choose_pick, ctx, rng)
     else:
         # Bots ignore custom cards, but if those are all that's left they take one so the draft can finish.
-        leftovers = [c["id"] for c in (await _cards(d["share_id"]))["cube"] if c["id"] not in taken]
+        leftovers = [c["id"] for c in cards["cube"] if c["id"] not in taken]
         if not leftovers:
-            return d
+            return None
         card_id = rng.choice(leftovers)
 
     pick = {"order": pick_index, "seat_index": seat, "card_id": card_id, "ts": datetime.now(timezone.utc).isoformat(), "bot": True}
-    status = "complete" if pick_index + 1 >= len(d["order"]) else "drafting"
-    push: Dict[str, Any] = {"picks": pick}
     card_doc = None
     if cards.get("vintage"):       # VRD: the draft's card list grows as cards are picked
         card_doc = next((c for c in cards["pool_cards"] if c["id"] == card_id), None)
-        if card_doc:
-            push["cube"] = card_doc
-    # Only succeeds if nobody else picked in the meantime (another poll, an undo, a reassign).
-    res = await db.drafts.update_one(
-        {"share_id": d["share_id"], "status": "drafting", "picks": {"$size": pick_index}},
-        {"$push": push, "$set": {"status": status, "updated_at": pick["ts"]}},
-    )
-    if card_doc and res.modified_count:
-        await _vrd_add_card(d["share_id"], card_doc)
-    return await _draft(d["share_id"])
+    return pick, card_doc
 
 
 _SUGGEST_CACHE: Dict[tuple, list] = {}
@@ -1665,6 +2011,16 @@ async def pick_suggestions(share_id: str, seat: int, x_player_token: Optional[st
         ranked = await run_in_threadpool(rank_pack, index, owned, pack, d["pick_cap"], combos)
         best = ranked[0][0] if ranked else 0
         return {"suggestions": [cid for sc, cid in ranked[:3] if best <= 0 or sc >= 0.7 * best]}
+    out: Dict[str, Any] = {"suggestions": await _rotisserie_suggestions(d, seat)}
+    if d.get("pool") == "vintage":   # VRD: the page may not have these cards yet
+        pool = {c["id"]: c for c in (await _cards(share_id))["pool_cards"]}
+        out["cards"] = [pool[i] for i in out["suggestions"] if i in pool]
+    return out
+
+
+async def _rotisserie_suggestions(d: dict, seat: int) -> List[str]:
+    """Up to three good rotisserie picks for `seat` right now (cached per pick)."""
+    share_id = d["share_id"]
     pick_index = len(d.get("picks", []))
     key = (share_id, pick_index, seat)
     if key not in _SUGGEST_CACHE:
@@ -1675,7 +2031,7 @@ async def pick_suggestions(share_id: str, seat: int, x_player_token: Optional[st
             picks_by_seat.setdefault(p["seat_index"], []).append(p["card_id"])
         remaining = _remaining_ids(d, cards)
         if not remaining:
-            return {"suggestions": []}
+            return []
         ctx = BotContext(index, combos, remaining, picks_by_seat, seat, d["order"], min(pick_index, len(d["order"]) - 1),
                          d["pick_cap"], Persona("steady"))
         top = await run_in_threadpool(suggest_picks, ctx, 3)
@@ -1684,11 +2040,7 @@ async def pick_suggestions(share_id: str, seat: int, x_player_token: Optional[st
         # Keep suggestions that are reasonably close to the best one.
         best = top[0][1] if top else 0
         _SUGGEST_CACHE[key] = [cid for cid, sc in top if best <= 0 or sc >= 0.7 * best]
-    out: Dict[str, Any] = {"suggestions": _SUGGEST_CACHE[key]}
-    if d.get("pool") == "vintage":   # VRD: the page may not have these cards yet
-        pool = {c["id"]: c for c in (await _cards(share_id))["pool_cards"]}
-        out["cards"] = [pool[i] for i in out["suggestions"] if i in pool]
-    return out
+    return _SUGGEST_CACHE[key]
 
 
 def _seat_bot(d: dict, rng: random.Random) -> None:
@@ -1718,7 +2070,9 @@ async def add_bot(share_id: str, data: BotInput):
         raise HTTPException(status_code=400, detail="All player slots are taken")
     _seat_bot(d, random.Random())
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": d["players"], "updated_at": datetime.now(timezone.utc).isoformat()}})
-    _warm_card_stats((await _cards(share_id))["cube"])
+    # Card names only: building the bots' whole card index here would be wasted work in the lobby.
+    names_doc = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "cube.name": 1, "cube.is_custom": 1}) or {}
+    _warm_card_stats(names_doc.get("cube", []))
     return draft_state(d, light=True)
 
 
@@ -1825,6 +2179,20 @@ async def startup():
 
 app.include_router(api_router)
 
+
+@app.middleware("http")
+async def timing(request: Request, call_next):
+    """Server-Timing header (shows up in the browser's network panel) and a log line for slow requests,
+    so slowness can be split into "the server was slow" and "the network was slow"."""
+    start = time.perf_counter()
+    response = await call_next(request)
+    ms = (time.perf_counter() - start) * 1000
+    response.headers["Server-Timing"] = f"app;dur={ms:.0f}"
+    response.headers["Timing-Allow-Origin"] = "*"
+    if ms > 1500:
+        logger.warning("Slow request: %s %s took %.0f ms", request.method, request.url.path, ms)
+    return response
+
 _cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
@@ -1837,3 +2205,4 @@ app.add_middleware(
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+    await http_client.close()

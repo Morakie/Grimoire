@@ -6,7 +6,7 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    plan: free
+    plan: starter          # paid: always on. A Blueprint sync resets the service to this value.
     healthCheckPath: /api/health
     envVars:
       - key: MONGO_URL

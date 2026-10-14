@@ -270,13 +270,13 @@ async def _search_names(hc, query: str) -> List[str]:
 
 async def fetch_reference() -> Dict[str, object]:
     """Game Changers and Commander banned list, refreshed twice a day. Returns ok=False on failure."""
-    import httpx
+    import http_client
 
     async with _REF_LOCK:
         if time.time() - float(_REF["at"]) < _REF_TTL and _REF["game_changers"]:
             return {**_REF, "ok": True}
         try:
-            async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
+            async with http_client.client() as hc:
                 gcs = await _search_names(hc, "is:gamechanger")
                 await asyncio.sleep(0.1)
                 banned = await _search_names(hc, "banned:commander")
@@ -291,7 +291,7 @@ async def fetch_reference() -> Dict[str, object]:
 
 async def fetch_two_card_combos(names: List[str], timeout: float = 15.0) -> Optional[List[List[str]]]:
     """Two-card combos fully inside this list, from Commander Spellbook. None if the lookup failed."""
-    import httpx
+    import http_client
 
     names = sorted({_front_name(n) for n in names if n})
     key = "|".join(names)
@@ -299,8 +299,8 @@ async def fetch_two_card_combos(names: List[str], timeout: float = 15.0) -> Opti
         return _COMBO_CACHE[key]
     body = "\n".join(f"1 {n}" for n in names)
     try:
-        async with httpx.AsyncClient(timeout=timeout, headers=HEADERS) as hc:
-            r = await hc.post(SPELLBOOK_URL, content=body.encode("utf-8"), headers={"Content-Type": "text/plain"})
+        async with http_client.client() as hc:
+            r = await hc.post(SPELLBOOK_URL, content=body.encode("utf-8"), headers={"Content-Type": "text/plain"}, timeout=timeout)
         if r.status_code != 200:
             log.warning("Commander Spellbook returned %s", r.status_code)
             return None
