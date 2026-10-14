@@ -981,7 +981,7 @@ export default function DraftRoom() {
                   <Button data-testid="chat-send" onClick={sendChat} size="sm" className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold shrink-0">Send</Button>
                 </div>
               ) : (
-                <p className="text-xs text-slate-600">Claim a seat to join the chat.</p>
+                <p className="text-xs text-slate-600">Join the table to chat.</p>
               )}
     </>
   );
@@ -1110,7 +1110,7 @@ export default function DraftRoom() {
                   {state.mode === "packs" && <span className="block text-amber-300/90 mb-1" data-testid="lobby-format">Pack draft · {state.pack_count} packs of {state.pack_size}{state.timer === "off" ? " · no timer" : " · pick timer on"}</span>}
                   {isMirror
                     ? "You pick for every seat from this browser. Start when ready, then use Catch up from sheet for picks already made."
-                    : <>Enter your name to claim your seat(s). {state.seats_per_player} seat(s) each. {state.players.length}/{state.num_players} players in.</>}
+                    : <>{state.seats_per_player} seat{state.seats_per_player === 1 ? "" : "s"} each · {state.players.length}/{state.num_players} players in.</>}
                 </p>
                 <div className="mb-4 rounded-lg border border-slate-800 bg-slate-950 p-3">
                   <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1.5">Invite players</div>
