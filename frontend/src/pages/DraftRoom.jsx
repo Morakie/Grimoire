@@ -158,8 +158,8 @@ export default function DraftRoom() {
   const [suggest, setSuggest] = useState({ key: null, ids: [], loading: false, failed: false });
   const [suggestOpen, setSuggestOpen] = useState(false);  // the suggestions pop-up
   const suggestKeyRef = useRef(null);
-  // Mirror tables: suggest for every seat (not just yours) to watch how the bot reads each drafter.
-  const [suggestAll, setSuggestAll] = useState(() => { try { return localStorage.getItem("grim_mirror_suggest_all") === "on"; } catch { return false; } });
+  // Mirror tables: suggest for every seat (not just yours) to watch how the bot reads each drafter. On unless turned off.
+  const [suggestAll, setSuggestAll] = useState(() => { try { return localStorage.getItem("grim_mirror_suggest_all") !== "off"; } catch { return true; } });
   // Mirror tables: search for cards outside the cube, and catch up from the group's sheet.
   const [addQuery, setAddQuery] = useState("");
   const [addResults, setAddResults] = useState(null);   // null = closed
