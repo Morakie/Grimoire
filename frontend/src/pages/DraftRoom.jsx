@@ -1265,7 +1265,7 @@ export default function DraftRoom() {
       {hostNotes.length > 0 && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4" data-testid="host-notice" onClick={() => setHostNotes([])}>
           <div className="bg-[#0b111e] border border-sky-400/40 rounded-2xl p-5 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-display text-lg font-bold flex items-center gap-2"><Megaphone className="w-5 h-5 text-sky-300" /> The host changed the draft</h3>
+            <h3 className="font-display text-lg font-bold flex items-center gap-2"><Megaphone className="w-5 h-5 text-sky-300" /> The host has intervened!</h3>
             <ul className="mt-3 space-y-4 max-h-[65vh] overflow-y-auto">
               {hostNotes.map((m) => {
                 const cards = (m.cards || []).map((x) => ({ ...x, card: cubeById[x.card_id] }));

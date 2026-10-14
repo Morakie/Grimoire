@@ -1712,6 +1712,7 @@ async def undo_pick(share_id: str, data: CancelInput):
                                       "$set": {"status": "drafting", "updated_at": note["ts"]}})
     if not res.modified_count:
         raise HTTPException(status_code=409, detail="Someone just picked; try again")
+    _forget_suggestions(share_id)
     d = await _draft(share_id)
     return draft_state(d, light=True)
 
@@ -1741,6 +1742,7 @@ async def reassign_pick(share_id: str, data: AdminPickInput):
                                       "$push": {"messages": {"$each": [note], "$slice": -200}}})
     if not res.modified_count:
         raise HTTPException(status_code=409, detail="That pick just changed; try again")
+    _forget_suggestions(share_id)
     d = await _draft(share_id)
     return draft_state(d, light=True)
 
@@ -1774,8 +1776,15 @@ async def swap_picks(share_id: str, data: SwapInput):
          "$push": {"messages": {"$each": [note], "$slice": -200}}})
     if not res.modified_count:
         raise HTTPException(status_code=409, detail="Those picks just changed; try again")
+    _forget_suggestions(share_id)
     d = await _draft(share_id)
     return draft_state(d, light=True)
+
+
+def _forget_suggestions(share_id: str) -> None:
+    """Cached pick suggestions are keyed by pick number; after the host rewrites picks they're stale."""
+    for k in [k for k in _SUGGEST_CACHE if k[0] == share_id]:
+        _SUGGEST_CACHE.pop(k, None)
 
 
 def _host_note(text: str, kind: str, cards: List[dict]) -> dict:
