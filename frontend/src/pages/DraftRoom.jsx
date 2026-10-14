@@ -325,6 +325,14 @@ export default function DraftRoom() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [suggestKey, isMirror, suggestOpen]);
 
+  // Escape closes the suggestions pop-up.
+  useEffect(() => {
+    if (!suggestOpen) return;
+    const onKey = (e) => { if (e.key === "Escape") setSuggestOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [suggestOpen]);
+
   // Phones: keep the seat on the clock centred in the sideways-scrolling seat strip.
   const clockSeat = state?.current_seat_index;
   useEffect(() => {
@@ -627,8 +635,8 @@ export default function DraftRoom() {
           </div>
         )}
         <Select value={sortBy} onValueChange={setSortBy}>
-          <SelectTrigger data-testid="sort-select" aria-label="Sort cards" className="w-[8.5rem] h-10 shrink-0 bg-slate-950 border-slate-700 text-slate-200 text-sm">
-            <span className="flex items-center gap-1.5"><ArrowDownWideNarrow className="w-4 h-4 text-slate-500" /><SelectValue /></span>
+          <SelectTrigger data-testid="sort-select" aria-label="Sort cards" className="w-[8.5rem] h-10 shrink-0 justify-start gap-1.5 bg-slate-950 border-slate-700 text-slate-200 text-sm [&>svg:last-child]:ml-auto">
+            <ArrowDownWideNarrow className="w-4 h-4 text-slate-500 shrink-0" /><SelectValue />
           </SelectTrigger>
           <SelectContent className="bg-slate-900 border-slate-700 text-slate-200">
             {SORTS.map((o) => <SelectItem key={o.k} value={o.k} data-testid={`sort-${o.k}`}>{o.label}</SelectItem>)}
