@@ -228,9 +228,21 @@ def build(out_path: str, max_files: int | None = None, workers: int = 16, force:
             log("skip", key, exc)
             return []
 
+    # Deck files are numbered in roughly the order decks were drafted. Cube card lists are current, so a card
+    # only counts as available to decks drafted after it first shows up anywhere ("period" = slice of files).
+    periods = 24
+    first_period = np.full(n_idx, periods, dtype=np.int32)
     with ThreadPoolExecutor(workers) as pool:
-        for arr in pool.map(fetch, [k[0] for k in deck_keys]):
+        for fi, arr in enumerate(pool.map(fetch, [k[0] for k in deck_keys])):
             seen_files += 1
+            period = fi * periods // len(deck_keys)
+            touched = set()
+            for d in arr:
+                touched.update(x for x in (d.get("mainboard") or []) if 0 <= x < n_idx)
+                touched.update(x for x in (d.get("sideboard") or []) if 0 <= x < n_idx)
+            if touched:
+                t = np.fromiter(touched, dtype=np.int64)
+                first_period[t] = np.minimum(first_period[t], period)
             for d in arr:
                 basics = set(d.get("basics") or []) | basic_idx
                 main = [x for x in d.get("mainboard") or [] if x not in basics and 0 <= x < n_idx]
@@ -246,7 +258,7 @@ def build(out_path: str, max_files: int | None = None, workers: int = 16, force:
                         continue
                 if len(main) < 20:
                     continue
-                decks.append((cube, np.unique(np.array(main, dtype=np.int32))))
+                decks.append((cube, period, np.unique(np.array(main, dtype=np.int32))))
             if seen_files % 250 == 0:
                 log(f"{seen_files}/{len(deck_keys)} files, {len(decks)} powered decks")
     for cube, cards in fallback_pool.items():
@@ -257,7 +269,7 @@ def build(out_path: str, max_files: int | None = None, workers: int = 16, force:
 
     # Labels and weights (stronger decks count more).
     labels, weights = [], np.zeros(len(decks), dtype=np.float32)
-    for i, (cube, main) in enumerate(decks):
+    for i, (cube, _, main) in enumerate(decks):
         labels.append(label(main.tolist(), card, names))
         avg = float(elo[main].mean()) if len(main) else 0
         weights[i] = min(2.0, max(0.2, (avg - 1350) / 100))
@@ -266,21 +278,21 @@ def build(out_path: str, max_files: int | None = None, workers: int = 16, force:
     # Card universe for the matrices: cards played in a decent number of powered decks.
     play = Counter()
     for i in keep:
-        play.update(decks[i][1].tolist())
+        play.update(decks[i][2].tolist())
     min_play = max(150, len(keep) // 2500)          # ~1,100 decks on the full export: no obscure cards
     core = sorted(x for x, n in play.items() if n >= min_play and names[x])
     col = {x: j for j, x in enumerate(core)}
     K = len(core)
     cube_ids = sorted({decks[i][0] for i in keep})
-    crow = {c: j for j, c in enumerate(cube_ids)}
-    log(f"core cards {K}, cubes {len(cube_ids)}")
+    instances = sorted({(decks[i][0], decks[i][1]) for i in keep})      # (cube, period)
+    crow = {cp: j for j, cp in enumerate(instances)}
+    log(f"core cards {K}, cubes {len(cube_ids)}, cube periods {len(instances)}")
 
-    # avail[cube, card] = 1 when the cube had the card; used[cube, card] = weighted decks that played it.
-    avail = np.zeros((len(cube_ids), K), dtype=np.float32)
-    for c, j in crow.items():
-        cols_ = [col[x] for x in cube_cards[c].tolist() if x in col]
+    # avail[(cube, period), card] = 1 when the cube had the card and the card existed by then.
+    avail = np.zeros((len(instances), K), dtype=np.float32)
+    for (c, per), j in crow.items():
+        cols_ = [col[x] for x in cube_cards[c].tolist() if x in col and first_period[x] <= per]
         avail[j, cols_] = 1
-    deck_w_per_cube = np.zeros(len(cube_ids), dtype=np.float32)
 
     # ---- archetypes
     groups = defaultdict(list)
@@ -294,9 +306,9 @@ def build(out_path: str, max_files: int | None = None, workers: int = 16, force:
         seen = np.zeros(K, dtype=np.float64)
         per_cube = defaultdict(float)
         for i in idx_list:
-            c, main = decks[i]
+            c, per, main = decks[i]
             w = weights[i]
-            per_cube[c] += w
+            per_cube[(c, per)] += w
             cols_ = [col[x] for x in main.tolist() if x in col]
             used[cols_] += w
         for c, w in per_cube.items():
@@ -323,14 +335,14 @@ def build(out_path: str, max_files: int | None = None, workers: int = 16, force:
     # ---- synergy: lift of B given A, counting only decks whose cube had B.
     #   P(B | A, B available) = co[A,B] / avail_given_A[A,B];  base(B) = P(B | B available)
     co = np.zeros((K, K), dtype=np.float32)
-    a_by_cube = np.zeros((len(cube_ids), K), dtype=np.float32)       # weighted decks with A, per cube
+    a_by_cube = np.zeros((len(instances), K), dtype=np.float32)      # weighted decks with A, per cube period
     for i in keep:
-        c, main = decks[i]
+        c, per, main = decks[i]
         w = weights[i]
         js = np.array([col[x] for x in main.tolist() if x in col], dtype=np.int64)
         if len(js):
             co[np.ix_(js, js)] += w
-            a_by_cube[crow[c], js] += w
+            a_by_cube[crow[(c, per)], js] += w
     avail_given_a = a_by_cube.T @ avail                               # [A, B]
     # Shrink towards "no effect" so a pair needs plenty of shared decks before it counts: add M pseudo-decks
     # at B's base rate. Small samples then land near x1 instead of x60.
