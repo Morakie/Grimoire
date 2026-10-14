@@ -58,14 +58,14 @@ TUNING: Dict[str, float] = {
     "wincon_weight": 0.35,      # value of a strong threat for a deck with no win condition at all
     "wincon_combo_weight": 0.8, # only fairly popular combos count as a way to win (Spellbook weight 0.6-1)
     # payoffs that need support (Urza without artifacts, storm without rituals...)
-    "unsupported_cut": 0.4,     # share of such a card's rating lost when the pool has none of its support
+    "unsupported_cut": 0.7,     # share of such a card's rating lost when the pool has none of its support
     "support_after": 6,         # picks before that cut fully applies (early picks keep options open)
 }
 
 # Payoff role -> (roles that support it, how many supporting cards make it fully live).
 DEPENDENT_PAYOFFS: Dict[str, Tuple[Tuple[str, ...], int]] = {
     "artifact_payoff": (("artifact",), 4),
-    "storm_payoff": (("ritual", "fast_mana", "cantrip"), 5),
+    "storm_payoff": (("ritual", "fast_mana"), 5),
     "flicker": (("etb",), 3),
     "equip_fetch": (("equipment",), 2),
     "land_recursion": (("fetchland", "landfall"), 3),

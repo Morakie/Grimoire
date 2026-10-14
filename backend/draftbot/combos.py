@@ -101,7 +101,7 @@ PACKAGES: List[Tuple[str, Tuple[str, ...], Tuple[str, ...]]] = [
     ("tokens", ("anthem",), ("token_maker",)),
     # Common vintage-cube packages
     ("artifacts", ("artifact",), ("artifact_payoff",)),
-    ("storm", ("ritual", "fast_mana", "cantrip"), ("storm_payoff",)),
+    ("storm", ("ritual", "fast_mana"), ("storm_payoff",)),
     ("blink", ("etb",), ("flicker",)),
     ("stoneforge", ("equip_fetch",), ("equipment",)),
     ("lands", ("fetchland", "landfall"), ("land_recursion",)),
