@@ -165,15 +165,24 @@ def _estimate_elo(card: dict, types: FrozenSet[str], text: str, elos: List[float
     return mid
 
 
-def build_card_index(cube: Iterable[dict], stats: Optional[dict] = None) -> Dict[str, CardInfo]:
+USE_CUBE_META = True     # merge synergy from CubeCobra's deck export (cubemeta.py) into card partners
+
+
+def build_card_index(cube: Iterable[dict], stats: Optional[dict] = None, meta: Optional[dict] = None) -> Dict[str, CardInfo]:
     """Build CardInfo for every non-custom card in a cube (cube entries are draft card dicts).
 
     `stats` (optional, from draftbot.cardstats.draft_stats) supplies live CubeCobra Elo, which replaces
     the CSV value, and each card's package partners within the cube."""
     stats = stats or {}
     live_elo = stats.get("elo") or {}
-    partners = stats.get("partners") or {}
     cards = [dict(c, elo=live_elo.get(c["id"]) or c.get("elo")) for c in cube if not c.get("is_custom")]
+    partners = {k: dict(v) for k, v in (stats.get("partners") or {}).items()}
+    if USE_CUBE_META:
+        from .cubemeta import cube_partners
+        for a, row in cube_partners([(c["id"], c.get("name", "")) for c in cards], meta).items():
+            mine = partners.setdefault(a, {})
+            for b, s in row.items():
+                mine[b] = max(mine.get(b, 0.0), s)
     elos = [float(c["elo"]) for c in cards if c.get("elo")]
     mid = median(elos) if elos else 1200.0
     lo = sorted(elos)[int(len(elos) * 0.05)] if elos else mid - 200

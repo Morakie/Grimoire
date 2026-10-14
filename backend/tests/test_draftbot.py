@@ -181,3 +181,15 @@ def test_live_elo_and_package_partners_shape_picks():
     scores = {cid: s for s, cid, _ in score_pool(ctx)}
     plain = {cid: s for s, cid, _ in score_pool(_two_seat_ctx(cube, [], ["U0", "U1", "U2", "R0", "R1"], []))}
     assert scores["breach"] > plain["breach"] * 1.3
+
+
+def test_cube_meta_synergy_becomes_partners_within_the_cube():
+    from draftbot.cubemeta import cube_partners, synergy_strength
+    meta = {"synergy": {"urza, lord high artificer": [("mox opal", 3.5), ("not in cube", 4.0)],
+                        "thopter foundry": [("sword of the meek", 2.0)]}}
+    cards = [("u", "Urza, Lord High Artificer"), ("m", "Mox Opal"), ("t", "Thopter Foundry"), ("s", "Sword of the Meek")]
+    p = cube_partners(cards, meta)
+    assert p["u"]["m"] == 1.0 and p["m"]["u"] == 1.0            # symmetric, capped at full strength
+    assert p["t"]["s"] == synergy_strength(2.0) == 0.5
+    assert "not in cube" not in str(p)
+    assert cube_partners(cards, {"synergy": {}}) == {}
