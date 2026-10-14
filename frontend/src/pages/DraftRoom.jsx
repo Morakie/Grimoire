@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -42,6 +42,43 @@ const colorClass = (c) => {
   return { W: "bg-amber-50 text-stone-900", U: "bg-blue-700 text-white", B: "bg-stone-900 text-slate-200", R: "bg-red-700 text-white", G: "bg-green-700 text-white" }[cols[0]] || "bg-slate-600 text-white";
 };
 
+// The card pool grid. Memoised: hovering a card, typing in chat or a poll that changed nothing must not
+// rebuild hundreds of cards. Everything passed in is either a stable setter or changes only when the
+// pool, the picks, the queue or the turn really change.
+const PoolGrid = memo(function PoolGrid({ cards, pickedIds, takenNames, isVrd, myTurn, picking, queue, hoverable, colsClass,
+  setHoverCard, setConfirmCard, setPreviewCard, setQueue }) {
+  const queued = useMemo(() => new Set(queue), [queue]);
+  return (
+    <div className={`grid grid-cols-3 sm:grid-cols-4 ${colsClass} gap-2 sm:gap-3`} data-testid="available-cards">
+      {cards.map((c) => {
+        const isPicked = pickedIds.has(c.id) || (isVrd && takenNames.has(c.name.toLowerCase()));
+        const clickable = myTurn && !isPicked && !picking;
+        const inQueue = queued.has(c.id);
+        return (
+          <div key={c.id} data-testid={`pool-card-${c.id}`} onMouseEnter={() => setHoverCard(c)}
+            onMouseLeave={() => setHoverCard((h) => (h?.id === c.id ? null : h))}
+            onClick={() => { if (clickable) setConfirmCard(c); else if (!hoverable) setPreviewCard(c); }}
+            className={`group relative rounded-lg overflow-hidden border transition-colors ${isPicked ? "border-slate-800 opacity-40 grayscale cursor-not-allowed" : clickable ? "border-slate-800 hover:border-amber-400/70 cursor-pointer" : "border-slate-800 cursor-default"}`}>
+            <div className="aspect-[0.716] bg-slate-800 flex items-center justify-center">
+              {(c.image || c.art_crop) ? <img src={c.image || c.art_crop} alt={c.name} loading="lazy" decoding="async" className="w-full h-full object-cover" /> : <div className="p-2 text-center text-xs font-medium text-slate-200 leading-tight">{c.name}</div>}
+            </div>
+            {isPicked ? (
+              <div className="absolute inset-0 flex items-center justify-center"><span data-testid={`picked-badge-${c.id}`} className="px-2 py-0.5 rounded bg-slate-950/80 text-[10px] uppercase tracking-wide text-slate-300 border border-slate-700">Picked</span></div>
+            ) : (
+              <button data-testid={`queue-${c.id}`} onClick={(e) => { e.stopPropagation(); setQueue((q) => (q.includes(c.id) ? q.filter((x) => x !== c.id) : [...q, c.id])); }}
+                title={inQueue ? "Remove from queue" : "Queue for later"}
+                className={`absolute top-1 right-1 ${hoverable ? "w-6 h-6" : "w-8 h-8"} rounded flex items-center justify-center transition-opacity ${inQueue ? "bg-amber-400 text-stone-900" : `bg-black/70 text-slate-200 ${hoverable ? "opacity-0 group-hover:opacity-100" : ""} hover:bg-amber-400 hover:text-stone-900`}`}>
+                {inQueue ? <BookmarkCheck className="w-3.5 h-3.5" /> : <BookmarkPlus className="w-3.5 h-3.5" />}
+              </button>
+            )}
+            {clickable && <div className="absolute inset-0 bg-amber-400/0 group-hover:bg-amber-400/15 transition-colors pointer-events-none" />}
+          </div>
+        );
+      })}
+    </div>
+  );
+});
+
 function playBeep() {
   try {
     const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -71,17 +108,17 @@ export default function DraftRoom() {
   // Ignore responses older than what's on screen: a poll sent just before a pick can arrive just after
   // it and would briefly bring back the old pack. Pack drafts number every change ("rev").
   const revRef = useRef(-1);
-  const versionRef = useRef(null);
+  const versionRef = useRef(null);     // last full state's version: lets polls get a tiny "unchanged" reply
   // Bumped whenever a pick / undo / reassign / import comes back: a poll that was already on its way
   // carries the state from before that change, so it's dropped instead of briefly undoing it.
-  const actionSeqRef = useRef(0);     // last full state's version: lets pack-draft polls get a tiny "unchanged" reply
+  const actionSeqRef = useRef(0);
   const setState = (next) => {
     if (typeof next === "function") { setRawState(next); return; }
     if (next && typeof next.rev === "number") {
       if (next.rev < revRef.current) return;
       revRef.current = next.rev;
     }
-    versionRef.current = next?.mode === "packs" && next?.status === "drafting" ? next.version : null;
+    versionRef.current = next?.version && next?.status !== "cancelled" ? next.version : null;
     setRawState(next);
   };
   const [me, setMe] = useState(() => { try { return JSON.parse(localStorage.getItem(storeKey(shareId))) || null; } catch { return null; } });
@@ -148,7 +185,9 @@ export default function DraftRoom() {
         const seq = actionSeqRef.current;
         const { data } = await api.get(`/drafts/${shareId}/state`, { headers, timeout: 15000 });
         if (!active || seq !== actionSeqRef.current) return;
-        if (data.unchanged) setState((s) => (s ? { ...s, server_time: data.server_time } : s));
+        // Unchanged: keep the same state object so nothing re-renders (pack drafts still need the
+        // server clock for their pick timers).
+        if (data.unchanged) setState((s) => (s && s.mode === "packs" && s.status === "drafting" ? { ...s, server_time: data.server_time } : s));
         else setState(data);
       } catch {} finally { inFlight = false; }
     };
@@ -291,6 +330,27 @@ export default function DraftRoom() {
     const el = strip.querySelector(`[data-testid="seat-${clockSeat}"]`);
     if (el) strip.scrollLeft = el.offsetLeft - strip.clientWidth / 2 + el.clientWidth / 2;
   }, [clockSeat]);
+
+  // The pool as shown: filtered and sorted only when one of its inputs changes (not on every render).
+  const poolCards = useMemo(() => {
+    const cmp = (a, b) => {
+      // Custom (uploaded) cards always sit at the top of the pool, whatever the sort.
+      const custom = (b.is_custom ? 1 : 0) - (a.is_custom ? 1 : 0);
+      if (custom) return custom;
+      if (sortBy === "elo") return (b.elo || 0) - (a.elo || 0) || a.name.localeCompare(b.name);
+      if (sortBy === "color") return colorKey(a) - colorKey(b) || typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
+      if (sortBy === "type") return typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
+      if (sortBy === "cmc") return (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
+      return a.name.localeCompare(b.name);
+    };
+    const taken = (c) => pickedIds.has(c.id) || (isVrd && takenNames.has(c.name.toLowerCase()));
+    const q = query.trim().toLowerCase();
+    return (isVrd ? vrdList : (draft?.cube || []))
+      .filter((c) => isVrd || !q || c.name.toLowerCase().includes(q))
+      .filter((c) => !hidePicked || !taken(c))
+      .slice()
+      .sort(isVrd && !vrdSearch && sortBy === "elo" ? () => 0 : cmp);
+  }, [isVrd, vrdList, draft, query, hidePicked, pickedIds, takenNames, sortBy, vrdSearch]);
 
   if (!draft || !state) return <div className="h-screen flex items-center justify-center bg-[#060a14]"><Loader2 className="w-8 h-8 text-amber-400 animate-spin" /></div>;
 
@@ -518,22 +578,7 @@ export default function DraftRoom() {
     if (next) { toast.success(`Auto-picked ${next.name} from your queue`); pick(next); }
   };
 
-  const comparator = (a, b) => {
-    // Custom (uploaded) cards always sit at the top of the pool, whatever the sort.
-    const custom = (b.is_custom ? 1 : 0) - (a.is_custom ? 1 : 0);
-    if (custom) return custom;
-    if (sortBy === "elo") return (b.elo || 0) - (a.elo || 0) || a.name.localeCompare(b.name);
-    if (sortBy === "color") return colorKey(a) - colorKey(b) || typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
-    if (sortBy === "type") return typeKey(a) - typeKey(b) || (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
-    if (sortBy === "cmc") return (a.cmc || 0) - (b.cmc || 0) || a.name.localeCompare(b.name);
-    return a.name.localeCompare(b.name);
-  };
   const isTaken = (c) => pickedIds.has(c.id) || (isVrd && takenNames.has(c.name.toLowerCase()));
-  const poolCards = (isVrd ? vrdList : (draft.cube || []))
-    .filter((c) => isVrd || !query.trim() || c.name.toLowerCase().includes(query.toLowerCase()))
-    .filter((c) => !hidePicked || !isTaken(c))
-    .slice()
-    .sort(isVrd && !vrdSearch && sortBy === "elo" ? () => 0 : comparator);
   const availableCount = isVrd ? vrdList.filter((c) => !isTaken(c)).length : (draft.cube || []).filter((c) => !pickedIds.has(c.id)).length;
 
   const pickFeed = (state.picks || []).map((p) => {
@@ -653,32 +698,9 @@ export default function DraftRoom() {
         </div>
       )}
       <div className="lg:max-h-[calc(100vh-280px)] lg:overflow-y-auto lg:pr-1 lg:-mr-1">
-        <div className={`grid grid-cols-3 sm:grid-cols-4 ${(CARD_SIZES.find((z) => z.k === cardSize) || CARD_SIZES[1]).cols} gap-2 sm:gap-3`} data-testid="available-cards">
-          {poolCards.map((c) => {
-            const isPicked = isTaken(c);
-            const clickable = myTurn && !isPicked && !picking;
-            const queued = queue.includes(c.id);
-            return (
-              <div key={c.id} data-testid={`pool-card-${c.id}`} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
-                onClick={() => { if (clickable) setConfirmCard(c); else if (!hoverable) setPreviewCard(c); }}
-                className={`group relative rounded-lg overflow-hidden border transition-colors ${isPicked ? "border-slate-800 opacity-40 grayscale cursor-not-allowed" : clickable ? "border-slate-800 hover:border-amber-400/70 cursor-pointer" : "border-slate-800 cursor-default"}`}>
-                <div className="aspect-[0.716] bg-slate-800 flex items-center justify-center">
-                  {(c.image || c.art_crop) ? <img src={c.image || c.art_crop} alt={c.name} loading="lazy" className="w-full h-full object-cover" /> : <div className="p-2 text-center text-xs font-medium text-slate-200 leading-tight">{c.name}</div>}
-                </div>
-                {isPicked ? (
-                  <div className="absolute inset-0 flex items-center justify-center"><span data-testid={`picked-badge-${c.id}`} className="px-2 py-0.5 rounded bg-slate-950/80 text-[10px] uppercase tracking-wide text-slate-300 border border-slate-700">Picked</span></div>
-                ) : (
-                  <button data-testid={`queue-${c.id}`} onClick={(e) => { e.stopPropagation(); toggleQueue(c.id); }}
-                    title={queued ? "Remove from queue" : "Queue for later"}
-                    className={`absolute top-1 right-1 ${hoverable ? "w-6 h-6" : "w-8 h-8"} rounded flex items-center justify-center transition-opacity ${queued ? "bg-amber-400 text-stone-900" : `bg-black/70 text-slate-200 ${hoverable ? "opacity-0 group-hover:opacity-100" : ""} hover:bg-amber-400 hover:text-stone-900`}`}>
-                    {queued ? <BookmarkCheck className="w-3.5 h-3.5" /> : <BookmarkPlus className="w-3.5 h-3.5" />}
-                  </button>
-                )}
-                {clickable && <div className="absolute inset-0 bg-amber-400/0 group-hover:bg-amber-400/15 transition-colors pointer-events-none" />}
-              </div>
-            );
-          })}
-        </div>
+        <PoolGrid cards={poolCards} pickedIds={pickedIds} takenNames={takenNames} isVrd={isVrd} myTurn={!!myTurn} picking={picking}
+          queue={queue} hoverable={hoverable} colsClass={(CARD_SIZES.find((z) => z.k === cardSize) || CARD_SIZES[1]).cols}
+          setHoverCard={setHoverCard} setConfirmCard={setConfirmCard} setPreviewCard={setPreviewCard} setQueue={setQueue} />
       </div>
     </div>
   );

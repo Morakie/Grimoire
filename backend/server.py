@@ -9,6 +9,7 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import time
 import uuid
 import asyncio
 import random
@@ -35,6 +36,7 @@ import packdraft as pd
 import vrd
 from draftbot.simulate import run_draft, summarise
 import commander as cmdr
+import http_client
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -153,7 +155,8 @@ async def register(data: RegisterInput):
     user = {
         "id": str(uuid.uuid4()),
         "email": email,
-        "password_hash": hash_password(data.password),
+        # bcrypt takes a few hundred ms on purpose: run it off the event loop so other requests keep flowing
+        "password_hash": await run_in_threadpool(hash_password, data.password),
         "name": data.name or email.split("@")[0],
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -165,7 +168,7 @@ async def register(data: RegisterInput):
 async def login(data: LoginInput):
     email = data.email.lower()
     user = await db.users.find_one({"email": email})
-    if not user or not verify_password(data.password, user["password_hash"]):
+    if not user or not await run_in_threadpool(verify_password, data.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     token = create_token(user["id"], user["email"])
     return {"token": token, "user": public_user(user)}
@@ -251,7 +254,7 @@ async def search_cards(
     query = " ".join(parts).strip()
     if not query:
         raise HTTPException(status_code=400, detail="Empty search")
-    async with httpx.AsyncClient(timeout=15.0, headers=HEADERS) as hc:
+    async with http_client.client() as hc:
         r = await hc.get(f"{SCRYFALL}/cards/search", params={"q": query, "page": page, "unique": "cards"})
         if r.status_code == 404:
             return {"cards": [], "has_more": False, "total": 0}
@@ -266,7 +269,7 @@ async def search_cards(
 
 @api_router.get("/cards/printings")
 async def card_printings(name: str):
-    async with httpx.AsyncClient(timeout=15.0, headers=HEADERS) as hc:
+    async with http_client.client() as hc:
         r = await hc.get(f"{SCRYFALL}/cards/search", params={"q": f'!"{name}"', "unique": "prints", "order": "released", "dir": "asc"})
         if r.status_code != 200:
             return {"printings": []}
@@ -383,7 +386,7 @@ async def _resolve_entries(entries: List[CollectionEntry], oldest: bool = True) 
     """Resolve import entries in three passes: exact printing, exact name, fuzzy name."""
     entries = entries[:400]
     resolved: Dict[str, dict] = {}
-    async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
+    async with http_client.client() as hc:
         # Pass 1: exact printing for entries that specify set + collector number.
         pinned = [e for e in entries if e.set and e.collector_number]
         if pinned:
@@ -443,7 +446,7 @@ async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
     names = [" ".join(n.split())[:150] for n in names if n and n.strip()][:800]
     raw = []
     missed = []
-    async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
+    async with http_client.client() as hc:
         for i in range(0, len(names), 75):
             if i:
                 await asyncio.sleep(0.1)
@@ -477,7 +480,7 @@ async def card_extras(data: ExtrasInput):
     ids = list(dict.fromkeys(i for i in data.ids if i))
     now = datetime.now(timezone.utc).timestamp()
     stale = [i for i in ids if i not in _EXTRAS_CACHE or now - _EXTRAS_CACHE[i][0] > _EXTRAS_TTL]
-    async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
+    async with http_client.client() as hc:
         if stale:
             printings = await _collection_lookup(hc, [{"id": i} for i in stale])
             # Price each card by Scryfall's default (usually current, in-print) printing: decks default
@@ -540,7 +543,7 @@ async def basic_lands():
 async def card_autocomplete(q: str = ""):
     if len(q.strip()) < 2:
         return {"suggestions": []}
-    async with httpx.AsyncClient(timeout=10.0, headers=HEADERS) as hc:
+    async with http_client.client() as hc:
         r = await hc.get(f"{SCRYFALL}/cards/autocomplete", params={"q": q.strip()})
         if r.status_code != 200:
             return {"suggestions": []}
@@ -1075,12 +1078,16 @@ async def get_draft(share_id: str):
 @api_router.get("/drafts/{share_id}/state")
 async def get_draft_state(share_id: str, x_player_token: Optional[str] = Header(default=None),
                           x_known_version: Optional[str] = Header(default=None)):
-    # Pack drafts poll every second or so. If nothing changed since the caller's last response and no
-    # bot or timer is due to act, answer from a ~2 KB summary instead of loading the whole draft.
+    # Every page at the table polls every second or two. If nothing changed since the caller's last
+    # response and no bot or timer is due to act, answer from a tiny summary instead of loading and
+    # resending the whole draft (picks, chat, seats).
     if x_known_version:
-        probe = await db.drafts.find_one({"share_id": share_id}, _PACK_PROBE)
-        if probe and probe.get("mode") == "packs" and probe.get("status") == "drafting" \
-                and f'{probe.get("rev", 0)}|{probe.get("updated_at")}' == x_known_version and not _pack_action_due(probe):
+        probe = await db.drafts.find_one({"share_id": share_id}, _STATE_PROBE)
+        if probe and probe.get("status") in ("lobby", "drafting", "complete") \
+                and f'{probe.get("rev", 0)}|{probe.get("updated_at")}' == x_known_version \
+                and not (_pack_action_due(probe) if probe.get("mode") == "packs" else _probe_bot_up(probe)):
+            if probe.get("status") == "drafting" and probe.get("mode") != "packs":
+                _warm_cards(share_id)
             return {"unchanged": True, "version": x_known_version, "server_time": datetime.now(timezone.utc).isoformat()}
     d = await _draft(share_id)
     if not d:
@@ -1089,21 +1096,35 @@ async def get_draft_state(share_id: str, x_player_token: Optional[str] = Header(
         d = await pack_auto_actions(d)
         return _pack_state(d, x_player_token)
     d = await maybe_bot_pick(d)
-    if d.get("status") == "drafting" and d["share_id"] not in _CARDS_CACHE and d["share_id"] not in _WARMING:
-        # After a server restart the bots' card index is rebuilt on first use (seconds on a small
-        # server): start that now, so pick suggestions are ready when someone asks.
-        _WARMING.add(d["share_id"])
-        task = asyncio.create_task(_cards(d["share_id"]))
-        _BACKGROUND.add(task)
-        task.add_done_callback(lambda t, sid=d["share_id"]: (_BACKGROUND.discard(t), _WARMING.discard(sid)))
+    if d.get("status") == "drafting":
+        _warm_cards(share_id)
     return draft_state(d, light=True)
+
+
+def _warm_cards(share_id: str) -> None:
+    """After a server restart the bots' card index is rebuilt on first use (seconds on a small server):
+    start that in the background, so pick suggestions are ready when someone asks."""
+    if share_id in _CARDS_CACHE or share_id in _WARMING:
+        return
+    _WARMING.add(share_id)
+    task = asyncio.create_task(_cards(share_id))
+    _BACKGROUND.add(task)
+    task.add_done_callback(lambda t, sid=share_id: (_BACKGROUND.discard(t), _WARMING.discard(sid)))
 
 
 # ===================== Pack drafts =====================
 
-_PACK_PROBE = {"_id": 0, "share_id": 1, "rev": 1, "updated_at": 1, "status": 1, "mode": 1,
-               "packs.queues": 1, "packs.since": 1, "packs.contents": 1, "packs.timer": 1,
-               "players.seats": 1, "players.is_bot": 1}
+_STATE_PROBE = {"_id": 0, "share_id": 1, "rev": 1, "updated_at": 1, "status": 1, "mode": 1,
+                "packs.queues": 1, "packs.since": 1, "packs.contents": 1, "packs.timer": 1,
+                "players.seats": 1, "players.is_bot": 1,
+                # rotisserie: the seat on the clock, without sending the whole pick list
+                "on_clock": {"$arrayElemAt": [{"$ifNull": ["$order", []]}, {"$size": {"$ifNull": ["$picks", []]}}]}}
+
+
+def _probe_bot_up(probe: dict) -> bool:
+    """Rotisserie: whether a bot holds the seat on the clock (then the full poll runs, so it picks)."""
+    seat = probe.get("on_clock")
+    return seat is not None and any(p.get("is_bot") and seat in p.get("seats", []) for p in probe.get("players", []))
 
 
 def _bot_due(share_id: str, seat: int, since: Optional[str], now: datetime) -> bool:
@@ -1412,7 +1433,7 @@ async def _vrd_card(card_id: str, cards: dict) -> dict:
     hit = next((c for c in cards["pool_cards"] if c["id"] == card_id), None) if card_id in cards["pool_ids"] else None
     if hit:
         return hit
-    async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
+    async with http_client.client() as hc:
         found = await _collection_lookup(hc, [{"id": card_id}])
     if not found:
         raise HTTPException(status_code=400, detail="Card not found on Scryfall")
@@ -1463,7 +1484,7 @@ async def make_pick(share_id: str, data: PickInput):
 
 
 async def _scryfall_card(identifier: dict) -> Optional[dict]:
-    async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as hc:
+    async with http_client.client() as hc:
         found = await _collection_lookup(hc, [identifier])
     return found[0] if found else None
 
@@ -1555,7 +1576,7 @@ async def _log_bot_top(before: dict, seat: int, pick: dict) -> None:
         top = await _rotisserie_suggestions(before, seat)
         # Only if that exact pick is still there (an undo may have removed it meanwhile).
         await db.drafts.update_one({"share_id": before["share_id"], "picks": {"$elemMatch": {"order": pick["order"], "ts": pick["ts"]}}},
-                                   {"$set": {"picks.$.bot_top": top}})
+                                   {"$set": {"picks.$.bot_top": top, "updated_at": datetime.now(timezone.utc).isoformat()}})
     except Exception as exc:
         logger.warning("Mirror suggestion log failed: %s", exc)
 
@@ -1616,7 +1637,7 @@ async def mirror_import(share_id: str, data: MirrorImportInput):
     missing = list(dict.fromkeys(n for n in names if _name_key(n) not in known))
     found: Dict[str, dict] = {}
     if missing:
-        async with httpx.AsyncClient(timeout=30.0, headers=HEADERS) as hc:
+        async with http_client.client() as hc:
             raws = []
             for i in range(0, len(missing), 75):
                 raws += await _collection_lookup(hc, [{"name": n} for n in missing[i:i + 75]])
@@ -1757,11 +1778,11 @@ def _warm_vrd_pool() -> None:
     """Start loading (or, the very first time, building) the VRD bots' pool in the background.
     Only VRD tables call this; nothing ever waits for it (see vrd.py)."""
     async def lookup(ids):
-        async with httpx.AsyncClient(timeout=30.0, headers=HEADERS) as hc:
+        async with http_client.client() as hc:
             return await _collection_lookup(hc, ids)
 
     async def oldest(cards):
-        async with httpx.AsyncClient(timeout=30.0, headers=HEADERS) as hc:
+        async with http_client.client() as hc:
             return await _prefer_oldest(hc, cards)
     vrd.warm(db, lookup, map_card, fetch_combos, build_card_index, oldest)
 
@@ -1854,41 +1875,99 @@ def _bot_delay(share_id: str, pick_index) -> float:
     return scale * (0.8 + random.Random(f"{share_id}:{pick_index}").random() * 0.9)
 
 
+_BOT_LOCKS: Dict[str, asyncio.Lock] = {}   # share_id -> lock: one request at a time works out a table's bot picks
+
+
 async def maybe_bot_pick(d: dict) -> dict:
-    """Let bots on the clock pick. With no delay configured, several consecutive bot picks happen in
-    one poll (bounded so a request never runs long); otherwise one pick per poll once it's due."""
-    deadline = datetime.now(timezone.utc) + timedelta(seconds=1.5)
-    while True:
-        before = len(d.get("picks", []))
-        d = await _bot_pick_once(d)
-        if len(d.get("picks", [])) == before or datetime.now(timezone.utc) > deadline:
-            return d
-
-
-async def _bot_pick_once(d: dict) -> dict:
-    if d.get("status") != "drafting":
+    """Let bots on the clock pick. Every player's page polls, so several polls often arrive while a bot
+    is on the clock: only one of them works out the bot picks (the rest return straight away and see
+    the picks on their next poll). With no delay configured, a run of consecutive bot picks is worked
+    out in memory and saved in one write (bounded so a request never runs long)."""
+    if d.get("status") != "drafting" or not _bot_on_clock(d):
         return d
+    if len(_BOT_LOCKS) > 200:      # forget idle tables' locks (never one that's in use)
+        for sid in [k for k, v in _BOT_LOCKS.items() if not v.locked()]:
+            del _BOT_LOCKS[sid]
+    lock = _BOT_LOCKS.setdefault(d["share_id"], asyncio.Lock())
+    if lock.locked():
+        return d
+    async with lock:
+        fresh = await _draft(d["share_id"])     # another poll may have just made these picks
+        if not fresh or len(fresh.get("picks", [])) != len(d.get("picks", [])):
+            return fresh or d
+        d = fresh
+        start = len(d.get("picks", []))
+        deadline = datetime.now(timezone.utc) + timedelta(seconds=1.5)
+        new_picks: List[dict] = []
+        new_cards: List[dict] = []
+        while datetime.now(timezone.utc) <= deadline:
+            made = await _bot_pick_once(d)
+            if not made:
+                break
+            pick, card_doc = made
+            d["picks"].append(pick)              # later bots in this run see the earlier picks
+            new_picks.append(pick)
+            if card_doc:
+                d.setdefault("_new_cube", []).append(card_doc)
+                new_cards.append(card_doc)
+            if pick["order"] + 1 >= len(d["order"]):
+                break
+        if not new_picks:
+            return d
+        status = "complete" if start + len(new_picks) >= len(d["order"]) else "drafting"
+        push: Dict[str, Any] = {"picks": {"$each": new_picks}}
+        if new_cards:
+            push["cube"] = {"$each": new_cards}
+        # Only succeeds if nobody else picked in the meantime (a person, an undo, a reassign).
+        res = await db.drafts.update_one(
+            {"share_id": d["share_id"], "status": "drafting", "picks": {"$size": start}},
+            {"$push": push, "$set": {"status": status, "updated_at": new_picks[-1]["ts"]}},
+        )
+        if res.modified_count:
+            for card_doc in new_cards:
+                await _vrd_add_card(d["share_id"], card_doc)
+        return await _draft(d["share_id"])
+
+
+def _bot_on_clock(d: dict) -> bool:
     pick_index = len(d.get("picks", []))
     if pick_index >= len(d.get("order", [])):
-        return d
+        return False
+    seat = d["order"][pick_index]
+    return any(p.get("is_bot") and seat in p["seats"] for p in d.get("players", []))
+
+
+async def _bot_pick_once(d: dict):
+    """The next bot pick for draft `d` (in memory, not saved), or None if no bot is due to pick.
+    Returns (pick, card_doc) where card_doc is set for VRD picks (the draft's card list grows)."""
+    if d.get("status") != "drafting":
+        return None
+    pick_index = len(d.get("picks", []))
+    if pick_index >= len(d.get("order", [])):
+        return None
     seat = d["order"][pick_index]
     bot = next((p for p in d["players"] if p.get("is_bot") and seat in p["seats"]), None)
     if not bot:
-        return d
+        return None
     last = d["picks"][-1]["ts"] if d.get("picks") else d.get("started_at") or d["updated_at"]
     due = datetime.fromisoformat(last) + timedelta(seconds=_bot_delay(d["share_id"], pick_index))
     if datetime.now(timezone.utc) < due:
-        return d
+        return None
 
     cards = await _cards(d["share_id"])
     if cards.get("vintage") and not cards["pool_cards"]:
-        return d                    # VRD bots wait a moment for their card pool to load
+        return None                 # VRD bots wait a moment for their card pool to load
     index, combos = cards["index"], cards["combos"]
     picks_by_seat: Dict[int, List[str]] = {s["index"]: [] for s in d["seats"]}
     for p in d["picks"]:
         picks_by_seat.setdefault(p["seat_index"], []).append(p["card_id"])
     taken = {p["card_id"] for p in d["picks"]}
-    remaining = _remaining_ids(d, cards)
+    if cards.get("vintage") and d.get("_new_cube"):
+        # VRD picks made earlier in this run aren't in the cached card list yet: count their names as taken.
+        names = _taken_names(d, cards["cube"] + d["_new_cube"])
+        remaining = [c["id"] for c in cards["pool_cards"] if c["id"] not in taken and c["name"].lower() not in names]
+    else:
+        remaining = _remaining_ids(d, cards)
     rng = random.Random(f"{d['share_id']}:{pick_index}:{bot['id']}")
     if remaining:
         ctx = BotContext(index, combos, remaining, picks_by_seat, seat, d["order"], pick_index,
@@ -1896,27 +1975,16 @@ async def _bot_pick_once(d: dict) -> dict:
         card_id = await run_in_threadpool(choose_pick, ctx, rng)
     else:
         # Bots ignore custom cards, but if those are all that's left they take one so the draft can finish.
-        leftovers = [c["id"] for c in (await _cards(d["share_id"]))["cube"] if c["id"] not in taken]
+        leftovers = [c["id"] for c in cards["cube"] if c["id"] not in taken]
         if not leftovers:
-            return d
+            return None
         card_id = rng.choice(leftovers)
 
     pick = {"order": pick_index, "seat_index": seat, "card_id": card_id, "ts": datetime.now(timezone.utc).isoformat(), "bot": True}
-    status = "complete" if pick_index + 1 >= len(d["order"]) else "drafting"
-    push: Dict[str, Any] = {"picks": pick}
     card_doc = None
     if cards.get("vintage"):       # VRD: the draft's card list grows as cards are picked
         card_doc = next((c for c in cards["pool_cards"] if c["id"] == card_id), None)
-        if card_doc:
-            push["cube"] = card_doc
-    # Only succeeds if nobody else picked in the meantime (another poll, an undo, a reassign).
-    res = await db.drafts.update_one(
-        {"share_id": d["share_id"], "status": "drafting", "picks": {"$size": pick_index}},
-        {"$push": push, "$set": {"status": status, "updated_at": pick["ts"]}},
-    )
-    if card_doc and res.modified_count:
-        await _vrd_add_card(d["share_id"], card_doc)
-    return await _draft(d["share_id"])
+    return pick, card_doc
 
 
 _SUGGEST_CACHE: Dict[tuple, list] = {}
@@ -2002,7 +2070,9 @@ async def add_bot(share_id: str, data: BotInput):
         raise HTTPException(status_code=400, detail="All player slots are taken")
     _seat_bot(d, random.Random())
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": d["players"], "updated_at": datetime.now(timezone.utc).isoformat()}})
-    _warm_card_stats((await _cards(share_id))["cube"])
+    # Card names only: building the bots' whole card index here would be wasted work in the lobby.
+    names_doc = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "cube.name": 1, "cube.is_custom": 1}) or {}
+    _warm_card_stats(names_doc.get("cube", []))
     return draft_state(d, light=True)
 
 
@@ -2109,6 +2179,20 @@ async def startup():
 
 app.include_router(api_router)
 
+
+@app.middleware("http")
+async def timing(request: Request, call_next):
+    """Server-Timing header (shows up in the browser's network panel) and a log line for slow requests,
+    so slowness can be split into "the server was slow" and "the network was slow"."""
+    start = time.perf_counter()
+    response = await call_next(request)
+    ms = (time.perf_counter() - start) * 1000
+    response.headers["Server-Timing"] = f"app;dur={ms:.0f}"
+    response.headers["Timing-Allow-Origin"] = "*"
+    if ms > 1500:
+        logger.warning("Slow request: %s %s took %.0f ms", request.method, request.url.path, ms)
+    return response
+
 _cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
@@ -2121,3 +2205,4 @@ app.add_middleware(
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+    await http_client.close()

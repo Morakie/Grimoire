@@ -121,9 +121,28 @@ def _fit_vector(card: CardInfo) -> Tuple[float, ...]:
     return vec
 
 
-def card_fit(card: CardInfo, dist: Dict[FrozenSet[str], float]) -> float:
+def _dist_terms(dist: Dict[FrozenSet[str], float]) -> List[Tuple[int, float]]:
+    """The lanes that matter in a distribution (index into LANES, probability), in LANES order."""
+    return [(i, p) for i, p in enumerate(dist.values()) if p > 0.003]
+
+
+def card_fit(card: CardInfo, dist: Dict[FrozenSet[str], float], terms: Optional[List[Tuple[int, float]]] = None) -> float:
     vec = _fit_vector(card)
-    return sum(p * vec[i] for i, p in enumerate(dist.values()) if p > 0.003)
+    return sum(p * vec[i] for i, p in (terms if terms is not None else _dist_terms(dist)))
+
+
+def fitter(index: Dict[str, CardInfo], dist: Dict[FrozenSet[str], float]):
+    """card id -> fit for one lane distribution, worked out once per card (the scoring loops ask for
+    the same cards many times over)."""
+    terms = _dist_terms(dist)
+    cache: Dict[str, float] = {}
+
+    def fit_of(cid: str) -> float:
+        v = cache.get(cid)
+        if v is None:
+            v = cache[cid] = card_fit(index[cid], dist, terms) if cid in index else 0.0
+        return v
+    return fit_of
 
 
 def lane_distribution(pool: Iterable[CardInfo], n_picks: int, prior: Optional[Dict[FrozenSet[str], float]] = None) -> Dict[FrozenSet[str], float]:
@@ -185,13 +204,26 @@ def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo],
     return min(total, 1.4)
 
 
-def package_value(card: CardInfo, role_counts: Dict[str, int]) -> float:
+_PACKAGE_SETS = [(frozenset(enablers), frozenset(payoffs)) for _, enablers, payoffs in PACKAGES]
+
+
+def package_strengths(role_counts: Dict[str, int]) -> List[Tuple[FrozenSet[str], float, FrozenSet[str], float]]:
+    """Per package: (enabler roles, value of an enabler, payoff roles, value of a payoff) for a pool.
+    Depends only on the pool, so it is worked out once per pick instead of once per card."""
+    out = []
+    for enablers, payoffs in _PACKAGE_SETS:
+        out.append((enablers, 0.12 * min(sum(role_counts.get(r, 0) for r in payoffs), 3) / 3,
+                    payoffs, 0.12 * min(sum(role_counts.get(r, 0) for r in enablers), 3) / 3))
+    return out
+
+
+def package_value(card: CardInfo, role_counts: Dict[str, int], strengths=None) -> float:
     total = 0.0
-    for _, enablers, payoffs in PACKAGES:
-        if card.roles & set(enablers):
-            total += 0.12 * min(sum(role_counts.get(r, 0) for r in payoffs), 3) / 3
-        if card.roles & set(payoffs):
-            total += 0.12 * min(sum(role_counts.get(r, 0) for r in enablers), 3) / 3
+    for enablers, as_enabler, payoffs, as_payoff in (strengths if strengths is not None else package_strengths(role_counts)):
+        if card.roles & enablers:
+            total += as_enabler
+        if card.roles & payoffs:
+            total += as_payoff
     return min(total, 0.3)
 
 
@@ -219,11 +251,17 @@ def style_value(card: CardInfo, pair: FrozenSet[str]) -> float:
 
 # ---------------------------------------------------------------- late needs
 
-def needs_value(card: CardInfo, pool: List[CardInfo], persona: Persona) -> float:
+def pool_counts(pool: List[CardInfo]) -> Tuple[int, int, int, int]:
+    """(interaction, creatures, cheap spells, 6+ drops) among a pool's spells."""
     spells = [c for c in pool if not c.is_land]
-    interaction = sum(1 for c in spells if c.roles & {"removal", "counter", "sweeper"})
-    creatures = sum(1 for c in spells if c.is_creature)
-    cheap = sum(1 for c in spells if c.cmc <= 2)
+    return (sum(1 for c in spells if c.roles & {"removal", "counter", "sweeper"}),
+            sum(1 for c in spells if c.is_creature),
+            sum(1 for c in spells if c.cmc <= 2),
+            sum(1 for c in spells if c.cmc >= 6))
+
+
+def needs_value(card: CardInfo, pool: List[CardInfo], persona: Persona, counts=None) -> float:
+    interaction, creatures, cheap, big = counts if counts is not None else pool_counts(pool)
     v = 0.0
     if card.roles & {"removal", "counter"} and interaction < 6:
         v += 0.14 * persona.w("interaction")
@@ -231,7 +269,7 @@ def needs_value(card: CardInfo, pool: List[CardInfo], persona: Persona) -> float
         v += 0.08
     if not card.is_land and card.cmc <= 2 and cheap < 9:
         v += 0.07 * persona.w("curve")
-    if not card.is_land and card.cmc >= 6 and sum(1 for c in spells if c.cmc >= 6) >= 3:
+    if not card.is_land and card.cmc >= 6 and big >= 3:
         v -= 0.12
     return v
 
@@ -339,13 +377,11 @@ def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[s
         pool = [ctx.index[p] for p in picks]
         owned = set(picks)
         dist = lane_distribution(pool, len(pool))
-        roles = _role_counts(pool)
-
-        def fit_of(cid, d=dist):
-            return card_fit(ctx.index[cid], d) if cid in ctx.index else 0.0
-        desires = sorted(((max(ctx.index[cid].power, 0.0) * (0.3 + 0.7 * card_fit(ctx.index[cid], dist))
+        strengths = package_strengths(_role_counts(pool))
+        fit_of = fitter(ctx.index, dist)
+        desires = sorted(((max(ctx.index[cid].power, 0.0) * (0.3 + 0.7 * fit_of(cid))
                            + 0.8 * combo_value(ctx.index[cid], owned, remaining, ctx.combos, fit_of)
-                           + package_value(ctx.index[cid], roles)
+                           + package_value(ctx.index[cid], None, strengths)
                            + 0.3 * partner_value(ctx.index[cid], owned, fit_of), cid) for cid in plausible), reverse=True)
         spread = 1.0 + 0.35 * n_picks
         for rank, (_, cid) in enumerate(desires):
@@ -389,8 +425,10 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     floor = k("flex_floor") + (k("committed_floor") - k("flex_floor")) * progress
     fixing_owned = sum(1 for c in mine if c.is_land and pair and len(c.produces & pair) >= 2)
 
+    terms = _dist_terms(dist)
+
     def fit_of_card(card: CardInfo) -> float:
-        flexible = card_fit(card, dist) if (pair is None or progress < 1.0) else 0.0
+        flexible = card_fit(card, dist, terms) if (pair is None or progress < 1.0) else 0.0
         if pair is None:
             return flexible
         committed = _lane_fit(card, pair)
@@ -408,7 +446,8 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
             fit_cache[cid] = fit_of_card(ctx.index[cid]) if cid in ctx.index else 0.0
         return fit_cache[cid]
 
-    roles = _role_counts(mine)
+    strengths = package_strengths(_role_counts(mine))
+    counts = pool_counts(mine)
     w_power = (1.0 - k("power_late_drop") * t) * p.w("power")
     w_combo = (k("combo_base") + k("combo_growth") * min(1.0, 2 * t)) * p.w("combo")
     w_needs = max(0.0, (t - k("needs_start")) * k("needs_slope"))
@@ -434,9 +473,9 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
             power *= damp + (1 - damp) * min(1.0, 2 * t)    # spells first, fixing later
         base = (w_power * power
                 + w_combo * combo_value(card, owned, remaining, ctx.combos, fit_of)
-                + package_value(card, roles)
+                + package_value(card, None, strengths)
                 + k("partner_weight") * p.w("combo") * partner_value(card, owned, fit_of)
-                + w_needs * needs_value(card, mine, p))
+                + w_needs * needs_value(card, mine, p, counts))
         if wincon_gap:
             base += wincon_gap * threat_level(card) * min(1.0, 0.4 + max(card.power, 0.0))
         if pair:
