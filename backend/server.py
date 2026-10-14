@@ -801,6 +801,7 @@ class MirrorImportInput(BaseModel):
 class ClaimInput(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     player_token: Optional[str] = None
+    host_token: Optional[str] = None   # sent by the browser that created the table: this player becomes the host
 
 class PickInput(BaseModel):
     player_token: str
@@ -818,6 +819,11 @@ class AdminPickInput(BaseModel):
     host_token: str
     order: int
     card_id: str
+
+class SwapInput(BaseModel):
+    host_token: str
+    order_a: int        # the two picks to trade (positions in the pick list)
+    order_b: int
 
 def compute_pick_order(num_seats: int, double_after: int, pick_cap: int, pool_size: int) -> List[int]:
     """Snake order over seats with optional double-draft phase. Endpoints repeat
@@ -847,6 +853,14 @@ def compute_pick_order(num_seats: int, double_after: int, pick_cap: int, pool_si
             counts[s] += 1
     return order
 
+_BOT_SUFFIX = re.compile(r"\s*\(bot\)\s*$", re.I)
+
+
+def _display_name(name: Optional[str]) -> Optional[str]:
+    """Bots used to be named "Orrin (bot)"; pages show a bot icon instead, so drop the suffix."""
+    return _BOT_SUFFIX.sub("", name) if name else name
+
+
 def draft_state(d: dict, light: bool = False) -> dict:
     picked_ids = [p["card_id"] for p in d.get("picks", [])]
     base = {
@@ -860,8 +874,8 @@ def draft_state(d: dict, light: bool = False) -> dict:
         "seats_per_player": d["num_seats"] // d["num_players"],
         "double_draft_after": d["double_draft_after"],
         "pick_cap": d["pick_cap"],
-        "seats": d["seats"],
-        "players": [{"id": p["id"], "name": p["name"], "seats": p["seats"], "is_bot": bool(p.get("is_bot"))} for p in d.get("players", [])],
+        "seats": [{**s, "player_name": _display_name(s.get("player_name"))} for s in d["seats"]],
+        "players": [{"id": p["id"], "name": _display_name(p["name"]), "seats": p["seats"], "is_bot": bool(p.get("is_bot"))} for p in d.get("players", [])],
         "picks": d.get("picks", []),
         "pick_index": len(d.get("picks", [])),
         "order_len": len(d.get("order", [])),
@@ -1006,6 +1020,7 @@ async def create_draft(data: DraftCreate):
         "picks": [],
         "messages": [],
         "host_token": str(uuid.uuid4()),
+        "host_player_id": None,      # set when the host claims a seat (claiming it again restores host controls)
         "created_at": now,
         "updated_at": now,
     }
@@ -1021,7 +1036,7 @@ async def create_draft(data: DraftCreate):
         for s in draft["seats"]:
             s["player_id"], s["player_name"] = me["id"], data.seat_names[s["index"]]
         draft["players"] = [me]
-        draft.update(mirror=True, my_seat=data.my_seat)
+        draft.update(mirror=True, my_seat=data.my_seat, host_player_id=me["id"])
     if data.pool == "vintage":
         _warm_vrd_pool()
     else:
@@ -1265,23 +1280,47 @@ async def _pack_pick(share_id: str, data: "PickInput") -> dict:
             return _pack_state(d, data.player_token)
     raise HTTPException(status_code=409, detail="Busy, try again")
 
+def _claim_reply(d: dict, p: dict) -> dict:
+    """What a player's browser keeps. The host's own seat also gets the host key back, so claiming that
+    seat in a new browser (by name) restores the host controls."""
+    out = {"player_token": p["token"], "player_id": p["id"], "name": p["name"], "seats": p["seats"]}
+    if d.get("host_player_id") == p["id"]:
+        out["host_token"] = d["host_token"]
+    return out
+
+
+async def _set_host_player(d: dict, p: dict, host_token: Optional[str]) -> None:
+    """The first player claimed from the browser holding the host key becomes the host player."""
+    if host_token and host_token == d.get("host_token") and not d.get("host_player_id"):
+        await db.drafts.update_one({"share_id": d["share_id"], "host_player_id": None}, {"$set": {"host_player_id": p["id"]}})
+        d["host_player_id"] = p["id"]
+
+
 @api_router.post("/drafts/{share_id}/claim")
 async def claim_seats(share_id: str, data: ClaimInput):
     d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
-    if d["status"] != "lobby":
-        raise HTTPException(status_code=400, detail="Draft already started")
+    if d["status"] == "cancelled":
+        raise HTTPException(status_code=400, detail="This table was closed")
+    name = data.name.strip()
     if d.get("mirror"):
-        p = next((p for p in d["players"] if data.player_token and p["token"] == data.player_token), None)
+        p = next((p for p in d["players"] if (data.player_token and p["token"] == data.player_token)
+                  or p["name"].lower() == name.lower()), None)
         if not p:
             raise HTTPException(status_code=403, detail="This is a mirror table: only its host picks")
-        return {"player_token": p["token"], "player_id": p["id"], "name": p["name"], "seats": p["seats"]}
-    name = data.name.strip()
-    # Reattach by token or by existing name
+        return _claim_reply(d, p)
+    # Reattach by token or by existing name (also once the draft has started, e.g. from a new browser)
     for p in d["players"]:
+        if p.get("is_bot"):
+            if _display_name(p["name"]).lower() == name.lower():
+                raise HTTPException(status_code=400, detail="A bot at this table has that name; pick another")
+            continue
         if (data.player_token and p["token"] == data.player_token) or p["name"].lower() == name.lower():
-            return {"player_token": p["token"], "player_id": p["id"], "name": p["name"], "seats": p["seats"]}
+            await _set_host_player(d, p, data.host_token)
+            return _claim_reply(d, p)
+    if d["status"] != "lobby":
+        raise HTTPException(status_code=400, detail="The draft has started: claim with the name you joined with")
     if len(d["players"]) >= d["num_players"]:
         raise HTTPException(status_code=400, detail="All player slots are taken")
     # Spread each player's seats evenly across the snake so no one holds both
@@ -1294,9 +1333,11 @@ async def claim_seats(share_id: str, data: ClaimInput):
         if s["index"] in assigned:
             s["player_id"] = pid
             s["player_name"] = name
-    d["players"].append({"id": pid, "token": token, "name": name, "seats": assigned})
+    player = {"id": pid, "token": token, "name": name, "seats": assigned}
+    d["players"].append(player)
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": d["players"], "updated_at": datetime.now(timezone.utc).isoformat()}})
-    return {"player_token": token, "player_id": pid, "name": name, "seats": assigned}
+    await _set_host_player(d, player, data.host_token)
+    return _claim_reply(d, player)
 
 def _shuffle_seats(d: dict) -> None:
     """Randomise who sits where when the draft starts (seats stay spread around the snake)."""
@@ -1685,8 +1726,17 @@ async def undo_pick(share_id: str, data: CancelInput):
         raise HTTPException(status_code=400, detail="Undo isn't available in pack drafts")
     if not d.get("picks"):
         raise HTTPException(status_code=400, detail="No picks to undo")
-    picks = d["picks"][:-1]
-    await db.drafts.update_one({"share_id": share_id}, {"$set": {"picks": picks, "status": "drafting", "updated_at": datetime.now(timezone.utc).isoformat()}})
+    last = d["picks"][-1]
+    names = await _card_names(share_id)
+    note = _host_note(f"Host undid {_pick_label(d, last)} ({names.get(last['card_id'], 'a card')})",
+                      "undo", [{"card_id": last["card_id"], "label": _pick_label(d, last)}])
+    # Only if nobody picked meanwhile: remove exactly that last pick.
+    res = await db.drafts.update_one({"share_id": share_id, "picks": {"$size": len(d["picks"])}},
+                                     {"$pop": {"picks": 1}, "$push": {"messages": {"$each": [note], "$slice": -200}},
+                                      "$set": {"status": "drafting", "updated_at": note["ts"]}})
+    if not res.modified_count:
+        raise HTTPException(status_code=409, detail="Someone just picked; try again")
+    _forget_suggestions(share_id)
     d = await _draft(share_id)
     return draft_state(d, light=True)
 
@@ -1707,10 +1757,76 @@ async def reassign_pick(share_id: str, data: AdminPickInput):
         raise HTTPException(status_code=400, detail="Card not in cube")
     if any(p["card_id"] == data.card_id for p in d["picks"] if p["order"] != data.order):
         raise HTTPException(status_code=409, detail="Card already drafted")
-    pk["card_id"] = data.card_id
-    await db.drafts.update_one({"share_id": share_id}, {"$set": {"picks": d["picks"], "updated_at": datetime.now(timezone.utc).isoformat()}})
+    names = await _card_names(share_id)
+    note = _host_note(f"Host changed {_pick_label(d, pk)} from {names.get(pk['card_id'], 'a card')} to {names.get(data.card_id, 'a card')}",
+                      "change", [{"card_id": pk["card_id"], "label": "Was"}, {"card_id": data.card_id, "label": "Now"}])
+    i = d["picks"].index(pk)
+    res = await db.drafts.update_one({"share_id": share_id, f"picks.{i}.card_id": pk["card_id"]},
+                                     {"$set": {f"picks.{i}.card_id": data.card_id, "updated_at": note["ts"]},
+                                      "$push": {"messages": {"$each": [note], "$slice": -200}}})
+    if not res.modified_count:
+        raise HTTPException(status_code=409, detail="That pick just changed; try again")
+    _forget_suggestions(share_id)
     d = await _draft(share_id)
     return draft_state(d, light=True)
+
+
+@api_router.post("/drafts/{share_id}/swap")
+async def swap_picks(share_id: str, data: SwapInput):
+    """Host: trade two picks between seats (each seat gets the other's card). Everyone at the table
+    is told what changed."""
+    d = await _draft(share_id)
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("host_token") != data.host_token:
+        raise HTTPException(status_code=403, detail="Only the host can swap picks")
+    if d.get("mode") == "packs":
+        raise HTTPException(status_code=400, detail="Swapping isn't available in pack drafts")
+    picks = d.get("picks", [])
+    ia = next((i for i, p in enumerate(picks) if p["order"] == data.order_a), None)
+    ib = next((i for i, p in enumerate(picks) if p["order"] == data.order_b), None)
+    if ia is None or ib is None:
+        raise HTTPException(status_code=404, detail="Pick not found")
+    a, b = picks[ia], picks[ib]
+    if ia == ib or a["seat_index"] == b["seat_index"]:
+        raise HTTPException(status_code=400, detail="Pick two cards from different seats")
+    names = await _card_names(share_id)
+    note = _host_note(f"Host swapped {_pick_label(d, a)} ({names.get(a['card_id'], 'a card')}) with "
+                      f"{_pick_label(d, b)} ({names.get(b['card_id'], 'a card')})",
+                      "swap", [{"card_id": a["card_id"], "label": _pick_label(d, a)}, {"card_id": b["card_id"], "label": _pick_label(d, b)}])
+    res = await db.drafts.update_one(
+        {"share_id": share_id, f"picks.{ia}.card_id": a["card_id"], f"picks.{ib}.card_id": b["card_id"]},
+        {"$set": {f"picks.{ia}.card_id": b["card_id"], f"picks.{ib}.card_id": a["card_id"], "updated_at": note["ts"]},
+         "$push": {"messages": {"$each": [note], "$slice": -200}}})
+    if not res.modified_count:
+        raise HTTPException(status_code=409, detail="Those picks just changed; try again")
+    _forget_suggestions(share_id)
+    d = await _draft(share_id)
+    return draft_state(d, light=True)
+
+
+def _forget_suggestions(share_id: str) -> None:
+    """Cached pick suggestions are keyed by pick number; after the host rewrites picks they're stale."""
+    for k in [k for k in _SUGGEST_CACHE if k[0] == share_id]:
+        _SUGGEST_CACHE.pop(k, None)
+
+
+def _host_note(text: str, kind: str, cards: List[dict]) -> dict:
+    """A table message announcing a host change (pages show these as a pop-up for everyone else, with
+    the cards involved: swap A <-> B, change old -> new, undo of one card)."""
+    return {"id": str(uuid.uuid4()), "name": "Host", "text": text, "ts": datetime.now(timezone.utc).isoformat(),
+            "system": "host", "kind": kind, "cards": cards}
+
+
+def _pick_label(d: dict, pick: dict) -> str:
+    """ "Alice's pick 6": the seat's name and which of its own picks this is."""
+    seat = next((s for s in d["seats"] if s["index"] == pick["seat_index"]), {})
+    n = sum(1 for p in d.get("picks", []) if p["seat_index"] == pick["seat_index"] and p["order"] <= pick["order"])
+    return f"{_display_name(seat.get('player_name')) or 'Seat ' + str(pick['seat_index'] + 1)}'s pick {n}"
+
+
+async def _card_names(share_id: str) -> Dict[str, str]:
+    return {c["id"]: c.get("name", "") for c in (await _cards(share_id))["cube"]}
 
 
 @api_router.post("/drafts/{share_id}/chat")
@@ -1725,10 +1841,8 @@ async def post_chat(share_id: str, data: ChatInput):
     if not text:
         raise HTTPException(status_code=400, detail="Message is empty")
     msg = {"id": str(uuid.uuid4()), "name": player["name"], "text": text, "ts": datetime.now(timezone.utc).isoformat()}
-    messages = d.get("messages", [])
-    messages.append(msg)
-    messages = messages[-200:]
-    await db.drafts.update_one({"share_id": share_id}, {"$set": {"messages": messages, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    await db.drafts.update_one({"share_id": share_id}, {"$push": {"messages": {"$each": [msg], "$slice": -200}},
+                                                         "$set": {"updated_at": msg["ts"]}})
     d = await _draft(share_id)
     return draft_state(d, light=True)
 

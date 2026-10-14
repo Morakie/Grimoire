@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Sparkles, Loader2, Copy, X, Volume2, VolumeX, Bot, Lightbulb, Eye, ArrowLeft, ArrowRight, Timer, Package, Layers, MessageSquare, Hand } from "lucide-react";
+import { Sparkles, Loader2, Copy, X, Volume2, VolumeX, Bot, Lightbulb, Eye, ArrowLeft, ArrowRight, Timer, Package, Layers, MessageSquare, Hand, User } from "lucide-react";
 import { toast } from "sonner";
 
 const COLOR_ORDER = { W: 0, U: 1, B: 2, R: 3, G: 4 };
@@ -194,7 +194,7 @@ export default function PackDraftView({ shareId, draft, state, setState, me, hos
                   <span className="tabular-nums text-amber-400">{st.picks || 0}/{state.pick_cap}</span>
                 </div>
                 <div className="font-display font-semibold truncate flex items-center gap-1 text-sm">
-                  {botSeats.has(s.index) && <Bot className="w-3.5 h-3.5 text-amber-400 shrink-0" />} {s.player_name}
+                  {botSeats.has(s.index) ? <Bot className="w-3.5 h-3.5 text-amber-400 shrink-0" aria-label="Bot" /> : <User className="w-3.5 h-3.5 text-slate-400 shrink-0" aria-label="Player" />} {s.player_name}
                 </div>
                 <div className="flex items-center gap-1 mt-1 h-3" title={`${st.waiting || 0} pack(s) waiting`}>
                   {Array.from({ length: Math.min(st.waiting || 0, 6) }).map((_, i) => <Package key={i} className={`w-3 h-3 ${i === 0 ? "text-amber-400" : "text-slate-500"}`} />)}
