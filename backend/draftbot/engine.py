@@ -62,6 +62,7 @@ TUNING: Dict[str, float] = {
     "plan_weight": 0.15,        # bonus for a card that fills a plan the pool has committed to
     "plan_conflict_cut": 0.75,  # payoffs for a weaker plan lose this share x (strongest plan - their plan)
     "plan_start": 4, "plan_full": 10,   # owned cards before plans start to matter / fully matter
+    "plan_late_boost": 1.0,     # the plan bonus grows by this share across the draft (x2 by the last pick)
     "unsupported_cut": 0.7,     # share of such a card's rating lost when the pool has none of its support
     "support_after": 6,         # picks before that cut fully applies (early picks keep options open)
 }
@@ -573,7 +574,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         base = (w_power * power
                 + w_combo * combo_value(card, owned, remaining, ctx.combos, fit_of)
                 + package_value(card, None, strengths)
-                + k("plan_weight") * plan_ramp * plan_value(card, fill, plans)
+                + k("plan_weight") * plan_ramp * (1 + k("plan_late_boost") * t) * plan_value(card, fill, plans)
                 + k("partner_weight") * p.w("combo") * partner_value(card, owned, fit_of)
                 + w_needs * needs_value(card, mine, p, counts))
         if wincon_gap:
