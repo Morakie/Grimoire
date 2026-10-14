@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 BUCKET = "https://cubecobra-public.s3.amazonaws.com"
-UA = {"User-Agent": "Grimoire cube-meta builder (hobby project; credits CubeCobra)"}
+UA = {"User-Agent": "GrimoireCubeMeta/1.0", "Accept": "application/json;q=0.9,*/*;q=0.8"}   # Scryfall requires both
 POWER = {"Black Lotus", "Mox Sapphire", "Mox Jet", "Mox Ruby", "Mox Pearl", "Mox Emerald",
          "Time Walk", "Ancestral Recall", "Timetwister"}
 MIN_POWER_IN_CUBE = 3          # a "powered" cube runs at least this many of the Power Nine
