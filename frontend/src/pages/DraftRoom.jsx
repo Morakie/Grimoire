@@ -139,6 +139,8 @@ export default function DraftRoom() {
   const [hidePicked, setHidePicked] = useState(false);
   const [confirmCard, setConfirmCard] = useState(null);
   const [hoverCard, setHoverCard] = useState(null);
+  const miniPreviewRef = useRef(null);                       // quick-glance table hover preview
+  const miniMouseRef = useRef({ left: -9999, top: -9999 });
   const [reassignPick, setReassignPick] = useState(null);
   const [reassignQuery, setReassignQuery] = useState("");
   const [swapFrom, setSwapFrom] = useState(null);       // host: first pick chosen for a swap
@@ -729,6 +731,16 @@ export default function DraftRoom() {
 
   const hoverable = canHover();
   const tapPreview = (c) => (!hoverable && c ? () => setPreviewCard(c) : undefined);
+  // Quick-glance table: a card preview that follows the mouse, kept beside the cursor and on screen.
+  // Moved by hand (no re-render per mouse move).
+  const placeMiniPreview = (x, y) => {
+    const w = 240, h = 335, gap = 18;
+    const left = x + gap + w > window.innerWidth ? Math.max(8, x - gap - w) : x + gap;
+    const top = Math.min(Math.max(8, y - h / 2), window.innerHeight - h - 8);
+    miniMouseRef.current = { left, top };
+    const el = miniPreviewRef.current;
+    if (el) { el.style.left = `${left}px`; el.style.top = `${top}px`; }
+  };
   const hoverIn = (c) => () => c && setHoverCard(c);
   const hoverOut = (c) => () => setHoverCard((h) => (h?.id === c?.id ? null : h));
 
@@ -1357,7 +1369,8 @@ export default function DraftRoom() {
       )}
 
       {showMiniTable && state.status !== "lobby" && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center p-4 pt-20" data-testid="mini-table" onClick={() => setShowMiniTable(false)}>
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center p-4 pt-20" data-testid="mini-table" onClick={() => setShowMiniTable(false)}
+          onMouseMove={(e) => placeMiniPreview(e.clientX, e.clientY)}>
           <div className="w-[min(98vw,1400px)] max-h-[86vh] bg-[#0b111e] border border-amber-400/40 rounded-xl shadow-2xl overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800 shrink-0">
               <span className="text-sm font-display font-semibold flex items-center gap-2"><Table2 className="w-4 h-4 text-amber-400" /> Draft table — quick glance</span>
@@ -1365,6 +1378,12 @@ export default function DraftRoom() {
             </div>
             <div className="overflow-auto p-3">{renderDraftTable(false, window.innerWidth >= 768)}</div>
           </div>
+          {/* Card preview on hover, drawn above the table (the page's own preview sits behind it). */}
+          {hoverCard && (hoverCard.image || hoverCard.art_crop) && (
+            <img ref={miniPreviewRef} src={hoverCard.image || hoverCard.art_crop} alt={hoverCard.name} data-testid="mini-table-preview"
+              className="pointer-events-none fixed z-[55] w-60 rounded-xl shadow-2xl border border-slate-700 hidden md:block"
+              style={{ left: miniMouseRef.current.left, top: miniMouseRef.current.top }} />
+          )}
         </div>
       )}
 
