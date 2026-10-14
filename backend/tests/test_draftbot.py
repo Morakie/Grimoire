@@ -185,11 +185,12 @@ def test_live_elo_and_package_partners_shape_picks():
 
 def test_cube_meta_synergy_becomes_partners_within_the_cube():
     from draftbot.cubemeta import cube_partners, synergy_strength
-    meta = {"synergy": {"urza, lord high artificer": [("mox opal", 3.5), ("not in cube", 4.0)],
-                        "thopter foundry": [("sword of the meek", 2.0)]}}
+    meta = {"synergy": {"urza, lord high artificer": [("mox opal", 9.5), ("not in cube", 9.0)],
+                        "thopter foundry": [("sword of the meek", 5.0)]}}
     cards = [("u", "Urza, Lord High Artificer"), ("m", "Mox Opal"), ("t", "Thopter Foundry"), ("s", "Sword of the Meek")]
     p = cube_partners(cards, meta)
     assert p["u"]["m"] == 1.0 and p["m"]["u"] == 1.0            # symmetric, capped at full strength
-    assert p["t"]["s"] == synergy_strength(2.0) == 0.5
+    assert p["t"]["s"] == synergy_strength(5.0) == 0.5
+    assert synergy_strength(2.0) == 0.0
     assert "not in cube" not in str(p)
     assert cube_partners(cards, {"synergy": {}}) == {}

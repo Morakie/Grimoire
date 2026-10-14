@@ -165,7 +165,8 @@ def _estimate_elo(card: dict, types: FrozenSet[str], text: str, elos: List[float
     return mid
 
 
-USE_CUBE_META = True     # merge synergy from CubeCobra's deck export (cubemeta.py) into card partners
+USE_CUBE_META = False    # merge synergy from CubeCobra's deck export (cubemeta.py) into card partners. Off until the
+                         # replay benchmark shows it helps (2026-10-14: +1.5% top-3 on one 139-pick draft, within noise)
 
 
 def build_card_index(cube: Iterable[dict], stats: Optional[dict] = None, meta: Optional[dict] = None) -> Dict[str, CardInfo]:

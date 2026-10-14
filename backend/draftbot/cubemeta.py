@@ -35,9 +35,10 @@ def load(path: str = _PATH) -> dict:
 
 
 def synergy_strength(lift: float) -> float:
-    """Map a co-occurrence lift to a partner strength like CubeCobra's (1.0 = "synergistic").
-    x1.4 (the file's floor) -> 0.2, x2 -> 0.5, x3 or more -> 1.0."""
-    return max(0.0, min(1.0, (lift - 1.0) / 2.0))
+    """Map a co-occurrence lift to a partner strength like CubeCobra's (1.0 = "synergistic"). Conservative:
+    only strong pairs count (x3 -> 0.25, x5 -> 0.5, x9 or more -> 1.0); weaker settings made the bots chase
+    generic "played together" pairs and complete fewer combos in benchmark drafts."""
+    return 0.0 if lift < 3.0 else max(0.0, min(1.0, (lift - 1.0) / 8.0))
 
 
 def cube_partners(cards: List[Tuple[str, str]], meta: Optional[dict] = None) -> Dict[str, Dict[str, float]]:
