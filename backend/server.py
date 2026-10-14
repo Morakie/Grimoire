@@ -929,6 +929,11 @@ class AdminPickInput(BaseModel):
     order: int
     card_id: str
 
+class SeatingInput(BaseModel):
+    host_token: str
+    mode: str = Field(pattern="^(random|host)$")          # random at start, or the host sets the order
+    order: List[str] = Field(default_factory=list, max_length=12)   # player ids in seat order (host mode)
+
 class SwapInput(BaseModel):
     host_token: str
     order_a: int        # the two picks to trade (positions in the pick list)
@@ -993,6 +998,7 @@ def draft_state(d: dict, light: bool = False) -> dict:
         "mode": d.get("mode", "rotisserie"),
         "pool": d.get("pool", "cube"),
         "mirror": bool(d.get("mirror")),
+        "seating": d.get("seating", "random"),
         "my_seat": d.get("my_seat"),
         "rev": d.get("rev", 0),
         "version": f'{d.get("rev", 0)}|{d.get("updated_at")}',   # changes on every write (picks, chat, seats)
@@ -1458,6 +1464,44 @@ async def claim_seats(share_id: str, data: ClaimInput):
     await _set_host_player(d, player, data.host_token)
     return _claim_reply(d, player)
 
+def _seat_in_order(d: dict, players: List[dict]) -> None:
+    """Give players their seats in this order (player j gets every seat with index % num_players == j,
+    spread around the snake) and refresh the seat names."""
+    for s in d["seats"]:
+        s["player_id"] = None
+        s["player_name"] = None
+    for j, p in enumerate(players):
+        p["seats"] = sorted(s["index"] for s in d["seats"] if s["index"] % d["num_players"] == j)
+        for s in d["seats"]:
+            if s["index"] in p["seats"]:
+                s["player_id"] = p["id"]
+                s["player_name"] = p["name"]
+    d["players"] = players
+
+
+@api_router.post("/drafts/{share_id}/seating")
+async def set_seating(share_id: str, data: SeatingInput):
+    """Host, in the lobby: random seats when the draft starts (the default), or the host arranges
+    the order (players listed in seat order)."""
+    d = await _draft(share_id)
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("host_token") != data.host_token:
+        raise HTTPException(status_code=403, detail="Only the host can arrange seats")
+    if d["status"] != "lobby" or d.get("mirror"):
+        raise HTTPException(status_code=400, detail="Seats can only be arranged in the lobby")
+    if data.mode == "host" and data.order:
+        by_id = {p["id"]: p for p in d["players"]}
+        if sorted(data.order) != sorted(by_id):
+            raise HTTPException(status_code=409, detail="Someone joined or left; try again")
+        _seat_in_order(d, [by_id[i] for i in data.order])
+    await db.drafts.update_one({"share_id": share_id, "status": "lobby"},
+                               {"$set": {"seating": data.mode, "seats": d["seats"], "players": d["players"],
+                                         "updated_at": datetime.now(timezone.utc).isoformat()}})
+    d["seating"] = data.mode
+    return fast_json(draft_state(d, light=True))
+
+
 def _shuffle_seats(d: dict) -> None:
     """Randomise who sits where when the draft starts (seats stay spread around the snake)."""
     slots = list(range(d["num_players"]))
@@ -1479,7 +1523,7 @@ async def start_draft(share_id: str):
         raise HTTPException(status_code=400, detail="Already started")
     if any(s["player_id"] is None for s in d["seats"]):
         raise HTTPException(status_code=400, detail="Not all seats are claimed yet")
-    if not d.get("mirror"):         # mirror tables keep the real table's seating
+    if not d.get("mirror") and d.get("seating", "random") != "host":   # mirror / host-arranged keep their order
         _shuffle_seats(d)
     now = datetime.now(timezone.utc).isoformat()
     if d.get("mode") == "packs":
@@ -2323,18 +2367,9 @@ async def remove_bot(share_id: str, data: BotRemoveInput):
         raise HTTPException(status_code=400, detail="Draft already started")
     if not any(p["id"] == data.player_id and p.get("is_bot") for p in d["players"]):
         raise HTTPException(status_code=404, detail="Bot not found")
-    # Rebuild seat assignments in join order so seat spreading stays correct.
+    # Rebuild seat assignments in the current order so seat spreading stays correct.
     players = [p for p in d["players"] if p["id"] != data.player_id]
-    for s in d["seats"]:
-        s["player_id"] = None
-        s["player_name"] = None
-    for j, p in enumerate(players):
-        p["seats"] = sorted(s["index"] for s in d["seats"] if s["index"] % d["num_players"] == j)
-        for s in d["seats"]:
-            if s["index"] in p["seats"]:
-                s["player_id"] = p["id"]
-                s["player_name"] = p["name"]
-    d["players"] = players
+    _seat_in_order(d, players)
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": players, "updated_at": datetime.now(timezone.utc).isoformat()}})
     return fast_json(draft_state(d, light=True))
 

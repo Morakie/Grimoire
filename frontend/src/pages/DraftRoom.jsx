@@ -9,7 +9,7 @@ import { buildExport } from "@/components/ExportDialog";
 import { useAuth } from "@/context/AuthContext";
 import { getBasics } from "@/lib/mtg";
 import PackDraftView from "@/components/PackDraftView";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, ArrowRight, Megaphone } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, ArrowRight, Megaphone, Shuffle, ListOrdered } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -496,6 +496,20 @@ export default function DraftRoom() {
   const addBot = async () => {
     try { const { data } = await api.post(`/drafts/${shareId}/bots`, { host_token: hostToken }); setState((s) => ({ ...s, ...data })); }
     catch (e) { toast.error(e.response?.data?.detail || "Could not add a bot"); }
+  };
+
+  // Seating: random at start (default), or the host arranges the order in the lobby.
+  const seatsFixed = isMirror || state.seating === "host";
+  const setSeating = async (mode, order) => {
+    try { const { data } = await api.post(`/drafts/${shareId}/seating`, { host_token: hostToken, mode, order }); setState((st) => ({ ...st, ...data })); }
+    catch (e) { toast.error(e.response?.data?.detail || "Could not change the seating"); }
+  };
+  const moveSeat = (i, dir) => {
+    const ids = state.players.map((p) => p.id);
+    const j = i + dir;
+    if (j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    setSeating("host", ids);
   };
 
   const removeBot = async (playerId) => {
@@ -1031,7 +1045,7 @@ export default function DraftRoom() {
       <main className={`max-w-7xl 2xl:max-w-[1760px] mx-auto px-3 sm:px-6 py-4 sm:py-6 ${state.status !== "lobby" ? "pb-28 lg:pb-6" : ""}`}>
         {/* Seats: a grid in the lobby and at the end. While drafting they move into the left column on
             desktop, and phones / tablets get a slim strip that scrolls sideways. */}
-        <div ref={seatStripRef} className={drafting
+        {state.status !== "lobby" && <div ref={seatStripRef} className={drafting
           ? "lg:hidden relative flex gap-2 overflow-x-auto -mx-3 px-3 pb-1 mb-3 sm:mx-0 sm:px-0"
           : "relative flex gap-2 overflow-x-auto -mx-3 px-3 pb-1 mb-4 sm:mx-0 sm:px-0 sm:pb-0 sm:mb-6 sm:grid sm:grid-cols-2 lg:grid-cols-4 sm:gap-3 sm:overflow-visible"} data-testid="seat-grid">
           {seatsSorted.map((s) => {
@@ -1062,9 +1076,10 @@ export default function DraftRoom() {
               </div>
             );
           })}
-        </div>
+        </div>}
 
-        <div className={`grid gap-6 items-start ${state.status === "drafting" ? "lg:grid-cols-[220px_minmax(0,1fr)_340px] 2xl:grid-cols-[260px_minmax(0,1fr)_420px]" : "lg:grid-cols-[minmax(0,1fr)_340px] 2xl:grid-cols-[minmax(0,1fr)_420px]"}`}>
+        {/* Lobby: one centred column (join panel, then chat). Drafting: queue | pool | sidebar. */}
+        <div className={`grid gap-6 items-start ${state.status === "lobby" ? "max-w-2xl mx-auto sm:pt-4" : state.status === "drafting" ? "lg:grid-cols-[220px_minmax(0,1fr)_340px] 2xl:grid-cols-[260px_minmax(0,1fr)_420px]" : "lg:grid-cols-[minmax(0,1fr)_340px] 2xl:grid-cols-[minmax(0,1fr)_420px]"}`}>
           {state.status === "drafting" && (
             <aside className="hidden lg:flex lg:sticky lg:top-20 self-start flex-col max-h-[calc(100vh-110px)] bg-[#0b111e] border border-slate-800 rounded-lg" data-testid="queue-panel">
               <div className="flex items-center gap-1.5 px-3 py-2 border-b border-slate-800 shrink-0">
@@ -1103,14 +1118,14 @@ export default function DraftRoom() {
           )}
           <div className="min-w-0 space-y-6">
             {state.status === "lobby" && (
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 max-w-md" data-testid="lobby-panel">
-                <h2 className="font-display text-xl font-bold mb-2">{isMirror ? "Mirror table" : "Join the draft"}</h2>
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 sm:p-8 w-full" data-testid="lobby-panel">
+                <h2 className="font-display text-2xl sm:text-3xl font-bold mb-2">{isMirror ? "Mirror table" : "Join the draft"}</h2>
                 <p className="text-sm text-slate-400 mb-4">
                   {state.pool === "vintage" && <span className="block text-amber-300/90 mb-1" data-testid="lobby-format-vrd">Vintage Rotisserie Draft · every Vintage-legal card</span>}
                   {state.mode === "packs" && <span className="block text-amber-300/90 mb-1" data-testid="lobby-format">Pack draft · {state.pack_count} packs of {state.pack_size}{state.timer === "off" ? " · no timer" : " · pick timer on"}</span>}
                   {isMirror
                     ? "You pick for every seat from this browser. Start when ready, then use Catch up from sheet for picks already made."
-                    : <>{state.seats_per_player} seat{state.seats_per_player === 1 ? "" : "s"} each · {state.players.length}/{state.num_players} players in.</>}
+                    : <>{state.pool === "vintage" ? "" : `${(draft.cube || []).length}-card cube · `}{state.pick_cap} picks each{state.seats_per_player > 1 ? ` · ${state.seats_per_player} seats each` : ""} · {state.players.length}/{state.num_players} players in.</>}
                 </p>
                 <div className="mb-4 rounded-lg border border-slate-800 bg-slate-950 p-3">
                   <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1.5">Invite players</div>
@@ -1124,21 +1139,47 @@ export default function DraftRoom() {
                     {state.private && <span className="ml-auto flex items-center gap-1 text-slate-400"><Lock className="w-3 h-3" /> Private</span>}
                   </div>
                 </div>
-                <div className="mb-4" data-testid="lobby-players">
-                  <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1.5">Players</div>
-                  <ul className="space-y-1">
-                    {state.players.map((p) => (
-                      <li key={p.id} className="flex items-center gap-2 text-sm text-slate-200" data-testid={`lobby-player-${p.id}`}>
+                <div className="mb-5" data-testid="lobby-players">
+                  <div className="flex items-center gap-2 flex-wrap mb-2">
+                    <div className="text-[11px] uppercase tracking-wide text-slate-500">Players</div>
+                    {hostToken && !isMirror && (
+                      <div className="ml-auto flex items-center gap-0.5 rounded-full border border-slate-700 p-0.5 text-xs" data-testid="seating-mode">
+                        {[["random", "Random seats", Shuffle], ["host", "Arrange seats", ListOrdered]].map(([k, label, Icon]) => (
+                          <button key={k} type="button" data-testid={`seating-${k}`} onClick={() => state.seating !== k && setSeating(k)}
+                            className={`flex items-center gap-1 px-2.5 py-1 rounded-full transition-colors ${(state.seating || "random") === k ? "bg-amber-400 text-stone-900 font-semibold" : "text-slate-400 hover:text-slate-200"}`}>
+                            <Icon className="w-3.5 h-3.5" /> {label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <ul className="space-y-1.5">
+                    {state.players.map((p, i) => (
+                      <li key={p.id} className="flex items-center gap-2 text-sm text-slate-200 rounded-lg bg-slate-950/60 border border-slate-800/80 px-3 py-2" data-testid={`lobby-player-${p.id}`}>
+                        {seatsFixed && <span className="text-[11px] text-slate-500 tabular-nums w-14 shrink-0">Seat {p.seats.map((x) => x + 1).join(", ")}</span>}
                         <SeatIcon bot={p.is_bot} className="w-3.5 h-3.5" />
-                        <span className="truncate">{p.name}</span>
-                        <span className="text-[11px] text-slate-500">seat {p.seats.map((s) => s + 1).join(", ")}</span>
-                        {p.is_bot && hostToken && (
-                          <button data-testid={`remove-bot-${p.id}`} onClick={() => removeBot(p.id)} title="Remove bot" className="ml-auto text-slate-500 hover:text-red-400"><X className="w-3.5 h-3.5" /></button>
-                        )}
+                        <span className="truncate">{p.name}{me?.player_id === p.id && <span className="text-slate-500"> · you</span>}</span>
+                        <span className="ml-auto flex items-center gap-1">
+                          {hostToken && seatsFixed && !isMirror && (
+                            <>
+                              <button type="button" data-testid={`seat-up-${p.id}`} onClick={() => moveSeat(i, -1)} disabled={i === 0} title="Move up a seat" className="p-1 text-slate-500 hover:text-amber-300 disabled:opacity-20"><ArrowUp className="w-3.5 h-3.5" /></button>
+                              <button type="button" data-testid={`seat-down-${p.id}`} onClick={() => moveSeat(i, 1)} disabled={i === state.players.length - 1} title="Move down a seat" className="p-1 text-slate-500 hover:text-amber-300 disabled:opacity-20"><ArrowDown className="w-3.5 h-3.5" /></button>
+                            </>
+                          )}
+                          {p.is_bot && hostToken && (
+                            <button data-testid={`remove-bot-${p.id}`} onClick={() => removeBot(p.id)} title="Remove bot" className="p-1 text-slate-500 hover:text-red-400"><X className="w-3.5 h-3.5" /></button>
+                          )}
+                        </span>
                       </li>
                     ))}
                     {state.players.length === 0 && <li className="text-sm text-slate-600">No one yet</li>}
                   </ul>
+                  {!isMirror && (
+                    <p className="text-[11px] text-slate-500 mt-2" data-testid="seating-note">
+                      {seatsFixed ? (hostToken ? "Seats go in this order (snake draft). Use the arrows to move people." : "The host has set the seating order.")
+                        : "Seats are drawn at random when the draft starts."}
+                    </p>
+                  )}
                   {hostToken && state.players.length < state.num_players && (
                     <Button size="sm" variant="outline" data-testid="add-bot" onClick={addBot}
                       className="mt-2 bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800">
@@ -1167,7 +1208,7 @@ export default function DraftRoom() {
                     {!openSlots && humans.length === 0 && <p className="text-sm text-slate-500">The table is full.</p>}
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2 text-green-400 text-sm"><Check className="w-4 h-4" /> You are <b>{me.name}</b> — seat(s) {me.seats.map((s) => s + 1).join(", ")}</div>
+                  <div className="flex items-center gap-2 text-green-400 text-sm"><Check className="w-4 h-4" /> You're in as <b>{me.name}</b>{seatsFixed ? <> · seat {(state.players.find((p) => p.id === me.player_id)?.seats || me.seats).map((x) => x + 1).join(", ")}</> : ""}</div>
                 )}
                 <Button data-testid="start-draft" onClick={start} disabled={starting || state.seats.some((s) => !s.player_name)} className="w-full mt-4 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold disabled:opacity-40">
                   {starting
