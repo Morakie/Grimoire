@@ -60,6 +60,12 @@ ROLE_PATTERNS = {
     "token_maker": r"create (a|an|two|three|x|that many)[^.]*token",
     "anthem": r"creatures you control get \+",
     "graveyard_cast": r"from your graveyard|flashback|escape|you may cast[^.]*graveyard",
+    # Vintage-cube packages (enablers and payoffs, see combos.PACKAGES)
+    "storm_payoff": r"(^|\n)storm\b|\bstorm \(",
+    "flicker": r"exile (up to one )?(another |other )?target[^.]*(creature|permanent)s? you (control|own)[^.]*return|exile (it|them), then return|then return (it|that card|those cards) to the battlefield",
+    "equip_fetch": r"search your library for an equipment|equipment card from your hand onto the battlefield",
+    "land_recursion": r"play lands? from your graveyard|land cards? from your graveyard",
+    "landfall": r"landfall|whenever a land (you control )?enters|whenever one or more lands (you control )?enter",
 }
 _ROLE_RE = {k: re.compile(v) for k, v in ROLE_PATTERNS.items()}
 
@@ -115,8 +121,12 @@ def _roles(card: dict, types: FrozenSet[str], text: str) -> FrozenSet[str]:
         roles.add("aggro_creature")
     if _BURN.search(text) and not ("creature" in types and cmc >= 4):
         roles.add("burn")
-    if cmc <= 1 and "draw" in roles and not ("creature" in types):
+    if cmc <= 1 and "draw" in roles and not ({"creature", "land"} & types):
         roles.add("cantrip")
+    if "creature" in types and re.search(r"\bwhen [^.]{0,40}\benters\b(?! tapped)", text):
+        roles.add("etb")                      # blink targets
+    if "land" in types and re.search(r"sacrifice [^:]*: search your library for", text):
+        roles.add("fetchland")
     if ("creature" in types and cmc >= 5) or ("planeswalker" in types and cmc >= 4):
         roles.add("finisher")
     if "creature" in types and 2 <= cmc <= 5 and (({"draw", "removal", "token_maker"} & roles) or re.search(r"initiative|monarch|venture", text)):
@@ -127,6 +137,8 @@ def _roles(card: dict, types: FrozenSet[str], text: str) -> FrozenSet[str]:
         roles.add("big_artifact")
     if not ("land" in types) and re.search(r"add \{|add one mana|add (two|three) mana|add mana", text):
         roles.add("mana")
+        if cmc <= 1 and "creature" not in types:
+            roles.add("fast_mana")            # Moxen, Lotus, Petal, Sol Ring...
         if "creature" in types or re.search(r"search your library for (a|up to \w+) (basic )?lands?", text):
             roles.add("ramp")
     if "creature" in types and (card.get("cmc") or 0) <= 2:
@@ -153,15 +165,25 @@ def _estimate_elo(card: dict, types: FrozenSet[str], text: str, elos: List[float
     return mid
 
 
-def build_card_index(cube: Iterable[dict], stats: Optional[dict] = None) -> Dict[str, CardInfo]:
+USE_CUBE_META = False    # merge synergy from CubeCobra's deck export (cubemeta.py) into card partners. Off until the
+                         # replay benchmark shows it helps (2026-10-14: +1.5% top-3 on one 139-pick draft, within noise)
+
+
+def build_card_index(cube: Iterable[dict], stats: Optional[dict] = None, meta: Optional[dict] = None) -> Dict[str, CardInfo]:
     """Build CardInfo for every non-custom card in a cube (cube entries are draft card dicts).
 
     `stats` (optional, from draftbot.cardstats.draft_stats) supplies live CubeCobra Elo, which replaces
     the CSV value, and each card's package partners within the cube."""
     stats = stats or {}
     live_elo = stats.get("elo") or {}
-    partners = stats.get("partners") or {}
     cards = [dict(c, elo=live_elo.get(c["id"]) or c.get("elo")) for c in cube if not c.get("is_custom")]
+    partners = {k: dict(v) for k, v in (stats.get("partners") or {}).items()}
+    if USE_CUBE_META:
+        from .cubemeta import cube_partners
+        for a, row in cube_partners([(c["id"], c.get("name", "")) for c in cards], meta).items():
+            mine = partners.setdefault(a, {})
+            for b, s in row.items():
+                mine[b] = max(mine.get(b, 0.0), s)
     elos = [float(c["elo"]) for c in cards if c.get("elo")]
     mid = median(elos) if elos else 1200.0
     lo = sorted(elos)[int(len(elos) * 0.05)] if elos else mid - 200

@@ -99,4 +99,10 @@ PACKAGES: List[Tuple[str, Tuple[str, ...], Tuple[str, ...]]] = [
     ("spells", ("spells_payoff",), ("draw", "ritual", "counter")),
     ("graveyard", ("graveyard_cast",), ("self_mill", "discard_outlet")),
     ("tokens", ("anthem",), ("token_maker",)),
+    # Common vintage-cube packages
+    ("artifacts", ("artifact",), ("artifact_payoff",)),
+    ("storm", ("ritual", "fast_mana"), ("storm_payoff",)),
+    ("blink", ("etb",), ("flicker",)),
+    ("stoneforge", ("equip_fetch",), ("equipment",)),
+    ("lands", ("fetchland", "landfall"), ("land_recursion",)),
 ]
