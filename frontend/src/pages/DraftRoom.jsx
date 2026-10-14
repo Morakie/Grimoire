@@ -553,6 +553,8 @@ export default function DraftRoom() {
       const { data } = await api.post(`/drafts/${shareId}/pick`, { player_token: me.player_token, seat_index: seat, card_id: card.id });
       actionSeqRef.current++;
       setState(data);
+      // Picked a card from the "search all cards" results: that search is done, close it.
+      setAddResults((r) => { if (r && r.some((c) => c.id === card.id)) { setAddQuery(""); return null; } return r; });
     } catch (e) {
       toast.error(e.response?.data?.detail || "Pick failed");
       // VRD: a queued card that's already gone (another printing) or not legal would retry forever.

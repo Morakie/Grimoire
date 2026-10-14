@@ -134,9 +134,6 @@ def _roles(card: dict, types: FrozenSet[str], text: str) -> FrozenSet[str]:
     return frozenset(roles)
 
 
-_BANNED = re.compile(r"\bthis card is banned\b")
-
-
 def _estimate_elo(card: dict, types: FrozenSet[str], text: str, elos: List[float], mid: float) -> float:
     """Rating for a card with no CubeCobra Elo (new or rarely-cubed cards).
 
@@ -176,12 +173,8 @@ def build_card_index(cube: Iterable[dict], stats: Optional[dict] = None) -> Dict
         text = (c.get("oracle_text") or "").lower()
         types = _types(c.get("type_line", ""))
         elo = float(c.get("elo") or _estimate_elo(c, types, text, elos, mid))
-        if _BANNED.search(text):                   # joke cards like Gleemox: unplayable, never a pick
-            elo = min(elo, lo)
         x = (elo - lo) / span                      # ~0 at the 5th percentile, 1 at the 95th
         power = max(-0.15, x if x <= 1 else 1 + 0.7 * (x - 1))   # bombs keep standing out, gently compressed
-        if _BANNED.search(text):
-            power = -0.15
         need = _cost_colors(c.get("mana_cost", ""))
         if "land" in types:
             need = frozenset()

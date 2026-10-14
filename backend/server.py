@@ -2289,8 +2289,7 @@ async def pick_suggestions(share_id: str, seat: int, x_player_token: Optional[st
         index, combos = await _bot_index(share_id)
         owned = [p["card_id"] for p in d["picks"] if p["seat_index"] == seat]
         ranked = await run_in_threadpool(rank_pack, index, owned, pack, d["pick_cap"], combos)
-        best = ranked[0][0] if ranked else 0
-        return {"suggestions": [cid for sc, cid in ranked[:3] if best <= 0 or sc >= 0.7 * best]}
+        return {"suggestions": [cid for _, cid in ranked[:3]]}
     out: Dict[str, Any] = {"suggestions": await _rotisserie_suggestions(d, seat)}
     if d.get("pool") == "vintage":   # VRD: the page may not have these cards yet
         pool = {c["id"]: c for c in (await _cards(share_id))["pool_cards"]}
@@ -2317,9 +2316,7 @@ async def _rotisserie_suggestions(d: dict, seat: int) -> List[str]:
         top = await run_in_threadpool(suggest_picks, ctx, 3)
         if len(_SUGGEST_CACHE) > 500:
             _SUGGEST_CACHE.clear()
-        # Keep suggestions that are reasonably close to the best one.
-        best = top[0][1] if top else 0
-        _SUGGEST_CACHE[key] = [cid for cid, sc in top if best <= 0 or sc >= 0.7 * best]
+        _SUGGEST_CACHE[key] = [cid for cid, _ in top]     # always the top three
     return _SUGGEST_CACHE[key]
 
 
