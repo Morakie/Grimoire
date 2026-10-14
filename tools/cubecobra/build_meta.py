@@ -267,7 +267,8 @@ def build(out_path: str, max_files: int | None = None, workers: int = 16, force:
     play = Counter()
     for i in keep:
         play.update(decks[i][1].tolist())
-    core = sorted(x for x, n in play.items() if n >= 150 and names[x])
+    min_play = max(150, len(keep) // 2500)          # ~1,100 decks on the full export: no obscure cards
+    core = sorted(x for x, n in play.items() if n >= min_play and names[x])
     col = {x: j for j, x in enumerate(core)}
     K = len(core)
     cube_ids = sorted({decks[i][0] for i in keep})
@@ -331,13 +332,17 @@ def build(out_path: str, max_files: int | None = None, workers: int = 16, force:
             co[np.ix_(js, js)] += w
             a_by_cube[crow[c], js] += w
     avail_given_a = a_by_cube.T @ avail                               # [A, B]
-    p_b_given_a = np.divide(co, avail_given_a, out=np.zeros_like(co), where=avail_given_a > 20)
-    lift = np.divide(p_b_given_a, base[None, :].astype(np.float32), out=np.zeros_like(co), where=base[None, :] > 0)
+    # Shrink towards "no effect" so a pair needs plenty of shared decks before it counts: add M pseudo-decks
+    # at B's base rate. Small samples then land near x1 instead of x60.
+    M = 300.0
+    b = base[None, :].astype(np.float32)
+    p_b_given_a = (co + M * b) / (avail_given_a + M)
+    lift = np.divide(p_b_given_a, b, out=np.zeros_like(co), where=b > 0)
     np.fill_diagonal(lift, 0)
     synergy = {}
     for a in range(K):
         row = lift[a]
-        cand = np.where((row >= 1.4) & (co[a] >= 30))[0]
+        cand = np.where((row >= 1.4) & (co[a] >= 100))[0]
         if not len(cand):
             continue
         best = cand[np.argsort(-row[cand])][:12]
