@@ -3,12 +3,13 @@ import { useParams, useNavigate, Link } from "react-router-dom";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { buildExport } from "@/components/ExportDialog";
 import { useAuth } from "@/context/AuthContext";
 import { getBasics } from "@/lib/mtg";
 import PackDraftView from "@/components/PackDraftView";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -138,11 +139,11 @@ export default function DraftRoom() {
   const [sheet, setSheet] = useState(null);            // mobile bottom sheet: "queue" | "feed" | "chat"
   const [previewCard, setPreviewCard] = useState(null); // mobile tap-to-preview
   const seatStripRef = useRef(null);
-  const [hints, setHints] = useState(() => localStorage.getItem("grim_draft_hints") === "on");
-  const [suggestions, setSuggestions] = useState([]);
-  const [suggestFor, setSuggestFor] = useState(null);     // seat the current suggestions are for
-  const [suggestLoading, setSuggestLoading] = useState(false);
+  // Pick suggestions are asked for on demand (the lightbulb) and shown in a pop-up. `key` says which
+  // pick and seat they belong to, so a stale answer never shows on a later pick.
+  const [suggest, setSuggest] = useState({ key: null, ids: [], loading: false, failed: false });
   const [suggestOpen, setSuggestOpen] = useState(false);  // the suggestions pop-up
+  const suggestKeyRef = useRef(null);
   // Mirror tables: suggest for every seat (not just yours) to watch how the bot reads each drafter.
   const [suggestAll, setSuggestAll] = useState(() => { try { return localStorage.getItem("grim_mirror_suggest_all") === "on"; } catch { return false; } });
   // Mirror tables: search for cards outside the cube, and catch up from the group's sheet.
@@ -295,32 +296,34 @@ export default function DraftRoom() {
     }
   }, [state, me, shareId]);
 
-  // Pick suggestions (same engine as the bots) when it's our turn and hints are on.
+  // Pick suggestions (same engine as the bots) for the seat on the clock, when it's ours to pick.
   const turnSeat = onMySeat(state, me) || (state?.mirror && suggestAll && state.status === "drafting" && me && state.current_seat_index != null)
     ? state.current_seat_index : null;
   const mySeatIdx = state?.my_seat;
-  const showHints = hints || isMirror;     // mirror tables exist to test the suggestions: always on for your seat
   const pickNo = state?.pick_index;
+  const suggestKey = turnSeat != null ? `${pickNo}:${turnSeat}` : null;
+  suggestKeyRef.current = suggestKey;
+  // Mirror tables: a new pick closes the pop-up (it opens again by itself on your seat). Elsewhere an
+  // open pop-up just follows along to the next pick.
+  useEffect(() => { if (isMirror) setSuggestOpen(false); }, [pickNo, isMirror]);
+  // Fetch when the lightbulb is opened, or straight away on mirror tables (they exist to test the
+  // suggestions, and pop them up on your own seat by themselves).
   useEffect(() => {
-    setSuggestions([]);
-    setSuggestOpen(false);
-    if (!showHints || turnSeat == null) return;
-    let active = true;
-    setSuggestLoading(true);
-    api.get(`/drafts/${shareId}/suggestions`, { params: { seat: turnSeat }, timeout: 60000 })
+    if (!suggestKey || !(isMirror || suggestOpen) || suggest.key === suggestKey) return;
+    const key = suggestKey;
+    const seat = turnSeat;
+    setSuggest({ key, ids: [], loading: true, failed: false });
+    api.get(`/drafts/${shareId}/suggestions`, { params: { seat }, timeout: 60000 })
       .then(({ data }) => {
-        if (!active) return;
         if (data.cards) rememberCards(data.cards);
-        setSuggestions(data.suggestions || []);
-        setSuggestFor(turnSeat);
-        // Mirror tables: pop the suggestions up rather than leaving them in a strip above a 500-card pool.
-        // (Only for your own seat: on other seats it would get in the way of copying their picks.)
-        if (isMirror && turnSeat === mySeatIdx && (data.suggestions || []).length) setSuggestOpen(true);
+        if (suggestKeyRef.current !== key) return;
+        const ids = data.suggestions || [];
+        setSuggest({ key, ids, loading: false, failed: false });
+        if (isMirror && seat === mySeatIdx && ids.length) setSuggestOpen(true);
       })
-      .catch(() => {})
-      .finally(() => { if (active) setSuggestLoading(false); });
-    return () => { active = false; };
-  }, [showHints, turnSeat, pickNo, shareId, isMirror, mySeatIdx]);
+      .catch(() => { if (suggestKeyRef.current === key) setSuggest({ key, ids: [], loading: false, failed: true }); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestKey, isMirror, suggestOpen]);
 
   // Phones: keep the seat on the clock centred in the sideways-scrolling seat strip.
   const clockSeat = state?.current_seat_index;
@@ -459,6 +462,7 @@ export default function DraftRoom() {
   };
 
   const seatsSorted = [...state.seats].sort((a, b) => a.index - b.index);
+  const drafting = state.status === "drafting";
   const isBotSeat = (seatIdx) => (state.players || []).some((p) => p.is_bot && p.seats.includes(seatIdx));
   const seatLabel = (seatIdx) => { const s = state.seats.find((x) => x.index === seatIdx); return `${s?.player_name || "Seat"} (Seat ${seatIdx + 1})`; };
   const seatPicks = (seatIdx) => (state.picks || []).filter((p) => p.seat_index === seatIdx).sort((a, b) => a.order - b.order).map((p) => cubeById[p.card_id]).filter(Boolean);
@@ -604,29 +608,40 @@ export default function DraftRoom() {
 
   const renderPickGrid = () => (
     <div>
-      <div className="mb-3 flex items-center gap-3 flex-wrap">
+      <div className="mb-3 flex items-center gap-2 sm:gap-3 flex-wrap" data-testid="pool-toolbar">
         {isVrd ? (
-          <form onSubmit={(e) => { e.preventDefault(); setVrdSearch(query); loadVrdList(query); }} className="flex items-center gap-2 w-full sm:w-auto" data-testid="vrd-search">
-            <Input data-testid="vrd-search-input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search any Vintage-legal card…"
-              className="w-full sm:w-72 h-9 bg-slate-950 border-slate-700 text-slate-100" />
-            <Button type="submit" size="sm" data-testid="vrd-search-go" className="h-9 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">{vrdLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Search"}</Button>
+          <form onSubmit={(e) => { e.preventDefault(); setVrdSearch(query); loadVrdList(query); }} className="flex items-center gap-2 flex-1 min-w-[min(100%,16rem)]" data-testid="vrd-search">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <Input data-testid="vrd-search-input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search any Vintage-legal card…"
+                className="w-full h-10 pl-9 bg-slate-950 border-slate-700 text-slate-100" />
+            </div>
+            <Button type="submit" data-testid="vrd-search-go" className="h-10 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">{vrdLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Search"}</Button>
             {vrdSearch && <button type="button" data-testid="vrd-search-clear" onClick={() => { setQuery(""); setVrdSearch(""); loadVrdList(""); }} className="text-xs text-slate-400 hover:text-amber-300 whitespace-nowrap">Top cards</button>}
           </form>
         ) : (
-          <Input data-testid="cube-filter" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter cards..." className="w-full sm:w-44 h-9 bg-slate-950 border-slate-700 text-slate-100" />
+          <div className="relative flex-1 min-w-[min(100%,16rem)]">
+            <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <Input data-testid="cube-filter" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${availableCount} available cards…`}
+              className="w-full h-10 pl-9 bg-slate-950 border-slate-700 text-slate-100" />
+          </div>
         )}
-        <div className="flex items-center gap-1" data-testid="sort-controls">
-          <span className="text-xs text-slate-500 mr-1">Sort</span>
-          {SORTS.map((s) => (
-            <button key={s.k} data-testid={`sort-${s.k}`} onClick={() => setSortBy(s.k)}
-              className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${sortBy === s.k ? "border-amber-400 text-amber-300 bg-amber-400/10" : "border-slate-700 text-slate-400 hover:text-slate-200"}`}>{s.label}</button>
-          ))}
-        </div>
-        <button data-testid="toggle-hints" onClick={() => setHints((h) => { localStorage.setItem("grim_draft_hints", h ? "off" : "on"); return !h; })}
-          title={hints ? "Hide pick suggestions" : "Show pick suggestions on your turn"}
-          className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border transition-colors ${hints ? "border-amber-400/60 text-amber-300" : "border-slate-700 text-slate-500 hover:text-slate-300"}`}>
-          <Lightbulb className="w-3.5 h-3.5" /> Pick Suggestions
-        </button>
+        <Select value={sortBy} onValueChange={setSortBy}>
+          <SelectTrigger data-testid="sort-select" aria-label="Sort cards" className="w-[8.5rem] h-10 shrink-0 bg-slate-950 border-slate-700 text-slate-200 text-sm">
+            <span className="flex items-center gap-1.5"><ArrowDownWideNarrow className="w-4 h-4 text-slate-500" /><SelectValue /></span>
+          </SelectTrigger>
+          <SelectContent className="bg-slate-900 border-slate-700 text-slate-200">
+            {SORTS.map((o) => <SelectItem key={o.k} value={o.k} data-testid={`sort-${o.k}`}>{o.label}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        {state.status === "drafting" && (
+          <button type="button" data-testid="toggle-hints" aria-label="Pick suggestions" onClick={() => setSuggestOpen(true)}
+            className={`group relative h-10 w-10 shrink-0 rounded-md border flex items-center justify-center transition-colors ${turnSeat != null ? "border-amber-400/60 text-amber-300 hover:bg-amber-400/10" : "border-slate-700 text-slate-500 hover:text-slate-300"}`}>
+            <Lightbulb className="w-4 h-4" />
+            {turnSeat != null && suggest.key === suggestKey && suggest.ids.length > 0 && <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-amber-400" />}
+            <span className="pointer-events-none absolute top-full mt-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] text-slate-200 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity z-20">Pick suggestions</span>
+          </button>
+        )}
         <div className="hidden lg:flex items-center gap-1" data-testid="card-size-controls">
           <span className="text-xs text-slate-500 mr-1">Size</span>
           {CARD_SIZES.map((z) => (
@@ -634,13 +649,15 @@ export default function DraftRoom() {
               className={`text-xs w-7 py-1 rounded-full border transition-colors ${cardSize === z.k ? "border-amber-400 text-amber-300 bg-amber-400/10" : "border-slate-700 text-slate-400 hover:text-slate-200"}`}>{z.label}</button>
           ))}
         </div>
-        <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none" data-testid="hide-picked-toggle">
+        <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none whitespace-nowrap" data-testid="hide-picked-toggle">
           <input type="checkbox" checked={hidePicked} onChange={(e) => setHidePicked(e.target.checked)} className="accent-amber-400 w-3.5 h-3.5" /> Hide picked
         </label>
-        <span className="text-xs text-slate-500 ml-auto">{isVrd ? (vrdSearch ? `${availableCount} results for "${vrdSearch}"`
-          : vrdWarming ? "Loading the top-rated card list (first VRD table only). Search works now; bots start in a few seconds."
-          : "Top-rated undrafted cards. Search for anything Vintage-legal.") : `${availableCount} available`}</span>
       </div>
+      {isVrd && (
+        <p className="-mt-1 mb-3 text-xs text-slate-500" data-testid="vrd-status">{vrdSearch ? `${availableCount} results for "${vrdSearch}"`
+          : vrdWarming ? "Loading the top-rated card list (first VRD table only). Search works now; bots start in a few seconds."
+          : "Top-rated undrafted cards. Search for anything Vintage-legal."}</p>
+      )}
       {isMirror && (
         <div className="mb-3 rounded-lg border border-slate-800 bg-slate-900/50 p-2.5 space-y-2" data-testid="mirror-panel">
           <div className="flex items-center gap-2 flex-wrap text-xs">
@@ -680,21 +697,6 @@ export default function DraftRoom() {
               </div>
             ) : <p className="text-xs text-slate-500">No cards found.</p>
           )}
-        </div>
-      )}
-      {isMirror && turnSeat != null && suggestLoading && (
-        <div className="mb-3 flex items-center gap-2 text-xs text-slate-500" data-testid="suggestions-loading"><Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" /> Working out suggestions… (the first one after a server restart can take a few seconds)</div>
-      )}
-      {showHints && turnSeat != null && suggestFor === state.current_seat_index && suggestions.some((id) => cubeById[id] && !isTaken(cubeById[id])) && (
-        <div className="mb-3 flex items-center gap-2 flex-wrap" data-testid="pick-suggestions">
-          <span className="flex items-center gap-1 text-xs text-slate-500"><Lightbulb className="w-3.5 h-3.5 text-amber-400" /> Suggested{isMirror && !mineNow ? ` for ${currentSeatName || "this seat"}` : ""}</span>
-          {isMirror && <button type="button" data-testid="suggestions-open" onClick={() => setSuggestOpen(true)} className="text-xs px-2.5 py-1 rounded-full border border-amber-400/50 text-amber-300 hover:bg-amber-400/10">Show cards</button>}
-          {suggestions.map((id) => cubeById[id]).filter((c) => c && !isTaken(c)).map((c) => (
-            <button key={c.id} data-testid={`suggestion-${c.id}`} onClick={() => setConfirmCard(c)} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
-              className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-slate-700 bg-slate-900/60 text-slate-200 hover:border-amber-400/70 hover:text-amber-200 max-w-[60vw] sm:max-w-[220px]">
-              <span className={`w-2 h-2 rounded-full shrink-0 ${colorClass(c)}`} /><span className="truncate">{c.name}</span>
-            </button>
-          ))}
         </div>
       )}
       <div className="lg:max-h-[calc(100vh-280px)] lg:overflow-y-auto lg:pr-1 lg:-mr-1">
@@ -903,11 +905,24 @@ export default function DraftRoom() {
       </header>
 
       <main className={`max-w-7xl 2xl:max-w-[1760px] mx-auto px-3 sm:px-6 py-4 sm:py-6 ${state.status !== "lobby" ? "pb-28 lg:pb-6" : ""}`}>
-        <div ref={seatStripRef} className="relative flex gap-2 overflow-x-auto -mx-3 px-3 pb-1 mb-4 sm:mx-0 sm:px-0 sm:pb-0 sm:mb-6 sm:grid sm:grid-cols-2 lg:grid-cols-4 sm:gap-3 sm:overflow-visible" data-testid="seat-grid">
+        {/* Seats: a grid in the lobby and at the end. While drafting they move into the left column on
+            desktop, and phones / tablets get a slim strip that scrolls sideways. */}
+        <div ref={seatStripRef} className={drafting
+          ? "lg:hidden relative flex gap-2 overflow-x-auto -mx-3 px-3 pb-1 mb-3 sm:mx-0 sm:px-0"
+          : "relative flex gap-2 overflow-x-auto -mx-3 px-3 pb-1 mb-4 sm:mx-0 sm:px-0 sm:pb-0 sm:mb-6 sm:grid sm:grid-cols-2 lg:grid-cols-4 sm:gap-3 sm:overflow-visible"} data-testid="seat-grid">
           {seatsSorted.map((s) => {
             const isCurrent = state.current_seat_index === s.index;
             const mine = isMirror ? s.index === state.my_seat : me?.seats?.includes(s.index);
             const last = seatPicks(s.index).slice(-1)[0];
+            if (drafting) return (
+              <div key={s.index} data-testid={`seat-${s.index}`} className={`rounded-lg border px-2.5 py-1.5 min-w-[120px] max-w-[160px] shrink-0 ${isCurrent ? "border-amber-400 bg-amber-400/10" : "border-slate-800 bg-slate-900/50"}`}>
+                <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500"><span>S{s.index + 1}{mine ? " · you" : ""}</span><span className="text-amber-400 tabular-nums">{seatPicks(s.index).length}/{state.pick_cap}</span></div>
+                <div className="text-xs font-semibold truncate flex items-center gap-1">
+                  {isBotSeat(s.index) && <Bot className="w-3 h-3 text-amber-400 shrink-0" aria-label="Bot" />}
+                  <span className="truncate">{s.player_name || "unclaimed"}</span>
+                </div>
+              </div>
+            );
             return (
               <div key={s.index} data-testid={`seat-${s.index}`} className={`rounded-xl border p-2.5 sm:p-3 min-w-[148px] shrink-0 sm:min-w-0 ${isCurrent ? "border-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.15)]" : "border-slate-800"} bg-slate-900/50`}>
                 <div className="flex items-center justify-between">
@@ -928,6 +943,30 @@ export default function DraftRoom() {
         <div className={`grid gap-6 items-start ${state.status === "drafting" ? "lg:grid-cols-[220px_minmax(0,1fr)_340px] 2xl:grid-cols-[260px_minmax(0,1fr)_420px]" : "lg:grid-cols-[minmax(0,1fr)_340px] 2xl:grid-cols-[minmax(0,1fr)_420px]"}`}>
           {state.status === "drafting" && (
             <aside className="hidden lg:flex lg:sticky lg:top-20 self-start flex-col max-h-[calc(100vh-110px)] bg-[#0b111e] border border-slate-800 rounded-lg" data-testid="queue-panel">
+              <div className="flex items-center gap-1.5 px-3 py-2 border-b border-slate-800 shrink-0">
+                <Users className="w-3.5 h-3.5 text-amber-400" />
+                <span className="text-xs font-display font-semibold">Table</span>
+                <span className="text-xs text-slate-500">({seatsSorted.length} seats)</span>
+              </div>
+              <div className="overflow-y-auto p-1.5 space-y-0.5 max-h-[45vh] shrink-0 border-b border-slate-800" data-testid="seat-list">
+                {seatsSorted.map((s) => {
+                  const isCurrent = state.current_seat_index === s.index;
+                  const mine = isMirror ? s.index === state.my_seat : me?.seats?.includes(s.index);
+                  const picks = seatPicks(s.index);
+                  const last = picks[picks.length - 1];
+                  return (
+                    <div key={s.index} data-testid={`seat-row-${s.index}`} title={last ? `Last pick: ${last.name}` : "No picks yet"}
+                      className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-xs ${isCurrent ? "border-amber-400/70 bg-amber-400/10" : "border-transparent"}`}>
+                      <span className="w-4 text-slate-500 tabular-nums shrink-0">{s.index + 1}</span>
+                      {isBotSeat(s.index) && <Bot className="w-3 h-3 text-amber-400 shrink-0" aria-label="Bot" />}
+                      <span className={`flex-1 min-w-0 truncate ${isCurrent ? "text-amber-200 font-semibold" : mine ? "text-slate-100" : "text-slate-300"}`}>
+                        {s.player_name || "unclaimed"}{mine && <span className="text-slate-500 font-normal"> · you</span>}
+                      </span>
+                      <span className="text-slate-500 tabular-nums shrink-0">{picks.length}/{state.pick_cap}</span>
+                    </div>
+                  );
+                })}
+              </div>
               <div className="flex items-center gap-1.5 px-3 py-2 border-b border-slate-800 shrink-0">
                 <Bookmark className="w-3.5 h-3.5 text-amber-400" />
                 <span className="text-xs font-display font-semibold">Pick queue</span>
@@ -1146,23 +1185,34 @@ export default function DraftRoom() {
         </div>
       )}
 
-      {suggestOpen && isMirror && state.status === "drafting" && suggestFor === state.current_seat_index && (() => {
-        const cards = suggestions.map((id) => cubeById[id]).filter((c) => c && !isTaken(c));
-        if (!cards.length) return null;
+      {suggestOpen && state.status === "drafting" && (() => {
+        const ready = turnSeat != null && suggest.key === suggestKey && !suggest.loading;
+        const cards = ready ? suggest.ids.map((id) => cubeById[id]).filter((c) => c && !isTaken(c)) : [];
+        const forOther = isMirror && !mineNow;
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" data-testid="suggestions-dialog" onClick={() => setSuggestOpen(false)}>
-            <div className="bg-[#0b111e] border border-slate-700 rounded-2xl p-5 w-full max-w-2xl" onClick={(e) => e.stopPropagation()}>
-              <h3 className="font-display text-lg font-bold flex items-center gap-2"><Lightbulb className="w-5 h-5 text-amber-400" /> {mineNow ? "Suggested picks for you" : `Bot would take, for ${currentSeatName || "this seat"}`}</h3>
-              <p className="text-xs text-slate-500 mt-1">Best first. Tap one to draft it{mineNow ? "" : ` for ${currentSeatName || "this seat"}`}, or close this and pick something else.</p>
-              <div className="mt-4 grid grid-cols-3 gap-3">
-                {cards.map((c, i) => (
-                  <button key={c.id} type="button" data-testid={`suggestions-dialog-${c.id}`} onClick={() => { setSuggestOpen(false); setConfirmCard(c); }}
-                    className="text-left rounded-lg overflow-hidden border border-slate-800 hover:border-amber-400/70 bg-slate-900">
-                    {(c.image || c.art_crop) ? <img src={c.image || c.art_crop} alt={c.name} className="w-full" /> : <div className="p-4 text-sm text-slate-200">{c.name}</div>}
-                    <div className="px-2 py-1.5 text-xs text-slate-300 truncate"><span className="text-amber-300 font-semibold">{i + 1}.</span> {c.name}</div>
-                  </button>
-                ))}
-              </div>
+            <div className="bg-[#0b111e] border border-slate-700 rounded-2xl p-4 sm:p-5 w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+              <h3 className="font-display text-lg font-bold flex items-center gap-2"><Lightbulb className="w-5 h-5 text-amber-400" /> {forOther ? `Bot would take, for ${currentSeatName || "this seat"}` : "Suggested picks"}</h3>
+              {turnSeat == null ? (
+                <p className="text-sm text-slate-400 mt-2" data-testid="suggestions-not-your-turn">Suggestions are for your turn. Open this again when you're on the clock.</p>
+              ) : !ready ? (
+                <p className="text-sm text-slate-400 mt-3 flex items-center gap-2" data-testid="suggestions-loading"><Loader2 className="w-4 h-4 animate-spin text-amber-400" /> Working out suggestions… (the first one after a server restart can take a few seconds)</p>
+              ) : !cards.length ? (
+                <p className="text-sm text-slate-400 mt-2">{suggest.failed ? "Couldn't get suggestions just now. Try again in a moment." : "No suggestions for this pick."}</p>
+              ) : (
+                <>
+                  <p className="text-xs text-slate-500 mt-1">Best first. Tap one to draft it{forOther ? ` for ${currentSeatName || "this seat"}` : ""}, or close this and pick something else.</p>
+                  <div className="mt-4 grid grid-cols-3 gap-2 sm:gap-3">
+                    {cards.map((c, i) => (
+                      <button key={c.id} type="button" data-testid={`suggestions-dialog-${c.id}`} onClick={() => { setSuggestOpen(false); setConfirmCard(c); }}
+                        className="text-left rounded-lg overflow-hidden border border-slate-800 hover:border-amber-400/70 bg-slate-900">
+                        {(c.image || c.art_crop) ? <img src={c.image || c.art_crop} alt={c.name} className="w-full" /> : <div className="p-4 text-sm text-slate-200">{c.name}</div>}
+                        <div className="px-2 py-1.5 text-xs text-slate-300 truncate"><span className="text-amber-300 font-semibold">{i + 1}.</span> {c.name}</div>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
               <Button variant="outline" onClick={() => setSuggestOpen(false)} data-testid="suggestions-dialog-close" className="w-full mt-4 bg-slate-900 border-slate-700 text-slate-200">Close</Button>
             </div>
           </div>
