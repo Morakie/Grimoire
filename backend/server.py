@@ -934,6 +934,11 @@ class SeatingInput(BaseModel):
     mode: str = Field(pattern="^(random|host)$")          # random at start, or the host sets the order
     order: List[str] = Field(default_factory=list, max_length=12)   # player ids in seat order (host mode)
 
+class BotIgnoreInput(BaseModel):
+    host_token: str
+    name: str           # card name; every printing of it is skipped
+    ignore: bool = True
+
 class SwapInput(BaseModel):
     host_token: str
     order_a: int        # the two picks to trade (positions in the pick list)
@@ -998,6 +1003,7 @@ def draft_state(d: dict, light: bool = False) -> dict:
         "mode": d.get("mode", "rotisserie"),
         "pool": d.get("pool", "cube"),
         "mirror": bool(d.get("mirror")),
+        "bot_ignore": d.get("bot_ignore", []),
         "seating": d.get("seating", "random"),
         "my_seat": d.get("my_seat"),
         "rev": d.get("rev", 0),
@@ -1937,6 +1943,25 @@ async def reassign_pick(share_id: str, data: AdminPickInput):
     return fast_json(draft_state(d, light=True))
 
 
+@api_router.post("/drafts/{share_id}/bot-ignore")
+async def bot_ignore(share_id: str, data: BotIgnoreInput):
+    """Host: bots and pick suggestions skip (or stop skipping) a card at this table, e.g. one that is in
+    the list but banned in the group's cube. People can still pick it."""
+    d = await _draft(share_id)
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("host_token") != data.host_token:
+        raise HTTPException(status_code=403, detail="Only the host can change this")
+    name = " ".join(data.name.split())
+    if not name:
+        raise HTTPException(status_code=400, detail="Card name missing")
+    op = {"$addToSet": {"bot_ignore": name}} if data.ignore else {"$pull": {"bot_ignore": name}}
+    await db.drafts.update_one({"share_id": share_id}, {**op, "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}})
+    _forget_suggestions(share_id)
+    d = await _draft(share_id)
+    return fast_json(draft_state(d, light=True))
+
+
 @api_router.post("/drafts/{share_id}/swap")
 async def swap_picks(share_id: str, data: SwapInput):
     """Host: trade two picks between seats (each seat gets the other's card). Everyone at the table
@@ -2108,10 +2133,11 @@ def _taken_names(d: dict, cube: List[dict]) -> set:
 def _remaining_ids(d: dict, cards: dict) -> List[str]:
     """Card ids the bots may still pick: undrafted cube cards, or undrafted names from the VRD pool."""
     taken = {p["card_id"] for p in d.get("picks", [])}
+    skip = {_name_key(n) for n in d.get("bot_ignore", [])}     # cards the host told the bots to leave alone
     if cards.get("vintage"):
-        names = _taken_names(d, cards["cube"])
-        return [c["id"] for c in cards["pool_cards"] if c["id"] not in taken and c["name"].lower() not in names]
-    return [cid for cid in cards["index"] if cid not in taken]
+        names = _taken_names(d, cards["cube"]) | skip
+        return [c["id"] for c in cards["pool_cards"] if c["id"] not in taken and _name_key(c["name"]) not in names]
+    return [cid for cid, info in cards["index"].items() if cid not in taken and _name_key(info.name) not in skip]
 
 
 async def _cards(share_id: str) -> dict:

@@ -9,7 +9,7 @@ import { buildExport } from "@/components/ExportDialog";
 import { useAuth } from "@/context/AuthContext";
 import { getBasics } from "@/lib/mtg";
 import PackDraftView from "@/components/PackDraftView";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, ArrowRight, Megaphone, Shuffle, ListOrdered, UserX } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, ArrowRight, Megaphone, Shuffle, ListOrdered, UserX, EyeOff } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -157,6 +157,7 @@ export default function DraftRoom() {
   // pick and seat they belong to, so a stale answer never shows on a later pick.
   const [suggest, setSuggest] = useState({ key: null, ids: [], loading: false, failed: false });
   const [suggestOpen, setSuggestOpen] = useState(false);  // the suggestions pop-up
+  const [sugSeat, setSugSeat] = useState(null);           // seat chosen in the pop-up (null = whoever is on the clock)
   const suggestKeyRef = useRef(null);
   // Mirror tables: suggest for every seat (not just yours) to watch how the bot reads each drafter. On unless turned off.
   const [suggestAll, setSuggestAll] = useState(() => { try { return localStorage.getItem("grim_mirror_suggest_all") !== "off"; } catch { return true; } });
@@ -327,10 +328,18 @@ export default function DraftRoom() {
   }, [state, me, shareId]);
 
   // Pick suggestions (same engine as the bots) for the seat on the clock, when it's ours to pick.
-  const turnSeat = onMySeat(state, me) || (state?.mirror && suggestAll && state.status === "drafting" && me && state.current_seat_index != null)
+  // Spectators (no seat in this browser) see suggestions for whoever is on the clock (rotisserie only uses
+  // public information); mirror tables can show every seat too.
+  const spectating = !me;
+  const turnSeat = onMySeat(state, me) || (state?.status === "drafting" && state.current_seat_index != null && state.mode !== "packs"
+    && (spectating || (isMirror && suggestAll)))
     ? state.current_seat_index : null;
+  // The pop-up can also show any other seat ("what would the bot take for them right now").
+  const viewSeat = state?.status === "drafting" && state.mode !== "packs" ? (sugSeat ?? turnSeat) : null;
+  const canPickTurn = !!(me && viewSeat != null && viewSeat === state?.current_seat_index && me.seats.includes(viewSeat));
   const pickNo = state?.pick_index;
-  const suggestKey = turnSeat != null ? `${pickNo}:${turnSeat}` : null;
+  const botIgnore = state?.bot_ignore || [];        // cards the host told the bots to leave alone
+  const suggestKey = viewSeat != null ? `${pickNo}:${viewSeat}:${botIgnore.join("|")}` : null;
   suggestKeyRef.current = suggestKey;
   // Mirror tables: a new pick closes the pop-up. Elsewhere an open pop-up just follows along to the next pick.
   useEffect(() => { if (isMirror) setSuggestOpen(false); }, [pickNo, isMirror]);
@@ -339,7 +348,7 @@ export default function DraftRoom() {
   useEffect(() => {
     if (!suggestKey || !(isMirror || suggestOpen) || suggest.key === suggestKey) return;
     const key = suggestKey;
-    const seat = turnSeat;
+    const seat = viewSeat;
     setSuggest({ key, ids: [], loading: true, failed: false });
     api.get(`/drafts/${shareId}/suggestions`, { params: { seat }, timeout: 60000 })
       .then(({ data }) => {
@@ -352,6 +361,7 @@ export default function DraftRoom() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [suggestKey, isMirror, suggestOpen]);
 
+  useEffect(() => { if (!suggestOpen) setSugSeat(null); }, [suggestOpen]);
   // Escape closes the suggestions pop-up.
   useEffect(() => {
     if (!suggestOpen) return;
@@ -740,6 +750,14 @@ export default function DraftRoom() {
     miniMouseRef.current = { left, top };
     const el = miniPreviewRef.current;
     if (el) { el.style.left = `${left}px`; el.style.top = `${top}px`; }
+  };
+  // Host: bots and pick suggestions skip a card at this table (or stop skipping it). People can still pick it.
+  const setBotIgnore = async (name, ignore) => {
+    try {
+      const { data } = await api.post(`/drafts/${shareId}/bot-ignore`, { host_token: hostToken, name, ignore });
+      actionSeqRef.current++; setState(data);
+      toast.success(ignore ? `Bots will skip ${name}` : `Bots can take ${name} again`);
+    } catch (e) { toast.error(e.response?.data?.detail || "Could not change that"); }
   };
   const hoverIn = (c) => () => c && setHoverCard(c);
   const hoverOut = (c) => () => setHoverCard((h) => (h?.id === c?.id ? null : h));
@@ -1456,32 +1474,63 @@ export default function DraftRoom() {
       )}
 
       {suggestOpen && state.status === "drafting" && (() => {
-        const ready = turnSeat != null && suggest.key === suggestKey && !suggest.loading;
+        const ready = viewSeat != null && suggest.key === suggestKey && !suggest.loading;
         const cards = ready ? suggest.ids.map((id) => cubeById[id]).filter((c) => c && !isTaken(c)) : [];
-        const forOther = isMirror && !mineNow;
+        const forOther = viewSeat != null && !(mineNow && viewSeat === state.current_seat_index);
+        const viewName = viewSeat != null ? state.seats.find((x) => x.index === viewSeat)?.player_name : null;
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" data-testid="suggestions-dialog" onClick={() => setSuggestOpen(false)}>
             <div className="bg-[#0b111e] border border-slate-700 rounded-2xl p-4 sm:p-5 w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-              <h3 className="font-display text-lg font-bold flex items-center gap-2"><Lightbulb className="w-5 h-5 text-amber-400" /> {forOther ? `Bot would take, for ${currentSeatName || "this seat"}` : "Suggested picks"}</h3>
-              {turnSeat == null ? (
-                <p className="text-sm text-slate-400 mt-2" data-testid="suggestions-not-your-turn">Suggestions are for your turn. Open this again when you're on the clock.</p>
+              <h3 className="font-display text-lg font-bold flex items-center gap-2"><Lightbulb className="w-5 h-5 text-amber-400" /> {forOther ? `Bot would take, for ${viewName || "this seat"}` : "Suggested picks"}</h3>
+              <Select value={sugSeat == null ? "clock" : String(sugSeat)} onValueChange={(v) => setSugSeat(v === "clock" ? null : Number(v))}>
+                <SelectTrigger data-testid="suggest-seat-select" aria-label="Show suggestions for" className="mt-3 h-9 w-full sm:w-72 bg-slate-950 border-slate-700 text-slate-200 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="z-[70]">
+                  <SelectItem value="clock">On the clock{currentSeatName ? ` (${currentSeatName})` : ""}</SelectItem>
+                  {state.seats.map((x) => <SelectItem key={x.index} value={String(x.index)}>Seat {x.index + 1} · {x.player_name || "Open seat"}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              {viewSeat == null ? (
+                <p className="text-sm text-slate-400 mt-2" data-testid="suggestions-not-your-turn">It isn't your turn. Choose a seat above to see what the bot would take for them.</p>
               ) : !ready ? (
                 <p className="text-sm text-slate-400 mt-3 flex items-center gap-2" data-testid="suggestions-loading"><Loader2 className="w-4 h-4 animate-spin text-amber-400" /> Working out suggestions… (the first one after a server restart can take a few seconds)</p>
               ) : !cards.length ? (
                 <p className="text-sm text-slate-400 mt-2">{suggest.failed ? "Couldn't get suggestions just now. Try again in a moment." : "No suggestions for this pick."}</p>
               ) : (
                 <>
-                  <p className="text-xs text-slate-500 mt-1">Best first. Tap one to draft it{forOther ? ` for ${currentSeatName || "this seat"}` : ""}, or close this and pick something else.</p>
+                  <p className="text-xs text-slate-500 mt-1">{canPickTurn
+                    ? <>Best first. Tap one to draft it{forOther ? ` for ${viewName || "this seat"}` : ""}, or close this and pick something else.</>
+                    : viewSeat !== state.current_seat_index
+                      ? `What the bot would take for ${viewName || "this seat"} if they picked now. Tap one to see it larger.`
+                      : "Best first, from the same engine the bots use. Tap one to see it larger."}</p>
                   <div className="mt-4 grid grid-cols-3 gap-2 sm:gap-3">
                     {cards.map((c, i) => (
-                      <button key={c.id} type="button" data-testid={`suggestions-dialog-${c.id}`} onClick={() => { setSuggestOpen(false); setConfirmCard(c); }}
-                        className="text-left rounded-lg overflow-hidden border border-slate-800 hover:border-amber-400/70 bg-slate-900">
-                        {(c.image || c.art_crop) ? <img src={c.image || c.art_crop} alt={c.name} className="w-full" /> : <div className="p-4 text-sm text-slate-200">{c.name}</div>}
-                        <div className="px-2 py-1.5 text-xs text-slate-300 truncate"><span className="text-amber-300 font-semibold">{i + 1}.</span> {c.name}</div>
-                      </button>
+                      <div key={c.id} className="relative group/sug">
+                        <button type="button" data-testid={`suggestions-dialog-${c.id}`} onClick={() => { setSuggestOpen(false); if (canPickTurn) setConfirmCard(c); else setPreviewCard(c); }}
+                          className="w-full text-left rounded-lg overflow-hidden border border-slate-800 hover:border-amber-400/70 bg-slate-900">
+                          {(c.image || c.art_crop) ? <img src={c.image || c.art_crop} alt={c.name} className="w-full" /> : <div className="p-4 text-sm text-slate-200">{c.name}</div>}
+                          <div className="px-2 py-1.5 text-xs text-slate-300 truncate"><span className="text-amber-300 font-semibold">{i + 1}.</span> {c.name}</div>
+                        </button>
+                        {hostToken && (
+                          <button type="button" data-testid={`bot-ignore-${c.id}`} onClick={() => setBotIgnore(c.name, true)} title="Bots and suggestions skip this card at this table"
+                            className="absolute top-1.5 right-1.5 flex items-center gap-1 rounded-md bg-slate-950/90 border border-slate-700 px-1.5 py-1 text-[11px] text-slate-200 hover:text-amber-300 hover:border-amber-400/60">
+                            <EyeOff className="w-3.5 h-3.5" /> Skip
+                          </button>
+                        )}
+                      </div>
                     ))}
                   </div>
                 </>
+              )}
+              {botIgnore.length > 0 && (
+                <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs text-slate-400" data-testid="bot-ignore-list">
+                  <span>Bots skip:</span>
+                  {botIgnore.map((n) => hostToken ? (
+                    <button key={n} type="button" onClick={() => setBotIgnore(n, false)} title="Let the bots take it again"
+                      className="flex items-center gap-1 rounded-full border border-slate-700 bg-slate-900 px-2 py-0.5 text-slate-200 hover:border-amber-400/60">{n} <X className="w-3 h-3" /></button>
+                  ) : <span key={n} className="rounded-full border border-slate-800 px-2 py-0.5">{n}</span>)}
+                </div>
               )}
               <Button variant="outline" onClick={() => setSuggestOpen(false)} data-testid="suggestions-dialog-close" className="w-full mt-4 bg-slate-900 border-slate-700 text-slate-200">Close</Button>
             </div>
