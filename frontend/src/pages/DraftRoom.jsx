@@ -131,6 +131,7 @@ export default function DraftRoom() {
   const [me, setMe] = useState(() => { try { return JSON.parse(localStorage.getItem(storeKey(shareId))) || null; } catch { return null; } });
   const [claimName, setClaimName] = useState("");
   const [rejoinHidden, setRejoinHidden] = useState(false);   // spectator dismissed the "rejoin" box
+  const [claimTarget, setClaimTarget] = useState(null);      // a joined player this browser wants to become (confirm first)
   const [query, setQuery] = useState("");
   const [picking, setPicking] = useState(false);
   const [chatText, setChatText] = useState("");
@@ -406,11 +407,16 @@ export default function DraftRoom() {
     </div>
   );
 
-  const claim = async () => {
-    if (!claimName.trim()) { toast.error("Enter your name"); return; }
+  // Join as a new player (typed name), or claim a player who already joined (picked from the list).
+  const claim = async (asName) => {
+    const name = (asName ?? claimName).trim();
+    if (!name) { toast.error("Enter a name"); return; }
+    // Typed the name of someone already at the table: confirm it's them rather than taking their seat silently.
+    const existing = asName ? null : (state?.players || []).find((p) => !p.is_bot && p.name.toLowerCase() === name.toLowerCase());
+    if (existing) { setClaimTarget(existing); return; }
     try {
       const { data: { host_token: newHost, ...data } } = await api.post(`/drafts/${shareId}/claim`,
-        { name: claimName.trim(), player_token: me?.player_token, host_token: hostToken || undefined });
+        { name, player_token: me?.player_token, host_token: hostToken || undefined });
       localStorage.setItem(storeKey(shareId), JSON.stringify(data));
       setMe(data);
       if (newHost && newHost !== hostToken) {
@@ -422,16 +428,40 @@ export default function DraftRoom() {
     } catch (e) { toast.error(e.response?.data?.detail || "Could not claim"); }
   };
   // Watching a table you're part of (new browser, cleared storage)? Rejoin with the name you used.
-  const rejoinBar = !me && !rejoinHidden && (state.status === "drafting" || state.status === "complete") ? (
+  const humans = (state.players || []).filter((p) => !p.is_bot);
+  const openSlots = !isMirror && state.status === "lobby" && (state.players || []).length < state.num_players;
+  // The people already at the table: tap your name to take your seat back (after a confirmation).
+  const claimList = (testid) => humans.length > 0 && (
+    <div className="flex flex-wrap gap-1.5" data-testid={testid}>
+      {humans.map((p) => (
+        <button key={p.id} type="button" data-testid={`claim-player-${p.id}`} onClick={() => setClaimTarget(p)}
+          className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-full border border-slate-700 bg-slate-900 text-slate-200 hover:border-amber-400/70 hover:text-amber-200">
+          <User className="w-3.5 h-3.5 text-slate-400" /> {p.name}
+        </button>
+      ))}
+    </div>
+  );
+  // Watching a table you're part of (new browser, cleared storage)? Pick your name to rejoin.
+  const rejoinBar = !me && !rejoinHidden && humans.length > 0 && (state.status === "drafting" || state.status === "complete") ? (
     <div className="fixed z-40 left-1/2 -translate-x-1/2 bottom-[7.5rem] lg:bottom-6 w-[min(94vw,30rem)] rounded-xl border border-sky-400/40 bg-[#0b111e]/95 backdrop-blur p-3 shadow-2xl" data-testid="rejoin-bar">
       <div className="flex items-start gap-2 mb-2">
-        <p className="flex-1 text-xs text-slate-300"><Eye className="w-3.5 h-3.5 inline mr-1 text-sky-300" />You're watching. Already at this table? Rejoin with the name you used{isMirror ? " for your seat" : ""}.</p>
+        <p className="flex-1 text-xs text-slate-300"><Eye className="w-3.5 h-3.5 inline mr-1 text-sky-300" />You're watching. Already at this table? Tap your name to take your seat back.</p>
         <button type="button" data-testid="rejoin-dismiss" onClick={() => setRejoinHidden(true)} aria-label="Just watching" title="Just watching" className="text-slate-500 hover:text-white"><X className="w-4 h-4" /></button>
       </div>
-      <form onSubmit={(e) => { e.preventDefault(); claim(); }} className="flex gap-2">
-        <Input data-testid="rejoin-name" value={claimName} onChange={(e) => setClaimName(e.target.value)} placeholder="Your name" className="h-9 bg-slate-950 border-slate-700 text-slate-100" />
-        <Button type="submit" data-testid="rejoin-submit" className="h-9 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold shrink-0">Rejoin</Button>
-      </form>
+      {claimList("rejoin-players")}
+    </div>
+  ) : null;
+  const claimDialog = claimTarget ? (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4" data-testid="claim-confirm" onClick={() => setClaimTarget(null)}>
+      <div className="bg-[#0b111e] border border-slate-700 rounded-2xl p-5 max-w-xs w-full text-center" onClick={(e) => e.stopPropagation()}>
+        <User className="w-8 h-8 text-amber-400 mx-auto mb-2" />
+        <h3 className="font-display text-lg font-bold">Are you {claimTarget.name}?</h3>
+        <p className="text-sm text-slate-400 mt-1 mb-4">You'll take over {claimTarget.name}'s seat{claimTarget.seats.length > 1 ? "s" : ""} in this browser.</p>
+        <div className="flex gap-2">
+          <Button variant="outline" data-testid="claim-cancel" onClick={() => setClaimTarget(null)} className="flex-1 bg-slate-900 border-slate-700 text-slate-200">Cancel</Button>
+          <Button data-testid="claim-confirm-btn" onClick={() => { const n = claimTarget.name; setClaimTarget(null); claim(n); }} className="flex-1 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">Yes, that's me</Button>
+        </div>
+      </div>
     </div>
   ) : null;
 
@@ -447,6 +477,7 @@ export default function DraftRoom() {
           muted={muted} onToggleMute={() => setMuted((m) => { localStorage.setItem("grim_draft_muted", (!m).toString()); return !m; })}
           onBeep={playBeep} onCancel={closeTable} shareUrl={`${window.location.origin}/draft/${shareId}`} />
         {rejoinBar}
+        {claimDialog}
       </>
     );
   }
@@ -1116,9 +1147,24 @@ export default function DraftRoom() {
                   )}
                 </div>
                 {!me ? (
-                  <div className="flex gap-2">
-                    <Input data-testid="claim-name" value={claimName} onChange={(e) => setClaimName(e.target.value)} placeholder="Your name" className="bg-slate-950 border-slate-700 text-slate-100 focus-visible:ring-amber-400" />
-                    <Button data-testid="claim-submit" onClick={claim} className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold shrink-0">Claim seat</Button>
+                  <div className="space-y-4">
+                    {openSlots && (
+                      <form onSubmit={(e) => { e.preventDefault(); claim(); }} data-testid="join-form">
+                        <label htmlFor="claim-name" className="block text-sm font-semibold text-slate-200 mb-1.5">What would you like to be called?</label>
+                        <div className="flex gap-2">
+                          <Input id="claim-name" data-testid="claim-name" value={claimName} onChange={(e) => setClaimName(e.target.value)} placeholder="Your name" maxLength={40}
+                            className="bg-slate-950 border-slate-700 text-slate-100 focus-visible:ring-amber-400" />
+                          <Button type="submit" data-testid="claim-submit" className="bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold shrink-0">Join</Button>
+                        </div>
+                      </form>
+                    )}
+                    {humans.length > 0 && (
+                      <div>
+                        <div className="text-xs text-slate-400 mb-1.5">{openSlots ? "Already joined from another browser? Tap your name:" : "The table is full. Tap your name to take your seat:"}</div>
+                        {claimList("lobby-claim-players")}
+                      </div>
+                    )}
+                    {!openSlots && humans.length === 0 && <p className="text-sm text-slate-500">The table is full.</p>}
                   </div>
                 ) : (
                   <div className="flex items-center gap-2 text-green-400 text-sm"><Check className="w-4 h-4" /> You are <b>{me.name}</b> — seat(s) {me.seats.map((s) => s + 1).join(", ")}</div>
@@ -1228,6 +1274,7 @@ export default function DraftRoom() {
       )}
 
       {rejoinBar}
+      {claimDialog}
 
       {previewCard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6" data-testid="card-preview-dialog" onClick={() => setPreviewCard(null)}>
