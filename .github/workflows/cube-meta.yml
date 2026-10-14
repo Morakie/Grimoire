@@ -1,0 +1,52 @@
+# Rebuilds backend/data/cube_meta.json (archetype staples + card synergy for powered cubes) from
+# CubeCobra's public data export and commits it to dev. See tools/cubecobra/build_meta.py.
+name: Cube data from CubeCobra
+
+on:
+  schedule:
+    - cron: "17 9 3 * *"          # 3rd of each month, 09:17 UTC; skipped when the export hasn't changed
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even if the export hasn't changed"
+        type: boolean
+        default: false
+  push:
+    branches: [dev]
+    paths: ["tools/cubecobra/**", ".github/workflows/cube-meta.yml"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cube-meta
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install numpy==2.1.3
+      - name: Build cube_meta.json
+        id: build
+        run: |
+          FORCE=""
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.force }}" = "true" ]; then FORCE="--force"; fi
+          python tools/cubecobra/build_meta.py --out backend/data/cube_meta.json $FORCE
+      - name: Commit to dev
+        if: steps.build.outputs.changed == 'true'
+        run: |
+          git config user.name "grimoire-data-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add backend/data/cube_meta.json
+          if git diff --cached --quiet; then echo "No change"; exit 0; fi
+          git commit -m "Cube data: rebuild from CubeCobra export"
+          git pull --rebase origin dev
+          git push origin HEAD:dev
