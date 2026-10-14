@@ -1769,7 +1769,7 @@ async def _rotisserie_pick(d: dict, seat: int, card_id: Optional[str] = None, ca
     if card_doc and cards.get("vintage"):
         await _vrd_add_card(share_id, card_doc)
     elif card_doc:
-        _CARDS_CACHE.pop(share_id, None)    # the bots' card index picks up the new card on next use
+        await _cube_add_card(share_id, card_doc)
     if d.get("mirror") and bot_top is None:
         task = asyncio.create_task(_log_bot_top(d, seat, pick))
         _BACKGROUND.add(task)
@@ -2087,6 +2087,18 @@ async def _vrd_add_card(share_id: str, card: dict) -> None:
             await _vrd_rebuild(entry)
 
 
+async def _cube_add_card(share_id: str, card: dict) -> None:
+    """Mirror tables: a card added to the cube mid-draft goes into the cached cube and bot index too,
+    so nothing has to re-read the whole cube from the database (slow when Atlas throttles)."""
+    entry = _CARDS_CACHE.get(share_id)
+    if not entry or entry.get("vintage") or card["id"] in entry["ids"]:
+        return
+    cube = entry["cube"] + [card]
+    index = await run_in_threadpool(build_card_index, cube, entry.get("stats"))
+    attach_combos(index, entry["combos"])
+    entry.update(cube=cube, ids=entry["ids"] | {card["id"]}, index=index)
+
+
 def _taken_names(d: dict, cube: List[dict]) -> set:
     """Names already drafted (VRD is singleton across the table, whatever the printing)."""
     picked = {p["card_id"] for p in d.get("picks", [])}
@@ -2132,7 +2144,7 @@ async def _cards(share_id: str) -> dict:
     index = await run_in_threadpool(build_card_index, cube, doc.get("bot_stats"))
     combos = combos_from_dicts(doc.get("bot_combos", []))
     attach_combos(index, combos)
-    entry = {"cube": cube, "ids": {c["id"] for c in cube}, "index": index, "combos": combos}
+    entry = {"cube": cube, "ids": {c["id"] for c in cube}, "index": index, "combos": combos, "stats": doc.get("bot_stats")}
     if doc.get("status") in ("drafting", "complete"):   # card stats are only final once the draft starts
         if len(_CARDS_CACHE) > 40:
             _CARDS_CACHE.clear()
