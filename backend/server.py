@@ -60,6 +60,10 @@ mongo_url = _require_env('MONGO_URL')
 mongo_kwargs = {}
 if mongo_url.startswith("mongodb+srv://"):
     mongo_kwargs["tlsCAFile"] = certifi.where()
+if "compressors=" not in mongo_url:
+    # Card data compresses ~5x. Draft documents carry a whole cube (~0.4 MB for 500 cards), so this
+    # cuts the time to read one from the database a lot (zlib needs no extra package).
+    mongo_kwargs["compressors"] = "zlib"
 client = AsyncIOMotorClient(mongo_url, **mongo_kwargs)
 db = client[_require_env('DB_NAME')]
 
@@ -482,6 +486,7 @@ async def card_collection(data: CollectionInput):
     return fast_json(await _collection_by_names(data.names))
 
 _NAME_CACHE_DAYS = 30
+_NAME_MEM: Dict[str, dict] = {}     # the same cache in memory (restarts start empty and refill from Mongo)
 
 
 async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
@@ -493,10 +498,11 @@ async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
     names = [" ".join(n.split())[:150] for n in names if n and n.strip()][:800]
     keys = list(dict.fromkeys(_name_key(n) for n in names))
     cutoff = (datetime.now(timezone.utc) - timedelta(days=_NAME_CACHE_DAYS)).isoformat()
-    known: Dict[str, dict] = {}
-    if keys:
-        async for doc in db.card_names.find({"key": {"$in": keys}, "at": {"$gte": cutoff}}, {"_id": 0, "key": 1, "card": 1}):
-            known[doc["key"]] = doc["card"]
+    known: Dict[str, dict] = {k: _NAME_MEM[k] for k in keys if k in _NAME_MEM}
+    rest = [k for k in keys if k not in known]
+    if rest:
+        async for doc in db.card_names.find({"key": {"$in": rest}, "at": {"$gte": cutoff}}, {"_id": 0, "key": 1, "card": 1}):
+            known[doc["key"]] = _NAME_MEM[doc["key"]] = doc["card"]
     todo = list(dict.fromkeys(n for n in names if _name_key(n) not in known))
     extra: List[dict] = []          # cards Scryfall returned that we couldn't tie back to a requested name
     missed: List[str] = []
@@ -553,6 +559,11 @@ async def _remember_names(fresh: Dict[str, dict]) -> int:
     now = datetime.now(timezone.utc).isoformat()
     ops = [UpdateOne({"key": k}, {"$set": {"key": k, "card": {f: v for f, v in c.items() if f != "prices"}, "at": now}}, upsert=True)
            for k, c in fresh.items() if c.get("oracle_id") in _OLDEST_CACHE]
+    if len(_NAME_MEM) > 40000:
+        _NAME_MEM.clear()
+    for k, c in fresh.items():
+        if c.get("oracle_id") in _OLDEST_CACHE:
+            _NAME_MEM[k] = c
     if not ops:
         return 0
     try:
@@ -1183,9 +1194,19 @@ async def list_open_drafts():
 
 @api_router.get("/drafts/{share_id}")
 async def get_draft(share_id: str):
+    entry = _CARDS_CACHE.get(share_id)
+    if entry:
+        # Running draft: the cube is already in memory (it's the biggest part of the document).
+        d = await _draft(share_id)
+        if d:
+            d["cube"] = entry["cube"]
+            d["bot_combos"] = [{"pieces": list(c.pieces)} for c in entry.get("combos") or []]
+            return fast_json(draft_state(d))
     d = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "bot_stats": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("status") in ("drafting", "complete"):
+        _warm_cards(share_id)     # next page load (and the bots) use the in-memory copy
     return fast_json(draft_state(d))
 
 @api_router.get("/drafts/{share_id}/state")
@@ -1501,7 +1522,10 @@ async def start_draft(share_id: str):
         update["started_at"] = update["updated_at"] = later
     await db.drafts.update_one({"share_id": share_id}, {"$set": update})
     _CARDS_CACHE.pop(share_id, None)      # rebuild the bots' card index with the fresh stats
-    d = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "bot_stats": 0})
+    cube = d["cube"]
+    d = await _draft(share_id)            # everything but the cube, which we already have
+    d["cube"], d["bot_combos"] = cube, update.get("bot_combos", [])
+    _warm_cards(share_id)
     return fast_json(draft_state(d))
 
 @api_router.post("/drafts/{share_id}/cancel")
