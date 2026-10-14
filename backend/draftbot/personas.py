@@ -57,4 +57,4 @@ def bot_names(rng: random.Random, count: int, taken: List[str] = ()) -> List[str
     used = {t.lower().replace(" (bot)", "").strip() for t in taken}
     pool = [n for n in _NAMES if n.lower() not in used]
     rng.shuffle(pool)
-    return [f"{n} (bot)" for n in pool[:count]]
+    return pool[:count]          # pages mark bots with an icon, so no "(bot)" in the name
