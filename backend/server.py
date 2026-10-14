@@ -3,11 +3,13 @@ import sys
 print(f"grimoire python {sys.version}", file=sys.stderr, flush=True)
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Header
+from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import json
 import logging
 import time
 import uuid
@@ -58,6 +60,10 @@ mongo_url = _require_env('MONGO_URL')
 mongo_kwargs = {}
 if mongo_url.startswith("mongodb+srv://"):
     mongo_kwargs["tlsCAFile"] = certifi.where()
+if "compressors=" not in mongo_url:
+    # Card data compresses ~5x. Draft documents carry a whole cube (~0.4 MB for 500 cards), so this
+    # cuts the time to read one from the database a lot (zlib needs no extra package).
+    mongo_kwargs["compressors"] = "zlib"
 client = AsyncIOMotorClient(mongo_url, **mongo_kwargs)
 db = client[_require_env('DB_NAME')]
 
@@ -69,6 +75,13 @@ api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+def fast_json(data: Any) -> Response:
+    """JSON straight from json.dumps. FastAPI otherwise walks every value of a returned dict through
+    jsonable_encoder first, which costs milliseconds per card on a small server: a 500-card cube or a
+    full draft took seconds just to encode. Use for large replies (card lists, drafts, decks)."""
+    return Response(json.dumps(data, separators=(",", ":"), default=str), media_type="application/json")
+
 
 # ----------------------- Auth helpers -----------------------
 
@@ -350,35 +363,67 @@ async def _collection_lookup(hc: httpx.AsyncClient, identifiers: List[dict]) -> 
     return out
 
 _OLDEST_CACHE: Dict[str, dict] = {}   # oracle_id -> oldest paper printing (raw Scryfall card)
+_PACE_LOCK = asyncio.Lock()
+_PACE_LAST = [0.0]
+
+
+async def _scryfall_pace() -> None:
+    """At most one Scryfall request start per 100 ms across concurrent lookups (Scryfall asks for
+    50-100 ms between requests), so a few lookups can run side by side without being rude."""
+    async with _PACE_LOCK:
+        wait = _PACE_LAST[0] + 0.1 - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _PACE_LAST[0] = time.monotonic()
+
+
+async def _oldest_chunk(hc: httpx.AsyncClient, oracle_ids: List[str]) -> None:
+    """Find the first paper printing for up to 20 oracle ids (one search, a few pages). Only a lookup
+    that completes is remembered, so a Scryfall hiccup never pins a card to a later printing."""
+    query = "(" + " or ".join(f"oracleid:{o}" for o in oracle_ids) + ") not:reprint game:paper"
+    url, params, best = f"{SCRYFALL}/cards/search", {"q": query, "unique": "prints", "order": "released", "dir": "asc"}, {}
+    for _ in range(4):   # at most a few pages
+        r = None
+        for attempt in range(3):
+            await _scryfall_pace()
+            try:
+                r = await hc.get(url, params=params)
+            except httpx.HTTPError:
+                r = None
+            if r is not None and r.status_code not in (429, 500, 502, 503, 504):
+                break
+            await asyncio.sleep(0.5 * (attempt + 1))
+        if r is None or r.status_code not in (200, 404):
+            return                                   # give up on this chunk: keep default printings
+        payload = r.json() if r.status_code == 200 else {}
+        for c in payload.get("data", []):
+            o = c.get("oracle_id")
+            cur = best.get(o)
+            # earliest release wins; a regular printing beats a promo from the same moment
+            if cur is None or (cur.get("promo") and not c.get("promo") and c.get("released_at") == cur.get("released_at")):
+                best[o] = c
+        if not payload.get("has_more"):
+            break
+        url, params = payload["next_page"], None
+    for o in oracle_ids:
+        _OLDEST_CACHE[o] = best.get(o) or {}
 
 
 async def _prefer_oldest(hc: httpx.AsyncClient, cards: List[dict]) -> List[dict]:
     """Swap each card for its first paper printing (original art), when Scryfall has one.
-    Used wherever a list names cards without pinning a printing."""
-    wanted = list(dict.fromkeys(c["oracle_id"] for c in cards if c.get("oracle_id") and c["oracle_id"] not in _OLDEST_CACHE))
-    for i in range(0, len(wanted), 20):
-        await asyncio.sleep(0.1)
-        query = "(" + " or ".join(f"oracleid:{o}" for o in wanted[i:i + 20]) + ") not:reprint game:paper"
-        url, params, best = f"{SCRYFALL}/cards/search", {"q": query, "unique": "prints", "order": "released", "dir": "asc"}, {}
-        for _ in range(4):   # at most a few pages
-            r = await hc.get(url, params=params)
-            if r.status_code != 200:
-                break
-            payload = r.json()
-            for c in payload.get("data", []):
-                o = c.get("oracle_id")
-                cur = best.get(o)
-                # earliest release wins; a regular printing beats a promo from the same moment
-                if cur is None or (cur.get("promo") and not c.get("promo") and c.get("released_at") == cur.get("released_at")):
-                    best[o] = c
-            if not payload.get("has_more"):
-                break
-            url, params = payload["next_page"], None
-            await asyncio.sleep(0.1)
-        for o in wanted[i:i + 20]:
-            _OLDEST_CACHE[o] = best.get(o) or {}
+    Used wherever a list names cards without pinning a printing. Searches run three at a time."""
     if len(_OLDEST_CACHE) > 20000:
         _OLDEST_CACHE.clear()
+    wanted = list(dict.fromkeys(c["oracle_id"] for c in cards if c.get("oracle_id") and c["oracle_id"] not in _OLDEST_CACHE))
+    sem = asyncio.Semaphore(3)
+
+    async def run(chunk):
+        async with sem:
+            try:
+                await _oldest_chunk(hc, chunk)
+            except Exception as exc:     # odd answer from Scryfall: those cards keep their default printing
+                logger.warning("Oldest-printing lookup failed: %s", exc)
+    await asyncio.gather(*(run(wanted[i:i + 20]) for i in range(0, len(wanted), 20)))
     return [(_OLDEST_CACHE.get(c.get("oracle_id")) or c) for c in cards]
 
 
@@ -437,32 +482,96 @@ async def _resolve_entries(entries: List[CollectionEntry], oldest: bool = True) 
 @api_router.post("/cards/collection")
 async def card_collection(data: CollectionInput):
     if data.entries:
-        return await _resolve_entries(data.entries)
-    return await _collection_by_names(data.names)
+        return fast_json(await _resolve_entries(data.entries))
+    return fast_json(await _collection_by_names(data.names))
+
+_NAME_CACHE_DAYS = 30
+_NAME_MEM: Dict[str, dict] = {}     # the same cache in memory (restarts start empty and refill from Mongo)
+
 
 async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
     """Resolve card names (e.g. a cube list), using each card's original printing. Misses get a
-    second chance through the front face and fuzzy matching (e.g. split cards like "Life // Death")."""
+    second chance through the front face and fuzzy matching (e.g. split cards like "Life // Death").
+
+    Resolved names are remembered in Mongo (`card_names`, a month), so a cube the server has seen
+    before loads without asking Scryfall again; only new names are looked up."""
     names = [" ".join(n.split())[:150] for n in names if n and n.strip()][:800]
-    raw = []
-    missed = []
-    async with http_client.client() as hc:
-        for i in range(0, len(names), 75):
-            if i:
-                await asyncio.sleep(0.1)
-            cards, miss = await _collection_batch(hc, names[i:i + 75])
-            raw.extend(cards)
-            missed.extend(miss)
-        try:
-            raw = await _prefer_oldest(hc, raw)
-        except httpx.HTTPError as exc:   # keep Scryfall's default printings
-            logger.warning("Oldest-printing lookup failed: %s", exc)
-    found = [map_card(c) for c in raw]
-    if missed:
-        retry = await _resolve_entries([CollectionEntry(key=str(i), name=n.split("//")[0].strip()) for i, n in enumerate(missed)])
-        found.extend(retry["resolved"].values())
-        missed = [missed[int(k)] for k in range(len(missed)) if str(k) not in retry["resolved"]]
-    return {"cards": found, "not_found": missed}
+    keys = list(dict.fromkeys(_name_key(n) for n in names))
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=_NAME_CACHE_DAYS)).isoformat()
+    known: Dict[str, dict] = {k: _NAME_MEM[k] for k in keys if k in _NAME_MEM}
+    rest = [k for k in keys if k not in known]
+    if rest:
+        async for doc in db.card_names.find({"key": {"$in": rest}, "at": {"$gte": cutoff}}, {"_id": 0, "key": 1, "card": 1}):
+            known[doc["key"]] = _NAME_MEM[doc["key"]] = doc["card"]
+    todo = list(dict.fromkeys(n for n in names if _name_key(n) not in known))
+    extra: List[dict] = []          # cards Scryfall returned that we couldn't tie back to a requested name
+    missed: List[str] = []
+    fresh: Dict[str, dict] = {}     # name key -> mapped card, to remember
+    if todo:
+        raw: List[dict] = []
+        async with http_client.client() as hc:
+            for i in range(0, len(todo), 75):
+                if i:
+                    await asyncio.sleep(0.1)
+                cards, miss = await _collection_batch(hc, todo[i:i + 75])
+                raw.extend(cards)
+                missed.extend(miss)
+            try:
+                raw = await _prefer_oldest(hc, raw)
+            except httpx.HTTPError as exc:   # keep Scryfall's default printings
+                logger.warning("Oldest-printing lookup failed: %s", exc)
+        by_key: Dict[str, dict] = {}
+        for c in raw:
+            for k in _name_keys(c):
+                by_key.setdefault(_name_key(k), c)
+        tied = set()
+        for n in todo:
+            k = _name_key(n)
+            c = by_key.get(k) or by_key.get(k.split(" // ")[0].strip())
+            if c:
+                fresh[k] = map_card(c)
+                tied.add(c["id"])
+        extra = [map_card(c) for c in raw if c["id"] not in tied]
+        if missed:
+            retry = await _resolve_entries([CollectionEntry(key=str(i), name=n.split("//")[0].strip()) for i, n in enumerate(missed)])
+            for i, n in enumerate(missed):
+                card = retry["resolved"].get(str(i))
+                if card:
+                    fresh[_name_key(n)] = card
+            missed = [n for i, n in enumerate(missed) if str(i) not in retry["resolved"]]
+        saved = await _remember_names(fresh)
+    else:
+        saved = 0
+    out, seen = [], set()
+    for n in names:
+        c = known.get(_name_key(n)) or fresh.get(_name_key(n))
+        if c and c["id"] not in seen:
+            seen.add(c["id"])
+            out.append(c)
+    out += [c for c in extra if c["id"] not in seen]
+    return {"cards": out, "not_found": missed, "cache": {"hits": len(known), "looked_up": len(todo), "saved": saved}}
+
+
+async def _remember_names(fresh: Dict[str, dict]) -> int:
+    """Save name -> card (original printing) for next time. Cards whose original-printing lookup
+    didn't finish are skipped, so they get another try later."""
+    from pymongo import UpdateOne
+    now = datetime.now(timezone.utc).isoformat()
+    ops = [UpdateOne({"key": k}, {"$set": {"key": k, "card": {f: v for f, v in c.items() if f != "prices"}, "at": now}}, upsert=True)
+           for k, c in fresh.items() if c.get("oracle_id") in _OLDEST_CACHE]
+    if len(_NAME_MEM) > 40000:
+        _NAME_MEM.clear()
+    for k, c in fresh.items():
+        if c.get("oracle_id") in _OLDEST_CACHE:
+            _NAME_MEM[k] = c
+    if not ops:
+        return 0
+    try:
+        res = await db.card_names.bulk_write(ops, ordered=False)
+        return res.upserted_count + res.modified_count
+    except Exception as exc:     # a cache, never a reason to fail the lookup
+        logger.warning("Couldn't save card name cache: %s", exc)
+        return -1
 
 class ExtrasInput(BaseModel):
     ids: List[str] = Field(default=[], max_length=400)
@@ -599,12 +708,12 @@ async def create_deck(data: DeckInput, user: dict = Depends(get_current_user)):
 @api_router.get("/decks")
 async def list_decks(user: dict = Depends(get_current_user)):
     decks = await db.decks.find({"user_id": user["id"]}).sort("updated_at", -1).to_list(500)
-    return [deck_to_public(d, user.get("name", "")) for d in decks]
+    return fast_json([deck_to_public(d, user.get("name", "")) for d in decks])
 
 @api_router.get("/decks/{deck_id}")
 async def get_deck(deck_id: str, user: dict = Depends(get_current_user)):
     deck = await _get_owned_deck(deck_id, user)
-    return deck_to_public(deck, user.get("name", ""))
+    return fast_json(deck_to_public(deck, user.get("name", "")))
 
 @api_router.put("/decks/{deck_id}")
 async def update_deck(deck_id: str, data: DeckInput, user: dict = Depends(get_current_user)):
@@ -737,7 +846,7 @@ async def list_cubes(user: dict = Depends(get_current_user)):
 @api_router.get("/cubes/{cube_id}")
 async def get_cube(cube_id: str, user: dict = Depends(get_current_user)):
     c = await _owned_cube(cube_id, user)
-    return {**cube_summary(c), "cards": c.get("cards", [])}
+    return fast_json({**cube_summary(c), "cards": c.get("cards", [])})
 
 
 @api_router.post("/cubes")
@@ -820,6 +929,11 @@ class AdminPickInput(BaseModel):
     order: int
     card_id: str
 
+class SeatingInput(BaseModel):
+    host_token: str
+    mode: str = Field(pattern="^(random|host)$")          # random at start, or the host sets the order
+    order: List[str] = Field(default_factory=list, max_length=12)   # player ids in seat order (host mode)
+
 class SwapInput(BaseModel):
     host_token: str
     order_a: int        # the two picks to trade (positions in the pick list)
@@ -884,6 +998,7 @@ def draft_state(d: dict, light: bool = False) -> dict:
         "mode": d.get("mode", "rotisserie"),
         "pool": d.get("pool", "cube"),
         "mirror": bool(d.get("mirror")),
+        "seating": d.get("seating", "random"),
         "my_seat": d.get("my_seat"),
         "rev": d.get("rev", 0),
         "version": f'{d.get("rev", 0)}|{d.get("updated_at")}',   # changes on every write (picks, chat, seats)
@@ -1045,7 +1160,7 @@ async def create_draft(data: DraftCreate):
     out = {**draft_state(draft), "host_token": draft["host_token"]}
     if me:
         out["player"] = {"player_token": me["token"], "player_id": me["id"], "name": me["name"], "seats": me["seats"]}
-    return out
+    return fast_json(out)
 
 @api_router.get("/drafts/open")
 async def list_open_drafts():
@@ -1085,10 +1200,20 @@ async def list_open_drafts():
 
 @api_router.get("/drafts/{share_id}")
 async def get_draft(share_id: str):
+    entry = _CARDS_CACHE.get(share_id)
+    if entry:
+        # Running draft: the cube is already in memory (it's the biggest part of the document).
+        d = await _draft(share_id)
+        if d:
+            d["cube"] = entry["cube"]
+            d["bot_combos"] = [{"pieces": list(c.pieces)} for c in entry.get("combos") or []]
+            return fast_json(draft_state(d))
     d = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "bot_stats": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
-    return draft_state(d)
+    if d.get("status") in ("drafting", "complete"):
+        _warm_cards(share_id)     # next page load (and the bots) use the in-memory copy
+    return fast_json(draft_state(d))
 
 @api_router.get("/drafts/{share_id}/state")
 async def get_draft_state(share_id: str, x_player_token: Optional[str] = Header(default=None),
@@ -1109,11 +1234,11 @@ async def get_draft_state(share_id: str, x_player_token: Optional[str] = Header(
         raise HTTPException(status_code=404, detail="Draft not found")
     if d.get("mode") == "packs":
         d = await pack_auto_actions(d)
-        return _pack_state(d, x_player_token)
+        return fast_json(_pack_state(d, x_player_token))
     d = await maybe_bot_pick(d)
     if d.get("status") == "drafting":
         _warm_cards(share_id)
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 def _warm_cards(share_id: str) -> None:
@@ -1260,7 +1385,7 @@ async def pack_autopick(share_id: str, data: PackAutopickInput):
         card = await run_in_threadpool(_auto_choice, d, data.seat_index, random.Random(), index, combos)
         pd.apply_pick(d, data.seat_index, card, auto=True)
         if await _save_pack_draft(d):
-            return draft_state(d, light=True)
+            return fast_json(draft_state(d, light=True))
     raise HTTPException(status_code=409, detail="Busy, try again")
 
 
@@ -1277,7 +1402,7 @@ async def _pack_pick(share_id: str, data: "PickInput") -> dict:
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         if await _save_pack_draft(d):
-            return _pack_state(d, data.player_token)
+            return fast_json(_pack_state(d, data.player_token))
     raise HTTPException(status_code=409, detail="Busy, try again")
 
 def _claim_reply(d: dict, p: dict) -> dict:
@@ -1339,6 +1464,44 @@ async def claim_seats(share_id: str, data: ClaimInput):
     await _set_host_player(d, player, data.host_token)
     return _claim_reply(d, player)
 
+def _seat_in_order(d: dict, players: List[dict]) -> None:
+    """Give players their seats in this order (player j gets every seat with index % num_players == j,
+    spread around the snake) and refresh the seat names."""
+    for s in d["seats"]:
+        s["player_id"] = None
+        s["player_name"] = None
+    for j, p in enumerate(players):
+        p["seats"] = sorted(s["index"] for s in d["seats"] if s["index"] % d["num_players"] == j)
+        for s in d["seats"]:
+            if s["index"] in p["seats"]:
+                s["player_id"] = p["id"]
+                s["player_name"] = p["name"]
+    d["players"] = players
+
+
+@api_router.post("/drafts/{share_id}/seating")
+async def set_seating(share_id: str, data: SeatingInput):
+    """Host, in the lobby: random seats when the draft starts (the default), or the host arranges
+    the order (players listed in seat order)."""
+    d = await _draft(share_id)
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("host_token") != data.host_token:
+        raise HTTPException(status_code=403, detail="Only the host can arrange seats")
+    if d["status"] != "lobby" or d.get("mirror"):
+        raise HTTPException(status_code=400, detail="Seats can only be arranged in the lobby")
+    if data.mode == "host" and data.order:
+        by_id = {p["id"]: p for p in d["players"]}
+        if sorted(data.order) != sorted(by_id):
+            raise HTTPException(status_code=409, detail="Someone joined or left; try again")
+        _seat_in_order(d, [by_id[i] for i in data.order])
+    await db.drafts.update_one({"share_id": share_id, "status": "lobby"},
+                               {"$set": {"seating": data.mode, "seats": d["seats"], "players": d["players"],
+                                         "updated_at": datetime.now(timezone.utc).isoformat()}})
+    d["seating"] = data.mode
+    return fast_json(draft_state(d, light=True))
+
+
 def _shuffle_seats(d: dict) -> None:
     """Randomise who sits where when the draft starts (seats stay spread around the snake)."""
     slots = list(range(d["num_players"]))
@@ -1360,7 +1523,7 @@ async def start_draft(share_id: str):
         raise HTTPException(status_code=400, detail="Already started")
     if any(s["player_id"] is None for s in d["seats"]):
         raise HTTPException(status_code=400, detail="Not all seats are claimed yet")
-    if not d.get("mirror"):         # mirror tables keep the real table's seating
+    if not d.get("mirror") and d.get("seating", "random") != "host":   # mirror / host-arranged keep their order
         _shuffle_seats(d)
     now = datetime.now(timezone.utc).isoformat()
     if d.get("mode") == "packs":
@@ -1403,8 +1566,11 @@ async def start_draft(share_id: str):
         update["started_at"] = update["updated_at"] = later
     await db.drafts.update_one({"share_id": share_id}, {"$set": update})
     _CARDS_CACHE.pop(share_id, None)      # rebuild the bots' card index with the fresh stats
-    d = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "bot_stats": 0})
-    return draft_state(d)
+    cube = d["cube"]
+    d = await _draft(share_id)            # everything but the cube, which we already have
+    d["cube"], d["bot_combos"] = cube, update.get("bot_combos", [])
+    _warm_cards(share_id)
+    return fast_json(draft_state(d))
 
 @api_router.post("/drafts/{share_id}/cancel")
 async def cancel_draft(share_id: str, data: CancelInput):
@@ -1493,7 +1659,7 @@ async def draft_cube_since(share_id: str, start: int = 0):
     doc = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "share_id": 1, "cube": {"$slice": [max(start, 0), 1000]}})
     if not doc:
         raise HTTPException(status_code=404, detail="Draft not found")
-    return {"cards": doc.get("cube", []), "start": max(start, 0)}
+    return fast_json({"cards": doc.get("cube", []), "start": max(start, 0)})
 
 
 @api_router.get("/drafts/{share_id}/vrd/top")
@@ -1521,7 +1687,7 @@ async def make_pick(share_id: str, data: PickInput):
     if not player or data.seat_index not in player["seats"]:
         raise HTTPException(status_code=403, detail="You do not control this seat")
     d = await _rotisserie_pick(d, data.seat_index, card_id=data.card_id)
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 async def _scryfall_card(identifier: dict) -> Optional[dict]:
@@ -1712,7 +1878,7 @@ async def mirror_import(share_id: str, data: MirrorImportInput):
             stopped = {"line": line, "name": name, "reason": exc.detail}
             break
         applied += 1
-    return {**draft_state(d, light=True), "applied": applied, "stopped": stopped}
+    return fast_json({**draft_state(d, light=True), "applied": applied, "stopped": stopped})
 
 
 @api_router.post("/drafts/{share_id}/undo")
@@ -1738,7 +1904,7 @@ async def undo_pick(share_id: str, data: CancelInput):
         raise HTTPException(status_code=409, detail="Someone just picked; try again")
     _forget_suggestions(share_id)
     d = await _draft(share_id)
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 @api_router.post("/drafts/{share_id}/reassign")
@@ -1768,7 +1934,7 @@ async def reassign_pick(share_id: str, data: AdminPickInput):
         raise HTTPException(status_code=409, detail="That pick just changed; try again")
     _forget_suggestions(share_id)
     d = await _draft(share_id)
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 @api_router.post("/drafts/{share_id}/swap")
@@ -1802,7 +1968,7 @@ async def swap_picks(share_id: str, data: SwapInput):
         raise HTTPException(status_code=409, detail="Those picks just changed; try again")
     _forget_suggestions(share_id)
     d = await _draft(share_id)
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 def _forget_suggestions(share_id: str) -> None:
@@ -1844,7 +2010,7 @@ async def post_chat(share_id: str, data: ChatInput):
     await db.drafts.update_one({"share_id": share_id}, {"$push": {"messages": {"$each": [msg], "$slice": -200}},
                                                          "$set": {"updated_at": msg["ts"]}})
     d = await _draft(share_id)
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 # ----------------------- Startup -----------------------
@@ -2123,8 +2289,7 @@ async def pick_suggestions(share_id: str, seat: int, x_player_token: Optional[st
         index, combos = await _bot_index(share_id)
         owned = [p["card_id"] for p in d["picks"] if p["seat_index"] == seat]
         ranked = await run_in_threadpool(rank_pack, index, owned, pack, d["pick_cap"], combos)
-        best = ranked[0][0] if ranked else 0
-        return {"suggestions": [cid for sc, cid in ranked[:3] if best <= 0 or sc >= 0.7 * best]}
+        return {"suggestions": [cid for _, cid in ranked[:3]]}
     out: Dict[str, Any] = {"suggestions": await _rotisserie_suggestions(d, seat)}
     if d.get("pool") == "vintage":   # VRD: the page may not have these cards yet
         pool = {c["id"]: c for c in (await _cards(share_id))["pool_cards"]}
@@ -2151,9 +2316,7 @@ async def _rotisserie_suggestions(d: dict, seat: int) -> List[str]:
         top = await run_in_threadpool(suggest_picks, ctx, 3)
         if len(_SUGGEST_CACHE) > 500:
             _SUGGEST_CACHE.clear()
-        # Keep suggestions that are reasonably close to the best one.
-        best = top[0][1] if top else 0
-        _SUGGEST_CACHE[key] = [cid for cid, sc in top if best <= 0 or sc >= 0.7 * best]
+        _SUGGEST_CACHE[key] = [cid for cid, _ in top]     # always the top three
     return _SUGGEST_CACHE[key]
 
 
@@ -2187,34 +2350,38 @@ async def add_bot(share_id: str, data: BotInput):
     # Card names only: building the bots' whole card index here would be wasted work in the lobby.
     names_doc = await db.drafts.find_one({"share_id": share_id}, {"_id": 0, "cube.name": 1, "cube.is_custom": 1}) or {}
     _warm_card_stats(names_doc.get("cube", []))
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 @api_router.post("/drafts/{share_id}/bots/remove")
 async def remove_bot(share_id: str, data: BotRemoveInput):
+    return await _remove_player(share_id, data, bots_only=True)
+
+
+@api_router.post("/drafts/{share_id}/players/remove")
+async def kick_player(share_id: str, data: BotRemoveInput):
+    """Host, in the lobby: remove a bot or a person (frees their seat). The host can't remove themselves."""
+    return await _remove_player(share_id, data, bots_only=False)
+
+
+async def _remove_player(share_id: str, data: "BotRemoveInput", bots_only: bool):
     d = await _draft(share_id)
     if not d:
         raise HTTPException(status_code=404, detail="Draft not found")
     if d.get("host_token") != data.host_token:
-        raise HTTPException(status_code=403, detail="Only the host can remove bots")
-    if d["status"] != "lobby":
-        raise HTTPException(status_code=400, detail="Draft already started")
-    if not any(p["id"] == data.player_id and p.get("is_bot") for p in d["players"]):
-        raise HTTPException(status_code=404, detail="Bot not found")
-    # Rebuild seat assignments in join order so seat spreading stays correct.
+        raise HTTPException(status_code=403, detail="Only the host can remove players")
+    if d["status"] != "lobby" or d.get("mirror"):
+        raise HTTPException(status_code=400, detail="Players can only be removed in the lobby")
+    target = next((p for p in d["players"] if p["id"] == data.player_id), None)
+    if not target or (bots_only and not target.get("is_bot")):
+        raise HTTPException(status_code=404, detail="Player not found")
+    if target["id"] == d.get("host_player_id"):
+        raise HTTPException(status_code=400, detail="That's the host's seat")
+    # Rebuild seat assignments in the current order so seat spreading stays correct.
     players = [p for p in d["players"] if p["id"] != data.player_id]
-    for s in d["seats"]:
-        s["player_id"] = None
-        s["player_name"] = None
-    for j, p in enumerate(players):
-        p["seats"] = sorted(s["index"] for s in d["seats"] if s["index"] % d["num_players"] == j)
-        for s in d["seats"]:
-            if s["index"] in p["seats"]:
-                s["player_id"] = p["id"]
-                s["player_name"] = p["name"]
-    d["players"] = players
+    _seat_in_order(d, players)
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": players, "updated_at": datetime.now(timezone.utc).isoformat()}})
-    return draft_state(d, light=True)
+    return fast_json(draft_state(d, light=True))
 
 
 _SIM_CACHE: Dict[str, Any] = {}   # cube_id -> (cards, not_found, combos); simulation only
@@ -2271,6 +2438,7 @@ async def startup():
     await db.drafts.create_index("share_id", unique=True)
     await db.drafts.create_index("join_code", sparse=True)
     await db.card_stats.create_index("key", unique=True)
+    await db.card_names.create_index("key", unique=True)
     await db.cubes.create_index("id", unique=True)
     await db.cubes.create_index("user_id")
     # Optional seed account (handy for local dev and tests). Only created when both values

@@ -79,7 +79,7 @@ export async function resolveCube({ cubeCobra = "", text = "", keep = [], onStep
   let found = [];
   let notFound = [];
   if (lookup.length) {
-    onStep?.(`Looking up ${lookup.length} cards…`);
+    onStep?.("Loading cube… This may take a moment");
     try {
       const { data } = await withRetry(() => api.post("/cards/collection", { names: lookup }));
       found = data.cards || [];
