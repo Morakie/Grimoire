@@ -855,11 +855,12 @@ export default function DraftRoom() {
           )}
           {!isVrd && addResults && (
             addResults.length ? (
-              <div className="flex gap-2 overflow-x-auto pb-1" data-testid="mirror-add-results">
+              // Results wrap into rows and scroll down inside a capped box (a single sideways row got clipped).
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(5.5rem,1fr))] gap-2 max-h-[22rem] overflow-y-auto pr-1 pb-1" data-testid="mirror-add-results">
                 {addResults.map((c) => (
                   <button key={c.id} type="button" data-testid={`mirror-add-${c.id}`} disabled={!myTurn || picking || pickedIds.has(c.id)}
                     onClick={() => setConfirmCard(c)} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
-                    className="shrink-0 w-24 rounded-md overflow-hidden border border-slate-800 hover:border-amber-400/70 disabled:opacity-40" title={c.name}>
+                    className="rounded-md overflow-hidden border border-slate-800 hover:border-amber-400/70 disabled:opacity-40" title={c.name}>
                     {c.image ? <img src={c.image} alt={c.name} className="w-full" loading="lazy" /> : <div className="p-2 text-[11px] text-slate-200">{c.name}</div>}
                   </button>
                 ))}
