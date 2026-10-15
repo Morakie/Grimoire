@@ -179,6 +179,7 @@ class BotContext:
     picks_per_seat: int
     persona: Persona = field(default_factory=lambda: Persona("steady"))
     tuning: Optional[Dict[str, float]] = None
+    explain: bool = False                  # attach each card's score parts (for the bot report)
 
     def k(self, key: str) -> float:
         if self.tuning and key in self.tuning:
@@ -570,29 +571,38 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         if card.is_land and card.is_fixing:
             damp = k("early_fixing_damp")
             power *= damp + (1 - damp) * min(1.0, 2 * t)    # spells first, fixing later
-        base = (w_power * power
-                + w_combo * combo_value(card, owned, remaining, ctx.combos, fit_of)
-                + package_value(card, None, strengths)
-                + k("plan_weight") * plan_ramp * plan_value(card, fill, plans)
-                + k("partner_weight") * p.w("combo") * partner_value(card, owned, fit_of)
-                + w_needs * needs_value(card, mine, p, counts))
+        t_rating = w_power * power
+        t_combo = w_combo * combo_value(card, owned, remaining, ctx.combos, fit_of)
+        t_plan = package_value(card, None, strengths) + k("plan_weight") * plan_ramp * plan_value(card, fill, plans)
+        t_partner = k("partner_weight") * p.w("combo") * partner_value(card, owned, fit_of)
+        t_needs = w_needs * needs_value(card, mine, p, counts)
+        t_other = 0.0
         if wincon_gap:
-            base += wincon_gap * threat_level(card) * min(1.0, 0.4 + max(card.power, 0.0))
+            t_other += wincon_gap * threat_level(card) * min(1.0, 0.4 + max(card.power, 0.0))
         if pair:
-            base += w_style * style_value(card, pair)
+            t_other += w_style * style_value(card, pair)
             if card.is_land and len(card.produces & pair) >= 2 and fixing_owned < k("fixing_target"):
-                base += k("fixing_bonus") * t * (1.5 if fixing_owned < 2 and t > 0.5 else 1.0)
+                t_other += k("fixing_bonus") * t * (1.5 if fixing_owned < 2 and t > 0.5 else 1.0)
             if splash and card.is_land and splash in card.produces and card.produces & pair:
-                base += k("splash_fixing_bonus")
+                t_other += k("splash_fixing_bonus")
+        base = t_rating + t_combo + t_plan + t_partner + t_needs + t_other
         lane_mult = floor + (1 - floor) * fit
-        rows.append([base * lane_mult, cid, {"fit": round(fit, 2)}])
+        info = {"fit": round(fit, 2)}
+        if ctx.explain:
+            info.update(rating=round(t_rating, 3), combo=round(t_combo, 3), plan=round(t_plan, 3),
+                        partners=round(t_partner, 3), needs=round(t_needs, 3), other=round(t_other, 3),
+                        colour=round(lane_mult, 2))
+        rows.append([base * lane_mult, cid, info])
 
     rows.sort(reverse=True)
     top = rows[:30]
     risk = float_risk(ctx, [r[1] for r in top], remaining)
     for r in top:
         r[2]["risk"] = round(risk[r[1]], 2)
-        r[0] *= 1.0 - min(k("float_cap"), w_float) * (1.0 - risk[r[1]])
+        mult = 1.0 - min(k("float_cap"), w_float) * (1.0 - risk[r[1]])
+        r[0] *= mult
+        if ctx.explain:
+            r[2]["contested"] = round(mult, 2)          # < 1: likely to come back, so worth less now
     top.sort(reverse=True)
     return [(s, cid, info) for s, cid, info in top] + [(s, cid, info) for s, cid, info in rows[30:]]
 

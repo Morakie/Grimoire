@@ -209,3 +209,24 @@ def test_plans_half_built_cheat_plan_wants_a_fatty_and_lands_pool_cuts_artifact_
     st = plan_strengths(plan_fill(lands_pool))
     assert st["lands"] > st["artifacts"] and plan_conflict(card({"artifact_payoff"}), st) > 0.4
     assert plan_conflict(card({"land_recursion"}), st) == 0.0
+
+
+def test_bot_report_ranks_real_picks_and_bot_picks_rank_first():
+    from draftbot.report import build_report
+    cube = synthetic_cube(n_per_colour=30)
+    seats, per_seat = 4, 12
+    order = []
+    while len(order) < seats * per_seat:
+        order += list(range(seats)) + list(range(seats - 1, -1, -1))
+    order = order[: seats * per_seat]
+    result = run_draft(cube, [], order, seats, per_seat, seed=3)
+    index = result["index"]
+    seq = {s: list(ids) for s, ids in result["picks"].items()}
+    picks = [{"order": i, "seat_index": s, "card_id": seq[s].pop(0)} for i, s in enumerate(order)]
+    rep = build_report(index, [], order, picks, per_seat, [{"index": s, "player_name": f"P{s}"} for s in range(seats)], skip_first=3)
+    assert rep["overall"]["picks"] == seats * (per_seat - 3)
+    # The bots drafted these picks themselves, so the engine should rank them near the top.
+    assert rep["overall"]["median_rank"] <= 3, rep["overall"]
+    d = rep["disagreements"][0]
+    assert {"rating", "colour"} <= set(d["bot_top"][0]["parts"]) and len(d["bot_top"]) == 3
+    assert set(rep["by_phase"]) == {"early", "middle", "late"}

@@ -30,6 +30,7 @@ from datetime import datetime, timezone, timedelta
 from draftbot import BotContext, build_card_index, choose_pick, combos_from_dicts, fetch_combos, random_persona, bot_names
 from draftbot.combos import attach_combos
 from draftbot.cardstats import draft_stats, ensure_stats
+from draftbot.report import build_report
 from draftbot.personas import Persona
 from draftbot.engine import suggest_picks
 from draftbot.deckbuild import suggest_deck
@@ -2306,6 +2307,28 @@ async def _bot_pick_once(d: dict):
 
 
 _SUGGEST_CACHE: Dict[tuple, list] = {}
+_REPORT_CACHE: Dict[tuple, dict] = {}
+
+
+@api_router.get("/drafts/{share_id}/bot-report")
+async def bot_report(share_id: str):
+    """Replay the draft and compare each player's pick with the bots' engine (rotisserie cube tables).
+    Picks are public in a rotisserie draft, so anyone at the table may look. Cached per pick count."""
+    d = await _draft(share_id)
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("mode") == "packs" or d.get("pool") == "vintage":
+        raise HTTPException(status_code=400, detail="The bot report is for rotisserie cube drafts")
+    picks = d.get("picks", [])
+    key = (share_id, len(picks), tuple(sorted(d.get("bot_ignore", []))))
+    if key not in _REPORT_CACHE:
+        cards = await _cards(share_id)
+        rep = await run_in_threadpool(build_report, cards["index"], cards["combos"], d["order"], picks,
+                                      d["pick_cap"], d["seats"], 5, d.get("bot_ignore", []))
+        if len(_REPORT_CACHE) > 20:
+            _REPORT_CACHE.clear()
+        _REPORT_CACHE[key] = rep
+    return fast_json(_REPORT_CACHE[key])
 
 
 @api_router.get("/drafts/{share_id}/suggestions")
