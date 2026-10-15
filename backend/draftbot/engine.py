@@ -62,6 +62,10 @@ TUNING: Dict[str, float] = {
     "plan_weight": 0.15,        # bonus for a card that fills a plan the pool has committed to
     "plan_conflict_cut": 0.75,  # payoffs for a weaker plan lose this share x (strongest plan - their plan)
     "plan_start": 4, "plan_full": 10,   # owned cards before plans start to matter / fully matter
+    # land runs: once the table starts taking duals/fetches, everyone scrambles for them
+    "run_window": 1.5,          # recent table picks looked at, in rounds (x seats)
+    "run_share": 0.35,          # share of those picks being fixing lands that counts as a full run
+    "run_boost": 0.6,           # fixing lands' rating boost during a full run (and no early-draft discount)
     "unsupported_cut": 0.7,     # share of such a card's rating lost when the pool has none of its support
     "support_after": 6,         # picks before that cut fully applies (early picks keep options open)
 }
@@ -94,6 +98,28 @@ PLANS: Dict[str, Tuple[Tuple[str, ...], int, Tuple[str, ...], int]] = {
 # The plan each "needs support" payoff belongs to (for the off-plan cut).
 _PAYOFF_PLAN = {"artifact_payoff": "artifacts", "storm_payoff": "storm", "flicker": "blink",
                 "equip_fetch": "stoneforge", "land_recursion": "lands"}
+
+
+def land_run(ctx: "BotContext") -> float:
+    """0..1: how hard the table is taking fixing lands right now (share of recent picks that were)."""
+    seats = len(ctx.picks_by_seat) or 1
+    window = int(round(ctx.k("run_window") * seats))
+    start = max(0, ctx.pick_index - window)
+    recent_slots = ctx.order[start:ctx.pick_index]
+    if len(recent_slots) < seats:
+        return 0.0
+    # The window's picks are each seat's most recent ones.
+    per_seat: Dict[int, int] = {}
+    for s in recent_slots:
+        per_seat[s] = per_seat.get(s, 0) + 1
+    fixing = total = 0
+    for s, m in per_seat.items():
+        for cid in ctx.picks_by_seat.get(s, [])[-m:]:
+            total += 1
+            card = ctx.index.get(cid)
+            if card and card.is_land and card.is_fixing:
+                fixing += 1
+    return min(1.0, (fixing / total) / ctx.k("run_share")) if total else 0.0
 
 
 def plan_fill(role_counts: Dict[str, int]) -> Dict[str, Tuple[float, float]]:
@@ -539,6 +565,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     fill = plan_fill(role_counts)
     plans = plan_strengths(fill)
     plan_ramp = min(1.0, max(0.0, (n - k("plan_start")) / max(1.0, k("plan_full") - k("plan_start"))))
+    run = land_run(ctx)
     counts = pool_counts(mine)
     w_power = (1.0 - k("power_late_drop") * t) * p.w("power")
     w_combo = (k("combo_base") + k("combo_growth") * min(1.0, 2 * t)) * p.w("combo")
@@ -570,7 +597,8 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
                 power *= 1.0 - k("plan_conflict_cut") * plan_ramp * plan_conflict(card, plans)
         if card.is_land and card.is_fixing:
             damp = k("early_fixing_damp")
-            power *= damp + (1 - damp) * min(1.0, 2 * t)    # spells first, fixing later
+            # Spells first, fixing later... unless the table is in a land run: then they won't come back.
+            power *= (damp + (1 - damp) * max(min(1.0, 2 * t), run)) * (1 + k("run_boost") * run)
         t_rating = w_power * power
         t_combo = w_combo * combo_value(card, owned, remaining, ctx.combos, fit_of)
         t_plan = package_value(card, None, strengths) + k("plan_weight") * plan_ramp * plan_value(card, fill, plans)
