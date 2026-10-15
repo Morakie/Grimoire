@@ -64,7 +64,7 @@ TUNING: Dict[str, float] = {
     "plan_start": 4, "plan_full": 10,   # owned cards before plans start to matter / fully matter
     # land runs: once the table starts taking duals/fetches, everyone scrambles for them
     "run_window": 1.5,          # recent table picks looked at, in rounds (x seats)
-    "run_share": 0.35,          # share of those picks being fixing lands that counts as a full run
+    "run_share": 0.25,          # share of those picks being fixing lands that counts as a full run
     "run_boost": 0.6,           # fixing lands' rating boost during a full run (and no early-draft discount)
     "unsupported_cut": 0.7,     # share of such a card's rating lost when the pool has none of its support
     "support_after": 6,         # picks before that cut fully applies (early picks keep options open)
