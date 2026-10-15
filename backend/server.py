@@ -28,6 +28,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 
 from draftbot import BotContext, build_card_index, choose_pick, combos_from_dicts, fetch_combos, random_persona, bot_names
+from draftbot.combos import with_cube_combos
 from draftbot.combos import attach_combos
 from draftbot.cardstats import draft_stats, ensure_stats
 from draftbot.report import build_report
@@ -2097,7 +2098,7 @@ async def _vrd_rebuild(entry: dict) -> None:
     """(Re)build a VRD draft's bot index: the shared pool plus any picked cards from outside it."""
     extras = [c for c in entry["cube"] if c["id"] not in entry["pool_ids"]]
     index = await run_in_threadpool(build_card_index, entry["pool_cards"] + extras, entry["stats"])
-    combos = combos_from_dicts(entry["combo_dicts"])
+    combos = with_cube_combos(index, combos_from_dicts(entry["combo_dicts"]))
     attach_combos(index, combos)
     entry.update(index=index, combos=combos, extras=len(extras),
                  ids=entry["pool_ids"] | {c["id"] for c in entry["cube"]})
@@ -2169,7 +2170,7 @@ async def _cards(share_id: str) -> dict:
         return entry
     cube = doc.get("cube", [])
     index = await run_in_threadpool(build_card_index, cube, doc.get("bot_stats"))
-    combos = combos_from_dicts(doc.get("bot_combos", []))
+    combos = with_cube_combos(index, combos_from_dicts(doc.get("bot_combos", [])))
     attach_combos(index, combos)
     entry = {"cube": cube, "ids": {c["id"] for c in cube}, "index": index, "combos": combos, "stats": doc.get("bot_stats")}
     if doc.get("status") in ("drafting", "complete"):   # card stats are only final once the draft starts

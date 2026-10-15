@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Tuple
 
@@ -38,6 +39,10 @@ async def fetch_combos(index: Dict[str, CardInfo], timeout: float = 20.0) -> Lis
     """
     if not index:
         return []
+    return with_cube_combos(index, await _spellbook_combos(index, timeout))
+
+
+async def _spellbook_combos(index: Dict[str, CardInfo], timeout: float) -> List[Combo]:
     names = sorted({info.name.split(" // ")[0] for info in index.values()})
     body = "\n".join(f"1 {n}" for n in names)
     try:
@@ -62,6 +67,8 @@ def _to_combos(variants: List[dict], index: Dict[str, CardInfo]) -> List[Combo]:
     for v in variants:
         if v.get("requires"):  # needs an unspecified "any X" card: too vague to draft around
             continue
+        if _only_gains_life(v):  # an infinite-life loop doesn't win a game of Magic on its own
+            continue
         ids = []
         for use in v.get("uses", []):
             name = (use.get("card") or {}).get("name", "").lower()
@@ -78,6 +85,52 @@ def _to_combos(variants: List[dict], index: Dict[str, CardInfo]) -> List[Combo]:
         return []
     top = max(math.log1p(p) for _, p in raw) or 1.0
     return [Combo(pieces, 0.6 + 0.4 * math.log1p(pop) / top) for pieces, pop in raw]
+
+
+_LIFE = re.compile(r"\blife\b|lifegain|life gain")
+
+
+def _only_gains_life(variant: dict) -> bool:
+    """True when everything a Spellbook combo produces is about gaining life."""
+    names = [((p.get("feature") or {}).get("name") or "").lower() for p in variant.get("produces") or []]
+    return bool(names) and all(_LIFE.search(n) and "lose" not in n for n in names)
+
+
+# Two-card cube staples that Commander Spellbook leaves out or lists only with extra conditions.
+# Added whenever every piece is in the cube. Card names (front faces are fine).
+CUBE_COMBOS: List[Tuple[str, ...]] = [
+    ("Thassa's Oracle", "Tainted Pact"),
+    ("Thassa's Oracle", "Demonic Consultation"),
+    ("Jace, Wielder of Mysteries", "Tainted Pact"),
+    ("Jace, Wielder of Mysteries", "Demonic Consultation"),
+    ("Time Vault", "Voltaic Key"),
+    ("Time Vault", "Manifold Key"),
+    ("Isochron Scepter", "Dramatic Reversal"),
+    ("Splinter Twin", "Pestermite"),
+    ("Splinter Twin", "Deceiver Exarch"),
+    ("Kiki-Jiki, Mirror Breaker", "Pestermite"),
+    ("Kiki-Jiki, Mirror Breaker", "Deceiver Exarch"),
+    ("Kiki-Jiki, Mirror Breaker", "Zealous Conscripts"),
+    ("Saheeli Rai", "Felidar Guardian"),
+    ("Painter's Servant", "Grindstone"),
+    ("Devoted Druid", "Vizier of Remedies"),
+]
+CUBE_COMBO_WEIGHT = 0.9
+
+
+def with_cube_combos(index: Dict[str, CardInfo], combos: List[Combo]) -> List[Combo]:
+    """`combos` plus the hand-kept cube combos whose pieces are all in this cube (no duplicates)."""
+    by_name = lookup_by_name(index)
+    have = {tuple(sorted(c.pieces)) for c in combos}
+    out = list(combos)
+    for names in CUBE_COMBOS:
+        ids = [by_name.get(n.lower()) for n in names]
+        if all(ids):
+            key = tuple(sorted(ids))
+            if key not in have:
+                have.add(key)
+                out.append(Combo(key, CUBE_COMBO_WEIGHT))
+    return out
 
 
 def attach_combos(index: Dict[str, CardInfo], combos: List[Combo]) -> None:

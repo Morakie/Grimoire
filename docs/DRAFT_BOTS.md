@@ -32,26 +32,33 @@ Built when the draft starts and stored on the draft:
    a bot joins the lobby, and turned into per-draft data at start (`bot_stats` on the draft). Missing stats just
    fall back to the CSV.
 4. **Combos** (`combos.py`): the cube list is checked against [Commander Spellbook](https://commanderspellbook.com)
-   (MIT-licensed). Every combo fully contained in the cube is stored, weighted 0.6–1.0 by popularity.
+   (MIT-licensed). Every combo fully contained in the cube is stored, weighted 0.6–1.0 by popularity. Loops that only
+   gain life are skipped. A short hand-kept list (`CUBE_COMBOS`: Thassa's Oracle + Tainted Pact, Time Vault + Keys, …)
+   adds cube staples Spellbook misses.
 5. **Role packages:** a few enabler ↔ payoff pairs by role (reanimate/self-mill ↔ fatties, sac outlets ↔ death
    payoffs, …).
 
 ## Scoring each pick (`engine.py`)
 
 1. **Power**, weighted a little less late in the draft. Dual/fetch lands count at half power at pick 1 (spells first).
-2. **Colours:** flexible for the first few picks (table "openness" signals help choose), committed to two colours
-   by about pick 10. After that off-colour cards keep only 10% of their value. A third colour is only a deliberate
+2. **Colours:** commitment follows **coloured spells owned**, not the pick number, because early picks in a powered
+   cube are often Moxen, rocks and lands. The bot starts leaning at 2 coloured spells (table "openness" signals help
+   choose) and is committed to two colours at 7. After that off-colour cards keep only 10% of their value. A third colour is only a deliberate
    splash: strong owned cards need it, and the bot then values fixing for it.
 3. **Combos and packages:** a combo piece is worth more as more of its line is owned (one piece is a nudge, two of
-   three makes the third a priority), scaled by how well all pieces fit the bot's colours. CubeCobra partners add
+   three makes the third a priority), scaled by how well all pieces fit the bot's colours. A card's best line counts in
+   full and its other lines only 25%, so a card in many half-relevant lines doesn't outscore real cards; lines of four
+   or more cards are ignored. CubeCobra partners add
    value for cards that go with what the bot already owns; role packages add a little more.
-4. **Fixing:** on-colour duals/fetches gain value from mid-draft, more if the bot has few.
-5. **Deck style:** once committed, a light nudge towards what that colour pair usually does.
-6. **Win condition:** from about a third of the way in, the bot checks it can win: a live, reasonably popular
+4. **Mana rocks:** once a deck owns three mana artifacts and has no artifact plan, further rocks costing 2 or more
+   lose 35% of their rating.
+5. **Fixing:** on-colour duals/fetches gain value from mid-draft, more if the bot has few.
+6. **Deck style:** once committed, a light nudge towards what that colour pair usually does.
+7. **Win condition:** from about a third of the way in, the bot checks it can win: a live, reasonably popular
    combo line, about 6 threats (creatures/planeswalkers/finishers), or about 10 cheap attackers. The bigger the
    gap, the more on-colour threats are worth. Decks that already have a plan are barely affected.
-7. **Late needs:** interaction, creatures and cheap spells if short; a penalty for too many expensive cards.
-8. **Float risk:** for the top candidates, each rival who picks before the bot's next turn ranks cards by their own
+8. **Late needs:** interaction, creatures and cheap spells if short; a penalty for too many expensive cards.
+9. **Float risk:** for the top candidates, each rival who picks before the bot's next turn ranks cards by their own
    colours, combos and packages. Cards unlikely to be taken can wait, so a contested card is taken first.
 
 The final pick is sampled among the top cards within 90% of the best score (low temperature), so bots usually

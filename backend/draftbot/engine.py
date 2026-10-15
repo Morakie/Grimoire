@@ -32,8 +32,10 @@ from .personas import Persona
 
 TUNING: Dict[str, float] = {
     # colours
-    "commit_start": 4,          # picks before colour preference starts to matter
-    "commit_pick": 10,          # by this pick the bot is committed to two colours
+    # Commitment counts coloured spells owned, not picks: in a powered cube the first picks are often
+    # Moxen, rocks and lands, which say nothing about colours.
+    "commit_start": 2,          # coloured spells owned before colour preference starts to matter
+    "commit_pick": 7,           # with this many coloured spells the bot is committed to two colours
     "flex_floor": 0.9,          # off-colour cards keep this share of their value while flexible...
     "committed_floor": 0.1,     # ...and this share once committed
     "openness_weight": 2.5,     # colour signals from the table (early picks only); tuned in simulations
@@ -47,6 +49,8 @@ TUNING: Dict[str, float] = {
     "fixing_target": 5,         # duals/fetches a deck would like
     # synergy
     "combo_base": 0.35, "combo_growth": 0.45,
+    "combo_rest_share": 0.25,   # a card's other combo lines add only this share (its best line counts in full)
+    "combo_max_pieces": 3,      # longer lines are too hard to assemble in a draft to plan around
     "partner_weight": 0.3,      # CubeCobra package partners (value when fully "in" a package)
     "style_weight": 1.0,        # colour-pair deck style nudge (after committing)
     # late needs / floating
@@ -67,6 +71,9 @@ TUNING: Dict[str, float] = {
     "run_share": 0.25,          # share of those picks being fixing lands that counts as a full run
     "run_boost": 0.6,           # fixing lands' rating boost during a full run (and no early-draft discount)
     "unsupported_cut": 0.7,     # share of such a card's rating lost when the pool has none of its support
+    # extra mana rocks: a deck without an artifact plan only needs a few
+    "rock_limit": 3,            # mana artifacts owned before more of them lose value
+    "rock_cut": 0.35,           # share of a 2+ mana rock's rating lost past the limit (no artifact plan)
     "support_after": 6,         # picks before that cut fully applies (early picks keep options open)
 }
 
@@ -301,11 +308,14 @@ def splash_colour(pool: List[CardInfo], pair: FrozenSet[str], k) -> Optional[str
 
 # ---------------------------------------------------------------- synergy
 
-def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo], fit_of) -> float:
+def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo], fit_of,
+                rest_share: float = TUNING["combo_rest_share"], max_pieces: float = TUNING["combo_max_pieces"]) -> float:
     """Value toward combos given owned pieces; a line counts only as much as its pieces fit our colours."""
-    total = 0.0
+    lines = []
     for ci in card.combos:
         combo = combos[ci]
+        if len(combo.pieces) > max_pieces:
+            continue
         others = [p for p in combo.pieces if p != card.id]
         have = sum(1 for p in others if p in owned)
         missing = [p for p in others if p not in owned]
@@ -313,8 +323,13 @@ def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo],
             continue
         progress = 0.06 if have == 0 else (have / len(others)) ** 1.2
         fit = min(fit_of(p) for p in combo.pieces)
-        total += combo.weight * progress * (0.25 + 0.75 * fit)
-    return min(total, 1.4)
+        lines.append(combo.weight * progress * (0.25 + 0.75 * fit))
+    if not lines:
+        return 0.0
+    # The best line counts in full; the rest only add a little, so a card in many half-relevant
+    # lines (Displacer Kitten in 20 Commander combos) doesn't outscore real cards.
+    lines.sort(reverse=True)
+    return min(lines[0] + rest_share * sum(lines[1:]), 1.4)
 
 
 _PACKAGE_SETS = [(frozenset(enablers), frozenset(payoffs)) for _, enablers, payoffs in PACKAGES]
@@ -505,15 +520,26 @@ def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[s
 
 # ---------------------------------------------------------------- the pick
 
+def _is_rock(card: CardInfo) -> bool:
+    return "mana" in card.roles and "artifact" in card.roles and not card.is_creature and not card.is_land
+
+
+def coloured_spells(pool: Iterable[CardInfo]) -> int:
+    """How many owned cards say something about colours (non-land spells with coloured costs)."""
+    return sum(1 for c in pool if c.need and not c.is_land)
+
+
 def colour_state(ctx: BotContext, mine: List[CardInfo], n: int, rivals: List[int]):
-    """Where the bot stands on colours: (lane distribution, committed pair or None, splash colour)."""
+    """Where the bot stands on colours: (lane distribution, committed pair or None, splash colour).
+    Commitment follows coloured spells owned, not the pick number."""
     k = ctx.k
+    col = coloured_spells(mine)
     t_open = 1 - min(1.0, n / max(ctx.picks_per_seat, 1)) * 1.6
     open_by_colour = openness(ctx, rivals)
     prior = {lane: k("openness_weight") * max(t_open, 0.0) * ctx.persona.w("openness")
              * sum(open_by_colour[c] for c in lane) / len(lane) for lane in LANES}
-    dist = lane_distribution(mine, n, prior)
-    pair = best_pair(mine, prior) if n >= k("commit_start") else None
+    dist = lane_distribution(mine, col, prior)
+    pair = best_pair(mine, prior) if col >= k("commit_start") else None
     splash = splash_colour(mine, pair, k) if pair else None
     return dist, pair, splash
 
@@ -534,7 +560,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
 
     # How much off-colour cards are discounted: generous early, strict once committed.
     span = max(1.0, k("commit_pick") - k("commit_start"))
-    progress = min(1.0, max(0.0, (n - k("commit_start")) / span))
+    progress = min(1.0, max(0.0, (coloured_spells(mine) - k("commit_start")) / span))
     floor = k("flex_floor") + (k("committed_floor") - k("flex_floor")) * progress
     fixing_owned = sum(1 for c in mine if c.is_land and pair and len(c.produces & pair) >= 2)
 
@@ -567,6 +593,9 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     plan_ramp = min(1.0, max(0.0, (n - k("plan_start")) / max(1.0, k("plan_full") - k("plan_start"))))
     run = land_run(ctx)
     counts = pool_counts(mine)
+    # Extra mana rocks: past a few, a deck with no artifact plan gets little from another one.
+    rocks_owned = sum(1 for c in mine if _is_rock(c))
+    rock_glut = rocks_owned >= k("rock_limit") and plans["artifacts"] < 0.5
     w_power = (1.0 - k("power_late_drop") * t) * p.w("power")
     w_combo = (k("combo_base") + k("combo_growth") * min(1.0, 2 * t)) * p.w("combo")
     w_needs = max(0.0, (t - k("needs_start")) * k("needs_slope"))
@@ -595,12 +624,15 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
             power *= support_factor(card, role_counts, support_ramp, k("unsupported_cut"))
             if plan_ramp:
                 power *= 1.0 - k("plan_conflict_cut") * plan_ramp * plan_conflict(card, plans)
+        if rock_glut and _is_rock(card) and card.cmc >= 2:
+            power *= 1.0 - k("rock_cut")
         if card.is_land and card.is_fixing:
             damp = k("early_fixing_damp")
             # Spells first, fixing later... unless the table is in a land run: then they won't come back.
             power *= (damp + (1 - damp) * max(min(1.0, 2 * t), run)) * (1 + k("run_boost") * run)
         t_rating = w_power * power
-        t_combo = w_combo * combo_value(card, owned, remaining, ctx.combos, fit_of)
+        t_combo = w_combo * combo_value(card, owned, remaining, ctx.combos, fit_of,
+                                        k("combo_rest_share"), k("combo_max_pieces"))
         t_plan = package_value(card, None, strengths) + k("plan_weight") * plan_ramp * plan_value(card, fill, plans)
         t_partner = k("partner_weight") * p.w("combo") * partner_value(card, owned, fit_of)
         t_needs = w_needs * needs_value(card, mine, p, counts)
