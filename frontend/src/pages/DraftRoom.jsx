@@ -692,7 +692,11 @@ export default function DraftRoom() {
     try {
       const { data } = await api.get("/cards/search", { params: { q: isVrd ? `${q} legal:vintage game:paper -t:basic` : q } });
       rememberCards(data.cards || []);
-      setAddResults((data.cards || []).slice(0, 24));
+      // Exact name first, then names starting with the search ("Opt" before "Adopt…"), then the rest.
+      const lq = q.toLowerCase();
+      const rank = (c) => { const n = (c.name || "").toLowerCase(); const f = n.split(" // ")[0];
+        return n === lq || f === lq ? 0 : f.startsWith(lq) ? 1 : 2; };
+      setAddResults((data.cards || []).map((c, i) => [rank(c), i, c]).sort((a, b) => a[0] - b[0] || a[1] - b[1]).map((x) => x[2]).slice(0, 24));
     } catch { toast.error("Search failed"); setAddResults([]); }
     finally { setAdding(false); }
   };
