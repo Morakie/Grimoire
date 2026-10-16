@@ -32,8 +32,10 @@ from .personas import Persona
 
 TUNING: Dict[str, float] = {
     # colours
-    "commit_start": 4,          # picks before colour preference starts to matter
-    "commit_pick": 10,          # by this pick the bot is committed to two colours
+    # Commitment counts coloured spells owned, not picks: in a powered cube the first picks are often
+    # Moxen, rocks and lands, which say nothing about colours.
+    "commit_start": 2,          # coloured spells owned before colour preference starts to matter
+    "commit_pick": 7,           # with this many coloured spells the bot is committed to two colours
     "flex_floor": 0.9,          # off-colour cards keep this share of their value while flexible...
     "committed_floor": 0.1,     # ...and this share once committed
     "openness_weight": 2.5,     # colour signals from the table (early picks only); tuned in simulations
@@ -47,6 +49,8 @@ TUNING: Dict[str, float] = {
     "fixing_target": 5,         # duals/fetches a deck would like
     # synergy
     "combo_base": 0.35, "combo_growth": 0.45,
+    "combo_rest_share": 0.25,   # a card's other combo lines add only this share (its best line counts in full)
+    "combo_max_pieces": 3,      # longer lines are too hard to assemble in a draft to plan around
     "partner_weight": 0.3,      # CubeCobra package partners (value when fully "in" a package)
     "style_weight": 1.0,        # colour-pair deck style nudge (after committing)
     # late needs / floating
@@ -58,7 +62,18 @@ TUNING: Dict[str, float] = {
     "wincon_weight": 0.35,      # value of a strong threat for a deck with no win condition at all
     "wincon_combo_weight": 0.8, # only fairly popular combos count as a way to win (Spellbook weight 0.6-1)
     # payoffs that need support (Urza without artifacts, storm without rituals...)
+    # plans: what a pool is building (Flash + fatties, fetches + landfall...) and leaning into it
+    "plan_weight": 0.15,        # bonus for a card that fills a plan the pool has committed to
+    "plan_conflict_cut": 0.75,  # payoffs for a weaker plan lose this share x (strongest plan - their plan)
+    "plan_start": 4, "plan_full": 10,   # owned cards before plans start to matter / fully matter
+    # land runs: once the table starts taking duals/fetches, everyone scrambles for them
+    "run_window": 1.5,          # recent table picks looked at, in rounds (x seats)
+    "run_share": 0.25,          # share of those picks being fixing lands that counts as a full run
+    "run_boost": 0.6,           # fixing lands' rating boost during a full run (and no early-draft discount)
     "unsupported_cut": 0.7,     # share of such a card's rating lost when the pool has none of its support
+    # extra mana rocks: a deck without an artifact plan only needs a few
+    "rock_limit": 3,            # mana artifacts owned before more of them lose value
+    "rock_cut": 0.35,           # share of a 2+ mana rock's rating lost past the limit (no artifact plan)
     "support_after": 6,         # picks before that cut fully applies (early picks keep options open)
 }
 
@@ -71,6 +86,86 @@ DEPENDENT_PAYOFFS: Dict[str, Tuple[Tuple[str, ...], int]] = {
     "land_recursion": (("fetchland", "landfall"), 3),
 }
 _DEPENDENT_ROLES = frozenset(DEPENDENT_PAYOFFS)
+
+# Plans: (roles on one side, how many make that side complete, roles on the other side, how many).
+# A pool's strength in a plan is half from each side, so a pool with Flash and no fatty is a half-built
+# "cheat" plan that badly wants a fatty.
+PLANS: Dict[str, Tuple[Tuple[str, ...], int, Tuple[str, ...], int]] = {
+    "reanimator": (("reanimate",), 2, ("fatty",), 2),
+    "cheat": (("cheat",), 1, ("fatty",), 2),
+    "artifact_cheat": (("artifact_cheat",), 1, ("big_artifact",), 1),
+    "artifacts": (("artifact",), 6, ("artifact_payoff",), 2),
+    "storm": (("ritual", "fast_mana"), 4, ("storm_payoff",), 1),
+    "blink": (("etb",), 4, ("flicker",), 2),
+    "stoneforge": (("equip_fetch",), 1, ("equipment",), 2),
+    "lands": (("fetchland", "land_sac", "extra_land"), 5, ("land_recursion", "landfall"), 2),
+    "aristocrats": (("sac_outlet",), 1, ("death_payoff", "token_maker"), 3),
+    "tokens": (("anthem",), 1, ("token_maker",), 4),
+}
+# The plan each "needs support" payoff belongs to (for the off-plan cut).
+_PAYOFF_PLAN = {"artifact_payoff": "artifacts", "storm_payoff": "storm", "flicker": "blink",
+                "equip_fetch": "stoneforge", "land_recursion": "lands"}
+
+
+def land_run(ctx: "BotContext") -> float:
+    """0..1: how hard the table is taking fixing lands right now (share of recent picks that were)."""
+    seats = len(ctx.picks_by_seat) or 1
+    window = int(round(ctx.k("run_window") * seats))
+    start = max(0, ctx.pick_index - window)
+    recent_slots = ctx.order[start:ctx.pick_index]
+    if len(recent_slots) < seats:
+        return 0.0
+    # The window's picks are each seat's most recent ones.
+    per_seat: Dict[int, int] = {}
+    for s in recent_slots:
+        per_seat[s] = per_seat.get(s, 0) + 1
+    fixing = total = 0
+    for s, m in per_seat.items():
+        for cid in ctx.picks_by_seat.get(s, [])[-m:]:
+            total += 1
+            card = ctx.index.get(cid)
+            if card and card.is_land and card.is_fixing:
+                fixing += 1
+    return min(1.0, (fixing / total) / ctx.k("run_share")) if total else 0.0
+
+
+def plan_fill(role_counts: Dict[str, int]) -> Dict[str, Tuple[float, float]]:
+    """Per plan: how complete each side is in this pool (0..1, 0..1)."""
+    out = {}
+    for name, (a_roles, a_need, b_roles, b_need) in PLANS.items():
+        a = sum(role_counts.get(r, 0) for r in a_roles)
+        b = sum(role_counts.get(r, 0) for r in b_roles)
+        out[name] = (min(1.0, a / a_need), min(1.0, b / b_need))
+    return out
+
+
+def plan_strengths(fill: Dict[str, Tuple[float, float]]) -> Dict[str, float]:
+    return {name: 0.5 * (fa + fb) for name, (fa, fb) in fill.items()}
+
+
+def plan_value(card: CardInfo, fill: Dict[str, Tuple[float, float]], strengths: Dict[str, float]) -> float:
+    """0..1: how much this card fills a plan the pool has started (more for the side that's missing)."""
+    best = 0.0
+    for name, (a_roles, _, b_roles, _) in PLANS.items():
+        s = strengths[name]
+        if s < 0.3:
+            continue
+        fa, fb = fill[name]
+        if card.roles & set(a_roles):
+            best = max(best, s * (0.4 + 0.6 * (1 - fa)))
+        if card.roles & set(b_roles):
+            best = max(best, s * (0.4 + 0.6 * (1 - fb)))
+    return best
+
+
+def plan_conflict(card: CardInfo, strengths: Dict[str, float]) -> float:
+    """How far a payoff's own plan trails the pool's strongest other plan (0 = on plan)."""
+    own_plans = {_PAYOFF_PLAN[r] for r in card.roles & _DEPENDENT_ROLES if r in _PAYOFF_PLAN}
+    if not own_plans:
+        return 0.0
+    own = max(strengths[p] for p in own_plans)
+    other = max((s for p, s in strengths.items() if p not in own_plans), default=0.0)
+    return max(0.0, other - own)
 
 
 def support_factor(card: CardInfo, role_counts: Dict[str, int], ramp: float, cut: float) -> float:
@@ -117,6 +212,7 @@ class BotContext:
     picks_per_seat: int
     persona: Persona = field(default_factory=lambda: Persona("steady"))
     tuning: Optional[Dict[str, float]] = None
+    explain: bool = False                  # attach each card's score parts (for the bot report)
 
     def k(self, key: str) -> float:
         if self.tuning and key in self.tuning:
@@ -212,11 +308,14 @@ def splash_colour(pool: List[CardInfo], pair: FrozenSet[str], k) -> Optional[str
 
 # ---------------------------------------------------------------- synergy
 
-def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo], fit_of) -> float:
+def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo], fit_of,
+                rest_share: float = TUNING["combo_rest_share"], max_pieces: float = TUNING["combo_max_pieces"]) -> float:
     """Value toward combos given owned pieces; a line counts only as much as its pieces fit our colours."""
-    total = 0.0
+    lines = []
     for ci in card.combos:
         combo = combos[ci]
+        if len(combo.pieces) > max_pieces:
+            continue
         others = [p for p in combo.pieces if p != card.id]
         have = sum(1 for p in others if p in owned)
         missing = [p for p in others if p not in owned]
@@ -224,8 +323,13 @@ def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo],
             continue
         progress = 0.06 if have == 0 else (have / len(others)) ** 1.2
         fit = min(fit_of(p) for p in combo.pieces)
-        total += combo.weight * progress * (0.25 + 0.75 * fit)
-    return min(total, 1.4)
+        lines.append(combo.weight * progress * (0.25 + 0.75 * fit))
+    if not lines:
+        return 0.0
+    # The best line counts in full; the rest only add a little, so a card in many half-relevant
+    # lines (Displacer Kitten in 20 Commander combos) doesn't outscore real cards.
+    lines.sort(reverse=True)
+    return min(lines[0] + rest_share * sum(lines[1:]), 1.4)
 
 
 _PACKAGE_SETS = [(frozenset(enablers), frozenset(payoffs)) for _, enablers, payoffs in PACKAGES]
@@ -416,15 +520,26 @@ def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[s
 
 # ---------------------------------------------------------------- the pick
 
+def _is_rock(card: CardInfo) -> bool:
+    return "mana" in card.roles and "artifact" in card.roles and not card.is_creature and not card.is_land
+
+
+def coloured_spells(pool: Iterable[CardInfo]) -> int:
+    """How many owned cards say something about colours (non-land spells with coloured costs)."""
+    return sum(1 for c in pool if c.need and not c.is_land)
+
+
 def colour_state(ctx: BotContext, mine: List[CardInfo], n: int, rivals: List[int]):
-    """Where the bot stands on colours: (lane distribution, committed pair or None, splash colour)."""
+    """Where the bot stands on colours: (lane distribution, committed pair or None, splash colour).
+    Commitment follows coloured spells owned, not the pick number."""
     k = ctx.k
+    col = coloured_spells(mine)
     t_open = 1 - min(1.0, n / max(ctx.picks_per_seat, 1)) * 1.6
     open_by_colour = openness(ctx, rivals)
     prior = {lane: k("openness_weight") * max(t_open, 0.0) * ctx.persona.w("openness")
              * sum(open_by_colour[c] for c in lane) / len(lane) for lane in LANES}
-    dist = lane_distribution(mine, n, prior)
-    pair = best_pair(mine, prior) if n >= k("commit_start") else None
+    dist = lane_distribution(mine, col, prior)
+    pair = best_pair(mine, prior) if col >= k("commit_start") else None
     splash = splash_colour(mine, pair, k) if pair else None
     return dist, pair, splash
 
@@ -445,7 +560,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
 
     # How much off-colour cards are discounted: generous early, strict once committed.
     span = max(1.0, k("commit_pick") - k("commit_start"))
-    progress = min(1.0, max(0.0, (n - k("commit_start")) / span))
+    progress = min(1.0, max(0.0, (coloured_spells(mine) - k("commit_start")) / span))
     floor = k("flex_floor") + (k("committed_floor") - k("flex_floor")) * progress
     fixing_owned = sum(1 for c in mine if c.is_land and pair and len(c.produces & pair) >= 2)
 
@@ -473,7 +588,14 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     role_counts = _role_counts(mine)
     strengths = package_strengths(role_counts)
     support_ramp = min(1.0, n / k("support_after"))
+    fill = plan_fill(role_counts)
+    plans = plan_strengths(fill)
+    plan_ramp = min(1.0, max(0.0, (n - k("plan_start")) / max(1.0, k("plan_full") - k("plan_start"))))
+    run = land_run(ctx)
     counts = pool_counts(mine)
+    # Extra mana rocks: past a few, a deck with no artifact plan gets little from another one.
+    rocks_owned = sum(1 for c in mine if _is_rock(c))
+    rock_glut = rocks_owned >= k("rock_limit") and plans["artifacts"] < 0.5
     w_power = (1.0 - k("power_late_drop") * t) * p.w("power")
     w_combo = (k("combo_base") + k("combo_growth") * min(1.0, 2 * t)) * p.w("combo")
     w_needs = max(0.0, (t - k("needs_start")) * k("needs_slope"))
@@ -489,38 +611,58 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         ramp = min(1.0, (t - k("wincon_start")) / 0.25)
         wincon_gap = max(0.0, 1.0 - plan_score) * ramp * k("wincon_weight")
 
+    # A pool that can cheat or reanimate fatties doesn't need to cast them: their colours stop mattering.
+    cheat_plan = max(plans["cheat"], plans["reanimator"])
     rows = []
     for cid in remaining:
         card = ctx.index[cid]
         fit = fit_of(cid)
+        if cheat_plan >= 0.3 and plan_ramp and ("fatty" in card.roles or ("big_artifact" in card.roles and plans["artifact_cheat"] >= 0.3)):
+            fit = max(fit, 0.5 + 0.5 * cheat_plan)
         power = max(card.power, 0.0)
         if card.roles & _DEPENDENT_ROLES and support_ramp:
             power *= support_factor(card, role_counts, support_ramp, k("unsupported_cut"))
+            if plan_ramp:
+                power *= 1.0 - k("plan_conflict_cut") * plan_ramp * plan_conflict(card, plans)
+        if rock_glut and _is_rock(card) and card.cmc >= 2:
+            power *= 1.0 - k("rock_cut")
         if card.is_land and card.is_fixing:
             damp = k("early_fixing_damp")
-            power *= damp + (1 - damp) * min(1.0, 2 * t)    # spells first, fixing later
-        base = (w_power * power
-                + w_combo * combo_value(card, owned, remaining, ctx.combos, fit_of)
-                + package_value(card, None, strengths)
-                + k("partner_weight") * p.w("combo") * partner_value(card, owned, fit_of)
-                + w_needs * needs_value(card, mine, p, counts))
+            # Spells first, fixing later... unless the table is in a land run: then they won't come back.
+            power *= (damp + (1 - damp) * max(min(1.0, 2 * t), run)) * (1 + k("run_boost") * run)
+        t_rating = w_power * power
+        t_combo = w_combo * combo_value(card, owned, remaining, ctx.combos, fit_of,
+                                        k("combo_rest_share"), k("combo_max_pieces"))
+        t_plan = package_value(card, None, strengths) + k("plan_weight") * plan_ramp * plan_value(card, fill, plans)
+        t_partner = k("partner_weight") * p.w("combo") * partner_value(card, owned, fit_of)
+        t_needs = w_needs * needs_value(card, mine, p, counts)
+        t_other = 0.0
         if wincon_gap:
-            base += wincon_gap * threat_level(card) * min(1.0, 0.4 + max(card.power, 0.0))
+            t_other += wincon_gap * threat_level(card) * min(1.0, 0.4 + max(card.power, 0.0))
         if pair:
-            base += w_style * style_value(card, pair)
+            t_other += w_style * style_value(card, pair)
             if card.is_land and len(card.produces & pair) >= 2 and fixing_owned < k("fixing_target"):
-                base += k("fixing_bonus") * t * (1.5 if fixing_owned < 2 and t > 0.5 else 1.0)
+                t_other += k("fixing_bonus") * t * (1.5 if fixing_owned < 2 and t > 0.5 else 1.0)
             if splash and card.is_land and splash in card.produces and card.produces & pair:
-                base += k("splash_fixing_bonus")
+                t_other += k("splash_fixing_bonus")
+        base = t_rating + t_combo + t_plan + t_partner + t_needs + t_other
         lane_mult = floor + (1 - floor) * fit
-        rows.append([base * lane_mult, cid, {"fit": round(fit, 2)}])
+        info = {"fit": round(fit, 2)}
+        if ctx.explain:
+            info.update(rating=round(t_rating, 3), combo=round(t_combo, 3), plan=round(t_plan, 3),
+                        partners=round(t_partner, 3), needs=round(t_needs, 3), other=round(t_other, 3),
+                        colour=round(lane_mult, 2))
+        rows.append([base * lane_mult, cid, info])
 
     rows.sort(reverse=True)
     top = rows[:30]
     risk = float_risk(ctx, [r[1] for r in top], remaining)
     for r in top:
         r[2]["risk"] = round(risk[r[1]], 2)
-        r[0] *= 1.0 - min(k("float_cap"), w_float) * (1.0 - risk[r[1]])
+        mult = 1.0 - min(k("float_cap"), w_float) * (1.0 - risk[r[1]])
+        r[0] *= mult
+        if ctx.explain:
+            r[2]["contested"] = round(mult, 2)          # < 1: likely to come back, so worth less now
     top.sort(reverse=True)
     return [(s, cid, info) for s, cid, info in top] + [(s, cid, info) for s, cid, info in rows[30:]]
 

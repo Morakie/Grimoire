@@ -66,6 +66,8 @@ ROLE_PATTERNS = {
     "equip_fetch": r"search your library for an equipment|equipment card from your hand onto the battlefield",
     "land_recursion": r"play lands? from your graveyard|land cards? from your graveyard",
     "landfall": r"landfall|whenever a land (you control )?enters|whenever one or more lands (you control )?enter",
+    "land_sac": r"sacrifice (this land|a land|an? (land|nonbasic land))\b|destroy target (nonbasic )?land",
+    "extra_land": r"play (an additional land|two additional lands|any number of lands|lands from your graveyard)|additional land on each of your turns",
 }
 _ROLE_RE = {k: re.compile(v) for k, v in ROLE_PATTERNS.items()}
 

@@ -1,6 +1,7 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import api from "@/lib/api";
+import BotReport from "@/components/BotReport";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -150,6 +151,7 @@ export default function DraftRoom() {
   const [view, setView] = useState("pick");
   const [deckSeat, setDeckSeat] = useState(null);
   const [showMiniTable, setShowMiniTable] = useState(false);
+  const [showReport, setShowReport] = useState(false);     // the bot report pop-up
   const [sheet, setSheet] = useState(null);            // mobile bottom sheet: "queue" | "feed" | "chat"
   const [previewCard, setPreviewCard] = useState(null); // mobile tap-to-preview
   const seatStripRef = useRef(null);
@@ -690,7 +692,11 @@ export default function DraftRoom() {
     try {
       const { data } = await api.get("/cards/search", { params: { q: isVrd ? `${q} legal:vintage game:paper -t:basic` : q } });
       rememberCards(data.cards || []);
-      setAddResults((data.cards || []).slice(0, 24));
+      // Exact name first, then names starting with the search ("Opt" before "Adopt…"), then the rest.
+      const lq = q.toLowerCase();
+      const rank = (c) => { const n = (c.name || "").toLowerCase(); const f = n.split(" // ")[0];
+        return n === lq || f === lq ? 0 : f.startsWith(lq) ? 1 : 2; };
+      setAddResults((data.cards || []).map((c, i) => [rank(c), i, c]).sort((a, b) => a[0] - b[0] || a[1] - b[1]).map((x) => x[2]).slice(0, 24));
     } catch { toast.error("Search failed"); setAddResults([]); }
     finally { setAdding(false); }
   };
@@ -853,11 +859,12 @@ export default function DraftRoom() {
           )}
           {!isVrd && addResults && (
             addResults.length ? (
-              <div className="flex gap-2 overflow-x-auto pb-1" data-testid="mirror-add-results">
+              // Results wrap into rows and scroll down inside a capped box (a single sideways row got clipped).
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(5.5rem,1fr))] gap-2 max-h-[22rem] overflow-y-auto pr-1 pb-1" data-testid="mirror-add-results">
                 {addResults.map((c) => (
                   <button key={c.id} type="button" data-testid={`mirror-add-${c.id}`} disabled={!myTurn || picking || pickedIds.has(c.id)}
                     onClick={() => setConfirmCard(c)} onMouseEnter={hoverIn(c)} onMouseLeave={hoverOut(c)}
-                    className="shrink-0 w-24 rounded-md overflow-hidden border border-slate-800 hover:border-amber-400/70 disabled:opacity-40" title={c.name}>
+                    className="rounded-md overflow-hidden border border-slate-800 hover:border-amber-400/70 disabled:opacity-40" title={c.name}>
                     {c.image ? <img src={c.image} alt={c.name} className="w-full" loading="lazy" /> : <div className="p-2 text-[11px] text-slate-200">{c.name}</div>}
                   </button>
                 ))}
@@ -1278,6 +1285,9 @@ export default function DraftRoom() {
                   </div>
                   {viewTabs([["pick", "Pick", LayoutGrid], ["table", "Draft Table", Table2], ["decks", "Decks", Eye]])}
                   <button data-testid="toggle-mini-table" onClick={() => setShowMiniTable((v) => !v)} className="hidden lg:flex text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 items-center gap-1.5"><Table2 className="w-3.5 h-3.5" /> {showMiniTable ? "Hide peek" : "Table peek"}</button>
+                  {state.mode !== "packs" && state.pool !== "vintage" && state.pick_index >= 20 && (
+                    <button type="button" data-testid="open-bot-report" onClick={() => setShowReport(true)} className="text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 flex items-center gap-1.5"><Bot className="w-3.5 h-3.5" /> Bot report</button>
+                  )}
                 </div>
                 {view === "table" ? renderDraftTable() : view === "decks" ? renderDecks() : renderPickGrid()}
               </div>
@@ -1291,6 +1301,9 @@ export default function DraftRoom() {
                   {viewTabs(state.mode === "packs"
                     ? [["pick", "Results", ListChecks], ["decks", "Decks", Eye]]
                     : [["pick", "Results", ListChecks], ["table", "Draft Table", Table2], ["decks", "Decks", Eye]])}
+                  {state.mode !== "packs" && state.pool !== "vintage" && (
+                    <button type="button" data-testid="open-bot-report-complete" onClick={() => setShowReport(true)} className="text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 flex items-center gap-1.5"><Bot className="w-3.5 h-3.5" /> Bot report</button>
+                  )}
                 </div>
                 {view === "table" && state.mode !== "packs" ? renderDraftTable() : view === "decks" ? renderDecks() : renderResults()}
                 <p className="text-xs text-slate-500 mt-4">Open any seat's deck in the builder to tweak and save it.</p>
@@ -1384,6 +1397,10 @@ export default function DraftRoom() {
             </div>
           </div>
         </div>
+      )}
+
+      {showReport && (
+        <BotReport shareId={shareId} cubeById={cubeById} seats={state.seats} pickCount={state.pick_index} onClose={() => setShowReport(false)} />
       )}
 
       {showMiniTable && state.status !== "lobby" && (

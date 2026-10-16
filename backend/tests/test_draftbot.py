@@ -194,3 +194,93 @@ def test_cube_meta_synergy_becomes_partners_within_the_cube():
     assert synergy_strength(2.0) == 0.0
     assert "not in cube" not in str(p)
     assert cube_partners(cards, {"synergy": {}}) == {}
+
+
+def test_plans_half_built_cheat_plan_wants_a_fatty_and_lands_pool_cuts_artifact_payoffs():
+    from draftbot.engine import plan_fill, plan_strengths, plan_value, plan_conflict
+    from draftbot.features import CardInfo
+    def card(roles):
+        return CardInfo(id="x", name="x", cmc=1, types=frozenset(), need=frozenset(), produces=frozenset(),
+                        identity=frozenset(), elo=1500, power=0.5, roles=frozenset(roles))
+    cheat_pool = {"cheat": 1}
+    fill = plan_fill(cheat_pool); st = plan_strengths(fill)
+    assert st["cheat"] == 0.5 and plan_value(card({"fatty"}), fill, st) > 0.4
+    lands_pool = {"fetchland": 4, "land_sac": 3, "landfall": 1, "artifact": 3}
+    st = plan_strengths(plan_fill(lands_pool))
+    assert st["lands"] > st["artifacts"] and plan_conflict(card({"artifact_payoff"}), st) > 0.4
+    assert plan_conflict(card({"land_recursion"}), st) == 0.0
+
+
+def test_bot_report_ranks_real_picks_and_bot_picks_rank_first():
+    from draftbot.report import build_report
+    cube = synthetic_cube(n_per_colour=30)
+    seats, per_seat = 4, 12
+    order = []
+    while len(order) < seats * per_seat:
+        order += list(range(seats)) + list(range(seats - 1, -1, -1))
+    order = order[: seats * per_seat]
+    result = run_draft(cube, [], order, seats, per_seat, seed=3)
+    index = result["index"]
+    seq = {s: list(ids) for s, ids in result["picks"].items()}
+    picks = [{"order": i, "seat_index": s, "card_id": seq[s].pop(0)} for i, s in enumerate(order)]
+    rep = build_report(index, [], order, picks, per_seat, [{"index": s, "player_name": f"P{s}"} for s in range(seats)], skip_first=3)
+    assert rep["overall"]["picks"] == seats * (per_seat - 3)
+    # The bots drafted these picks themselves, so the engine should rank them near the top.
+    assert rep["overall"]["median_rank"] <= 3, rep["overall"]
+    d = rep["disagreements"][0]
+    assert {"rating", "colour"} <= set(d["bot_top"][0]["parts"]) and len(d["bot_top"]) == 3
+    assert set(rep["by_phase"]) == {"early", "middle", "late"}
+
+
+def test_colourless_picks_do_not_commit_colours():
+    """Moxen and rocks say nothing about colours: a bot that owns only those stays open."""
+    cube = synthetic_cube() + [card(f"rock{i}", f"Rock {i}", "{1}", 1, "Artifact", "{T}: Add {C}.", "", 1600) for i in range(10)]
+    rocks = [f"rock{i}" for i in range(9)]
+    ctx = _two_seat_ctx(cube, [], rocks, [])
+    fits = {cid: info["fit"] for _, cid, info in score_pool(ctx)}
+    assert min(fits[f"{col}0"] for col in "WUBRG") > 0.3, fits
+    # The same number of picks spent on two colours does commit.
+    ctx = _two_seat_ctx(cube, [], [f"U{i}" for i in range(5)] + [f"R{i}" for i in range(4)], [])
+    fits = {cid: info["fit"] for _, cid, info in score_pool(ctx)}
+    assert fits["U10"] == 1.0 and fits["G10"] < 0.3
+
+
+def test_combo_lines_do_not_stack():
+    """A card in many half-built lines counts its best line in full and only a little of the rest."""
+    from draftbot.engine import combo_value
+    cube = synthetic_cube() + [card("kitten", "Kitten", "{3}{U}", 4, "Creature — Cat", "", "U", 1300)] + \
+        [card(f"p{i}", f"Piece {i}", "{1}", 1, "Artifact", "", "", 1300) for i in range(8)]
+    index = build_card_index(cube)
+    one = [Combo(("kitten", "p0", "p1"), 1.0)]
+    many = one + [Combo(("kitten", f"p{i}", f"p{i + 1}"), 1.0) for i in range(2, 8, 2)]
+    for c in (one, many):
+        attach_combos(index, c)
+    owned = {"p0", "p2", "p4", "p6"}
+    remaining = set(index) - owned
+    attach_combos(index, one)
+    v_one = combo_value(index["kitten"], owned, remaining, one, lambda _: 1.0)
+    attach_combos(index, many)
+    v_many = combo_value(index["kitten"], owned, remaining, many, lambda _: 1.0)
+    assert v_many < v_one * 1.8, (v_one, v_many)
+    long_line = [Combo(("kitten", "p0", "p2", "p3"), 1.0)]
+    attach_combos(index, long_line)
+    assert combo_value(index["kitten"], owned, remaining, long_line, lambda _: 1.0) == 0.0
+
+
+def test_cube_combos_are_added_when_every_piece_is_in_the_cube():
+    from draftbot.combos import with_cube_combos, _only_gains_life
+    cube = synthetic_cube() + [card("oracle", "Thassa's Oracle", "{U}{U}", 2, "Creature — Merfolk", "", "U", 1500),
+                               card("pact", "Tainted Pact", "{1}{B}", 2, "Instant", "", "B", 1360)]
+    index = build_card_index(cube)
+    combos = with_cube_combos(index, [])
+    assert [tuple(sorted(c.pieces)) for c in combos] == [("oracle", "pact")]
+    assert with_cube_combos(index, combos) == combos            # no duplicates
+    assert _only_gains_life({"produces": [{"feature": {"name": "Infinite lifegain"}}]})
+    assert not _only_gains_life({"produces": [{"feature": {"name": "Infinite lifegain"}}, {"feature": {"name": "Win the game"}}]})
+
+
+def test_extra_mana_rocks_lose_value_without_an_artifact_plan():
+    cube = synthetic_cube() + [card(f"rock{i}", f"Rock {i}", "{3}", 3, "Artifact", "{T}: Add {C}{C}.", "", 1600) for i in range(5)]
+    few = {cid: s for s, cid, _ in score_pool(_two_seat_ctx(cube, [], ["rock0"], []))}
+    glut = {cid: s for s, cid, _ in score_pool(_two_seat_ctx(cube, [], ["rock0", "rock1", "rock2"], []))}
+    assert glut["rock4"] < few["rock4"] * 0.8, (few["rock4"], glut["rock4"])
