@@ -2139,6 +2139,10 @@ def _remaining_ids(d: dict, cards: dict) -> List[str]:
     if cards.get("vintage"):
         names = _taken_names(d, cards["cube"]) | skip
         return [c["id"] for c in cards["pool_cards"] if c["id"] not in taken and _name_key(c["name"]) not in names]
+    if d.get("mirror"):
+        # Mirror tables mirror a singleton draft, and "search all cards" can add a second printing of a card
+        # that's already drafted: once a name is taken, every copy of it is.
+        skip |= {_name_key(n) for n in _taken_names(d, cards["cube"])}
     return [cid for cid, info in cards["index"].items() if cid not in taken and _name_key(info.name) not in skip]
 
 
@@ -2325,7 +2329,8 @@ async def bot_report(share_id: str):
     if key not in _REPORT_CACHE:
         cards = await _cards(share_id)
         rep = await run_in_threadpool(build_report, cards["index"], cards["combos"], d["order"], picks,
-                                      d["pick_cap"], d["seats"], 5, d.get("bot_ignore", []))
+                                      d["pick_cap"], d["seats"], 5, d.get("bot_ignore", []),
+                                      singleton_names=bool(d.get("mirror")))
         if len(_REPORT_CACHE) > 20:
             _REPORT_CACHE.clear()
         _REPORT_CACHE[key] = rep
