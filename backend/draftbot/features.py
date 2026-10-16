@@ -29,6 +29,12 @@ def _cost_colors(mana_cost: str) -> FrozenSet[str]:
     return frozenset(need)
 
 
+def _heavy_colors(mana_cost: str) -> FrozenSet[str]:
+    """Colours a card needs at least twice (Sheoldred's {2}{B}{B}): too heavy to splash."""
+    syms = [sym for sym in _SYMBOL.findall(mana_cost or "") if sym in COLORS]
+    return frozenset(c for c in set(syms) if syms.count(c) >= 2)
+
+
 def _produced_colors(card: dict, text: str) -> FrozenSet[str]:
     """Colors a land (or mana rock/dork) can help produce: identity plus fetchable basic types."""
     produced = set(card.get("color_identity") or [])
@@ -86,6 +92,7 @@ class CardInfo:
     roles: FrozenSet[str] = field(default_factory=frozenset)
     combos: List[int] = field(default_factory=list)   # indices into the draft's combo list
     partners: Dict[str, float] = field(default_factory=dict)  # CubeCobra package partners in this cube
+    heavy: FrozenSet[str] = field(default_factory=frozenset)  # colours needed two or more times ({B}{B})
 
     @property
     def is_land(self) -> bool:
@@ -214,6 +221,7 @@ def build_card_index(cube: Iterable[dict], stats: Optional[dict] = None, meta: O
             power=power,
             roles=_roles(c, types, text),
             partners=dict(partners.get(c["id"], {})),
+            heavy=frozenset() if "land" in types else _heavy_colors(c.get("mana_cost", "")),
         )
     return index
 

@@ -43,7 +43,6 @@ TUNING: Dict[str, float] = {
     "splash_min_value": 1.2,    # owned power in the third colour before a splash is considered
     "splash_fit": 0.6,          # how on-colour splash cards count once the splash is real
     "splash_fixing_bonus": 0.3, # value of a land that fixes the splash
-    "splash_land_credit": 0.35, # each owned land making a third colour counts this much towards a splash
     # fixing
     "early_fixing_damp": 0.5,   # dual/fetch lands count at 50% power at pick 1, full by mid-draft
     "fixing_bonus": 0.25,       # late-draft value of an on-colour dual/fetch
@@ -296,16 +295,13 @@ def best_pair(pool: Iterable[CardInfo], prior: Optional[Dict[FrozenSet[str], flo
 
 
 def splash_colour(pool: List[CardInfo], pair: FrozenSet[str], k) -> Optional[str]:
-    """A third colour is a real splash if strong owned cards need it (and nothing beyond it), or if the
-    pool already has the lands for it: drafters in a powered cube often take duals in a third colour early
-    and play three or four colours."""
+    """A third colour is a real splash only if strong owned cards need it (and nothing beyond it).
+    Lands don't count: a fetch or dual taken for its other colour says nothing about wanting this one."""
     best, best_v = None, 0.0
     for col in COLORS:
         if col in pair:
             continue
         v = sum(max(c.power, 0.0) for c in pool if not c.is_land and col in c.need and c.need <= pair | {col})
-        # Lands that make the colour (alongside one of ours, or any colour, like City of Brass).
-        v += k("splash_land_credit") * sum(1 for c in pool if c.is_land and col in c.produces and (c.produces & pair or len(c.produces) >= 4))
         if v > best_v:
             best, best_v = col, v
     return best if best_v >= k("splash_min_value") else None
@@ -579,8 +575,8 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         if splash and committed < 1.0:
             if card.is_land and splash in card.produces and card.produces & pair:
                 committed = 1.0
-            elif not card.is_land and card.need <= pair | {splash}:
-                committed = k("splash_fit")
+            elif not card.is_land and card.need <= pair | {splash} and splash not in card.heavy:
+                committed = k("splash_fit")      # single-pip splash cards only: no {B}{B} cards on a splash
         return committed if progress >= 1.0 else (1 - progress) * flexible + progress * committed
 
     fit_cache: Dict[str, float] = {}
