@@ -286,16 +286,26 @@ def test_extra_mana_rocks_lose_value_without_an_artifact_plan():
     assert glut["rock4"] < few["rock4"] * 0.8, (few["rock4"], glut["rock4"])
 
 
-def test_owned_lands_make_a_third_colour_a_splash():
-    """Duals in a third colour (taken early, as in a powered cube) let that colour's cards in as a splash."""
+def test_lands_alone_do_not_make_a_splash():
+    """A dual or fetch taken for its other colour (a B/R fetch for a R/W deck) doesn't start a black splash."""
     from draftbot.engine import splash_colour, TUNING
-    cube = synthetic_cube() + [card(f"ub{i}", f"UB dual {i}", "", 0, "Land", "Add {U} or {B}.", "UB", 1450) for i in range(4)]
+    cube = synthetic_cube() + [card(f"rb{i}", f"RB fetch {i}", "", 0, "Land",
+                                    "Pay 1 life, Sacrifice this land: Search your library for a Swamp or Mountain card.", "", 1600) for i in range(4)]
     index = build_card_index(cube)
     k = lambda key: TUNING[key]
-    spells = [index[f"U{i}"] for i in range(4)] + [index[f"G{i}"] for i in range(4)]
-    assert splash_colour(spells, frozenset("UG"), k) is None
-    lands = [index[f"ub{i}"] for i in range(4)]
-    assert splash_colour(spells + lands, frozenset("UG"), k) == "B"
+    pool = [index[f"R{i}"] for i in range(4)] + [index[f"W{i}"] for i in range(4)] + [index[f"rb{i}"] for i in range(4)]
+    assert splash_colour(pool, frozenset("WR"), k) is None
+
+
+def test_splash_takes_single_pip_cards_only():
+    """With a real black splash, {B} cards are castable but {B}{B} cards (Sheoldred) are not."""
+    cube = synthetic_cube() + [card("bomb1", "Black bomb", "{2}{B}", 3, "Creature — Test", "", "B", 1800),
+                               card("bomb2", "Black bomb 2", "{1}{B}", 2, "Instant", "Destroy target creature.", "B", 1800),
+                               card("one", "One pip", "{3}{B}", 4, "Sorcery", "", "B", 1500),
+                               card("two", "Two pips", "{2}{B}{B}", 4, "Creature — Test", "", "B", 1500)]
+    mine = [f"U{i}" for i in range(6)] + [f"R{i}" for i in range(6)] + ["bomb1", "bomb2"]
+    fits = {cid: info["fit"] for _, cid, info in score_pool(_two_seat_ctx(cube, [], mine, []))}
+    assert fits["one"] > 0.5 and fits["two"] == 0.0, (fits["one"], fits["two"])
 
 
 def test_bot_report_singleton_names_skip_other_printings():
