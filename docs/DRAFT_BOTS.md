@@ -60,7 +60,12 @@ Built when the draft starts and stored on the draft:
    combo line, about 6 threats (creatures/planeswalkers/finishers), or about 10 cheap attackers. The bigger the
    gap, the more on-colour threats are worth. Decks that already have a plan are barely affected.
 8. **Late needs:** interaction, creatures and cheap spells if short; a penalty for too many expensive cards.
-9. **Float risk:** for the top candidates, each rival who picks before the bot's next turn ranks cards by their own
+9. **Sideboard answers:** from the bot's own 20th pick (fully by its 26th), cards that answer one kind of deck
+   (`hate_*` roles from rules text: Null Rod / Collector Ouphe for artifacts, Tormod's Crypt / Soul-Guide Lantern for
+   graveyards, Defense Grid for counterspells, Ensnaring Bridge for creature decks, Archon of Emeria for storm) gain
+   up to 0.4 when a rival is building that deck. Never against the bot's own plan, less for each answer it already
+   has, and none past four. In bot-only drafts a bot ends up with about one such card.
+10. **Float risk:** for the top candidates, each rival who picks before the bot's next turn ranks cards by their own
    colours, combos and packages. Cards unlikely to be taken can wait, so a contested card is taken first.
 
 The final pick is sampled among the top cards within 90% of the best score (low temperature), so bots usually

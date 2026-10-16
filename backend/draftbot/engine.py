@@ -74,6 +74,11 @@ TUNING: Dict[str, float] = {
     # extra mana rocks: a deck without an artifact plan only needs a few
     "rock_limit": 3,            # mana artifacts owned before more of them lose value
     "rock_cut": 0.35,           # share of a 2+ mana rock's rating lost past the limit (no artifact plan)
+    # sideboard / counter picks: answers to a deck someone at the table is building, late in the draft only
+    "hate_start": 19,           # cards the bot owns before it looks at hate cards (its own 20th pick)
+    "hate_full": 25,            # ... fully by its 26th pick
+    "hate_weight": 0.4,         # value of a hate card against a fully built target deck
+    "hate_max": 4,              # hate cards a bot wants in all (sideboard space)
     "support_after": 6,         # picks before that cut fully applies (early picks keep options open)
 }
 
@@ -525,6 +530,48 @@ def _is_rock(card: CardInfo) -> bool:
     return "mana" in card.roles and "artifact" in card.roles and not card.is_creature and not card.is_land
 
 
+# ---------------------------------------------------------------- sideboard / counter picks
+
+HATE_TARGETS = ("artifact", "graveyard", "counters", "creatures", "spells")
+
+
+def deck_targets(pool: Iterable[CardInfo]) -> Dict[str, float]:
+    """0..1 per kind of deck a sideboard card can answer: how far this pool is building it."""
+    pool = list(pool)
+    rc = _role_counts(pool)
+    artifacts = sum(1 for c in pool if "artifact" in c.roles and not c.is_land)
+    grave = rc.get("reanimate", 0) + 0.5 * rc.get("graveyard_cast", 0) + 0.3 * rc.get("self_mill", 0)
+    storm = rc.get("ritual", 0) + 0.5 * rc.get("fast_mana", 0) + 2 * rc.get("storm_payoff", 0)
+    clamp = lambda x: min(1.0, max(0.0, x))
+    return {
+        "artifact": clamp((artifacts - 4) / 5),        # every powered deck has a Mox or two; 9+ artifacts is a plan
+        "graveyard": clamp((grave - 1) / 2),           # three reanimation spells is a reanimator deck
+        "counters": clamp((rc.get("counter", 0) - 2) / 4),
+        "creatures": clamp((rc.get("aggro_creature", 0) - 4) / 6),
+        "spells": clamp((storm - 3) / 4),
+    }
+
+
+def table_targets(ctx: "BotContext", rivals: List[int]) -> Dict[str, float]:
+    """How much the table offers each kind of sideboard card a target: the strongest rival deck of that
+    kind counts in full, others add a little."""
+    per = [deck_targets(ctx.index[c] for c in ctx.picks_by_seat.get(s, []) if c in ctx.index) for s in rivals]
+    out = {}
+    for t in HATE_TARGETS:
+        vals = sorted((p[t] for p in per), reverse=True)
+        out[t] = min(1.0, (vals[0] if vals else 0.0) + 0.25 * sum(vals[1:]))
+    return out
+
+
+def hate_value(card: CardInfo, table: Dict[str, float], own: Dict[str, float], owned_hate: Dict[str, int]) -> float:
+    """0..1: how useful this card is as a sideboard answer at this table (never against our own plan)."""
+    best = 0.0
+    for t in HATE_TARGETS:
+        if f"hate_{t}" in card.roles and own[t] < 0.5:     # no Null Rod for our own artifact deck
+            best = max(best, table[t] / (1 + owned_hate.get(t, 0)))
+    return best
+
+
 def coloured_spells(pool: Iterable[CardInfo]) -> int:
     """How many owned cards say something about colours (non-land spells with coloured costs)."""
     return sum(1 for c in pool if c.need and not c.is_land)
@@ -594,6 +641,13 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     plan_ramp = min(1.0, max(0.0, (n - k("plan_start")) / max(1.0, k("plan_full") - k("plan_start"))))
     run = land_run(ctx)
     counts = pool_counts(mine)
+    # Sideboard picks: from the bot's own ~20th pick, answers to decks being built at the table.
+    hate_ramp = min(1.0, max(0.0, (n - k("hate_start") + 1) / max(1.0, k("hate_full") - k("hate_start") + 1)))
+    owned_hate = {t: sum(1 for c in mine if f"hate_{t}" in c.roles) for t in HATE_TARGETS}
+    if hate_ramp and sum(owned_hate.values()) < k("hate_max"):
+        table, own_decks = table_targets(ctx, rivals), deck_targets(mine)
+    else:
+        hate_ramp = 0.0
     # Extra mana rocks: past a few, a deck with no artifact plan gets little from another one.
     rocks_owned = sum(1 for c in mine if _is_rock(c))
     rock_glut = rocks_owned >= k("rock_limit") and plans["artifacts"] < 0.5
@@ -637,6 +691,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         t_plan = package_value(card, None, strengths) + k("plan_weight") * plan_ramp * plan_value(card, fill, plans)
         t_partner = k("partner_weight") * p.w("combo") * partner_value(card, owned, fit_of)
         t_needs = w_needs * needs_value(card, mine, p, counts)
+        t_hate = k("hate_weight") * hate_ramp * hate_value(card, table, own_decks, owned_hate) if hate_ramp else 0.0
         t_other = 0.0
         if wincon_gap:
             t_other += wincon_gap * threat_level(card) * min(1.0, 0.4 + max(card.power, 0.0))
@@ -646,12 +701,12 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
                 t_other += k("fixing_bonus") * t * (1.5 if fixing_owned < 2 and t > 0.5 else 1.0)
             if splash and card.is_land and splash in card.produces and card.produces & pair:
                 t_other += k("splash_fixing_bonus")
-        base = t_rating + t_combo + t_plan + t_partner + t_needs + t_other
+        base = t_rating + t_combo + t_plan + t_partner + t_needs + t_other + t_hate
         lane_mult = floor + (1 - floor) * fit
         info = {"fit": round(fit, 2)}
         if ctx.explain:
             info.update(rating=round(t_rating, 3), combo=round(t_combo, 3), plan=round(t_plan, 3),
-                        partners=round(t_partner, 3), needs=round(t_needs, 3), other=round(t_other, 3),
+                        partners=round(t_partner, 3), needs=round(t_needs, 3), other=round(t_other, 3), hate=round(t_hate, 3),
                         colour=round(lane_mult, 2))
         rows.append([base * lane_mult, cid, info])
 
