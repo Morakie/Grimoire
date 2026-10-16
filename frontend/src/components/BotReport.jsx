@@ -7,7 +7,7 @@ import { Loader2, X, Bot, User, ArrowRight } from "lucide-react";
 
 const PART_LABELS = [
   ["rating", "Rating"], ["plan", "Plan / package"], ["combo", "Combo"], ["partners", "Drafted-with"],
-  ["needs", "Deck needs"], ["other", "Other"], ["colour", "Colour fit ×"], ["contested", "Contention ×"],
+  ["needs", "Deck needs"], ["hate", "Sideboard answer"], ["other", "Other"], ["colour", "Colour fit ×"], ["contested", "Contention ×"],
 ];
 
 function Stat({ label, value, hint }) {

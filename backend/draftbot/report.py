@@ -15,7 +15,7 @@ from .engine import BotContext, score_pool
 from .features import CardInfo
 from .personas import Persona
 
-PARTS = ("rating", "combo", "plan", "partners", "needs", "other", "colour", "contested")
+PARTS = ("rating", "combo", "plan", "partners", "needs", "hate", "other", "colour", "contested")
 BUCKETS = ((1, "top1"), (3, "top3"), (5, "top5"), (10, "top10"), (20, "top20"))
 
 

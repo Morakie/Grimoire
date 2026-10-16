@@ -47,7 +47,14 @@ def _produced_colors(card: dict, text: str) -> FrozenSet[str]:
 
 
 # Role tags read from rules text. Deliberately about *function*, never creature type.
+# "hate_*" tags mark answers to one kind of deck (sideboard cards): bots look at them late in the
+# draft when someone at the table is building that deck (engine.table_targets).
 ROLE_PATTERNS = {
+    "hate_artifact": r"activated abilities of artifacts[^.]*can't be activated|destroy all (nonland )?artifacts|destroy (up to two|any number of) target artifacts|artifacts your opponents control (enter|don't)|artifact spells (your opponents cast )?cost \{",
+    "hate_graveyard": r"exile (target player's|each opponent's|each player's|all) graveyards?|exile all cards from (all |target player's |each opponent's )?graveyards?|if a card (or token )?would be put into (an opponent's|a) graveyard from anywhere, exile|cards in graveyards (and libraries )?can't|can't cast spells from (their )?graveyards|nontoken creature would enter and it wasn't cast",
+    "hate_counters": r"spells you control can't be countered|except during its controller's turn|counter target spell if it's blue|destroy target permanent if it's blue",
+    "hate_creatures": r"creatures with power greater than the number|creatures without flying can't attack|can't attack you unless",
+    "hate_spells": r"can't cast more than one spell|whenever a player casts their second spell|spells your opponents cast cost \{",
     "removal": r"(destroy|exile) target (creature|nonland|permanent|artifact|planeswalker|tapped)|deals? (\d+|x) damage to (any target|target creature)|target creature gets -\d|sacrifices? (a|an) (creature|nontoken)|exile up to one (other )?target",
     "counter": r"counter target",
     "sweeper": r"(destroy|exile) all (creatures|nonland)|each creature|all creatures get -",

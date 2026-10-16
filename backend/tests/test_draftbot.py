@@ -42,7 +42,7 @@ def test_features_parse_colours_roles_and_skip_custom():
     assert "reanimate" in idx["c"].roles
 
 
-def _two_seat_ctx(cube, combos, my_picks, rival_picks, persona=None):
+def _two_seat_ctx(cube, combos, my_picks, rival_picks, persona=None, explain=False):
     idx = build_card_index(cube)
     attach_combos(idx, combos)
     taken = set(my_picks) | set(rival_picks)
@@ -50,7 +50,7 @@ def _two_seat_ctx(cube, combos, my_picks, rival_picks, persona=None):
     order = [0, 1, 1, 0] * 20          # slot 0 is ours; the rival picks twice before our next turn
     slot = 0
     return BotContext(idx, combos, remaining, {0: list(my_picks), 1: list(rival_picks)}, 0, order, slot, 40,
-                      persona or Persona("steady", temperature=0.001))
+                      persona or Persona("steady", temperature=0.001), explain=explain)
 
 
 def test_uncontested_combo_piece_is_floated_but_contested_one_is_taken():
@@ -320,3 +320,21 @@ def test_bot_report_singleton_names_skip_other_printings():
     rep = build_report(index, [], order, picks, 10, seats, skip_first=0, singleton_names=True)
     later = [r for r in rep["disagreements"] if r["order"] > 0]
     assert later and all(t["card"] != "bolt2" for r in later for t in r["bot_top"])
+
+
+def test_sideboard_hate_only_late_and_only_against_a_real_target():
+    """Null Rod is worth a look from the bot's own ~20th pick when a rival is building artifacts, never earlier,
+    never without a target, and never against the bot's own artifact deck."""
+    rods = [card("rod", "Null Rod", "{2}", 2, "Artifact", "Activated abilities of artifacts can't be activated.", "", 1300)]
+    arts = [card(f"a{i}", f"Trinket {i}", "{1}", 1, "Artifact", "", "", 1300) for i in range(12)]
+    cube = synthetic_cube(n_per_colour=40) + rods + arts
+    mine = [f"U{i}" for i in range(12)] + [f"R{i}" for i in range(12)]
+    rival_arts = [f"a{i}" for i in range(10)]
+
+    def hate(mine_ids, rival_ids):
+        rows = score_pool(_two_seat_ctx(cube, [], mine_ids, rival_ids, explain=True))
+        return next(i["hate"] for _, c, i in rows if c == "rod")
+    assert hate(mine[:10], rival_ids=rival_arts) == 0.0                      # too early
+    assert hate(mine, rival_ids=rival_arts) > 0.1                          # own 25th pick, rival on artifacts
+    assert hate(mine, rival_ids=[f"W{i}" for i in range(10)]) == 0.0       # nobody to answer
+    assert hate(mine[:14] + rival_arts, rival_ids=rival_arts) == 0.0        # our own artifact deck
