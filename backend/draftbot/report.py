@@ -40,18 +40,22 @@ def _stats(ranks: List[int]) -> dict:
 
 def build_report(index: Dict[str, CardInfo], combos: List[Combo], order: Sequence[int],
                  picks: Sequence[dict], picks_per_seat: int, seats: Sequence[dict],
-                 skip_first: int = 5, ignore_names: Sequence[str] = (), top_disagreements: int = 20) -> dict:
+                 skip_first: int = 5, ignore_names: Sequence[str] = (), top_disagreements: int = 20,
+                 singleton_names: bool = False) -> dict:
     """`picks` are the draft's pick records (order, seat_index, card_id) in order; `seats` the seat list
-    (index, player_name). Picks of cards the engine doesn't know (custom cards) are skipped."""
+    (index, player_name). Picks of cards the engine doesn't know (custom cards) are skipped.
+    `singleton_names`: once a name is drafted, other printings of it don't count as available (mirror tables)."""
     skip_names = {n.lower() for n in ignore_names}
     taken: set = set()
+    taken_names: set = set()
     by_seat: Dict[int, List[str]] = {s["index"]: [] for s in seats}
     rows: List[dict] = []
     for p in sorted(picks, key=lambda x: x["order"]):
         seat, cid = p["seat_index"], p["card_id"]
         owned = len(by_seat.get(seat, []))
         if cid in index and owned >= skip_first:
-            remaining = [c for c in index if c not in taken and index[c].name.lower() not in skip_names]
+            remaining = [c for c in index if c not in taken and index[c].name.lower() not in skip_names
+                         and index[c].name.lower() not in taken_names]
             if cid not in remaining:
                 remaining.append(cid)
             ctx = BotContext(index, combos, remaining, by_seat, seat, order, p["order"], picks_per_seat,
@@ -68,6 +72,8 @@ def build_report(index: Dict[str, CardInfo], combos: List[Combo], order: Sequenc
                 "bot_top": [{"card": c, "score": round(s, 3), "parts": _parts(i)} for s, c, i in scored[:3]],
             })
         taken.add(cid)
+        if singleton_names and cid in index:
+            taken_names.add(index[cid].name.lower())
         by_seat.setdefault(seat, []).append(cid)
 
     ranks = [r["rank"] for r in rows]

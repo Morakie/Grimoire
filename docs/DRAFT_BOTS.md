@@ -43,8 +43,9 @@ Built when the draft starts and stored on the draft:
 1. **Power**, weighted a little less late in the draft. Dual/fetch lands count at half power at pick 1 (spells first).
 2. **Colours:** commitment follows **coloured spells owned**, not the pick number, because early picks in a powered
    cube are often Moxen, rocks and lands. The bot starts leaning at 2 coloured spells (table "openness" signals help
-   choose) and is committed to two colours at 7. After that off-colour cards keep only 10% of their value. A third colour is only a deliberate
-   splash: strong owned cards need it, and the bot then values fixing for it.
+   choose) and is committed to two colours at 7. After that off-colour cards keep only 10% of their value. A third colour is a deliberate
+   splash: strong owned cards need it, or the pool already owns lands that make it (each counts 0.35 towards the
+   1.2 needed). The bot then values fixing for it.
 3. **Combos and packages:** a combo piece is worth more as more of its line is owned (one piece is a nudge, two of
    three makes the third a priority), scaled by how well all pieces fit the bot's colours. A card's best line counts in
    full and its other lines only 25%, so a card in many half-relevant lines doesn't outscore real cards; lines of four

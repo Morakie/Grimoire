@@ -284,3 +284,29 @@ def test_extra_mana_rocks_lose_value_without_an_artifact_plan():
     few = {cid: s for s, cid, _ in score_pool(_two_seat_ctx(cube, [], ["rock0"], []))}
     glut = {cid: s for s, cid, _ in score_pool(_two_seat_ctx(cube, [], ["rock0", "rock1", "rock2"], []))}
     assert glut["rock4"] < few["rock4"] * 0.8, (few["rock4"], glut["rock4"])
+
+
+def test_owned_lands_make_a_third_colour_a_splash():
+    """Duals in a third colour (taken early, as in a powered cube) let that colour's cards in as a splash."""
+    from draftbot.engine import splash_colour, TUNING
+    cube = synthetic_cube() + [card(f"ub{i}", f"UB dual {i}", "", 0, "Land", "Add {U} or {B}.", "UB", 1450) for i in range(4)]
+    index = build_card_index(cube)
+    k = lambda key: TUNING[key]
+    spells = [index[f"U{i}"] for i in range(4)] + [index[f"G{i}"] for i in range(4)]
+    assert splash_colour(spells, frozenset("UG"), k) is None
+    lands = [index[f"ub{i}"] for i in range(4)]
+    assert splash_colour(spells + lands, frozenset("UG"), k) == "B"
+
+
+def test_bot_report_singleton_names_skip_other_printings():
+    from draftbot.report import build_report
+    cube = synthetic_cube() + [card("bolt1", "Bolt", "{R}", 1, "Instant", "Bolt deals 3 damage to any target.", "R", 1700),
+                               card("bolt2", "Bolt", "{R}", 1, "Instant", "Bolt deals 3 damage to any target.", "R", 1700)]
+    index = build_card_index(cube)
+    order = [0, 1] * 10
+    picks = [{"order": 0, "seat_index": 0, "card_id": "bolt1"}] + \
+            [{"order": i, "seat_index": i % 2, "card_id": f"W{i}"} for i in range(1, 12)]
+    seats = [{"index": 0, "player_name": "A"}, {"index": 1, "player_name": "B"}]
+    rep = build_report(index, [], order, picks, 10, seats, skip_first=0, singleton_names=True)
+    later = [r for r in rep["disagreements"] if r["order"] > 0]
+    assert later and all(t["card"] != "bolt2" for r in later for t in r["bot_top"])
