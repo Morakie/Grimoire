@@ -64,8 +64,9 @@ TUNING: Dict[str, float] = {
     "key_open": 0.7,            # a key card of a deck type nobody at the table is in: worth starting it
     "deck_seat": 0.5,           # deck-type strength at which a seat counts as being in that deck type
     "crowd_seats": 2,           # seats already in a deck type before it counts as crowded...
-    "crowd_cut": 0.5,           # ...then a bot that isn't leading it values its cards this much less
-    "deck_focus": 0.3,          # a bot deep in a deck type: cards outside it lose up to this share
+    "crowd_cut": 0.6,           # ...then a bot behind the deepest seat values its cards up to this much less
+    "deck_focus": 0.3,          # a bot fully in a deck type: cards outside it lose up to this share...
+    "focus_start": 0.5,         # ...starting from this deck-type strength
     "home_weight": 0.7,         # colourless non-mana cards (Top, Skullclamp): how much their home colours matter
     "home_floor": 0.3,          # ... never fitting less than this
     "style_weight": 1.0,        # colour-pair deck style nudge (after committing)
@@ -564,9 +565,14 @@ def deck_outlook(ctx: BotContext, mine: Dict[str, float], others: List[Dict[str,
     for t in DECK_TYPES:
         theirs = [o[t] for o in others]
         seats_in = sum(1 for v in theirs if v >= k("deck_seat"))
-        leading = mine[t] >= max(theirs, default=0.0)
-        crowded = seats_in >= k("crowd_seats") and not leading
-        eff[t] = mine[t] * (1.0 - k("crowd_cut")) if crowded else mine[t]
+        leader = max(theirs, default=0.0)
+        if seats_in >= k("crowd_seats") and leader > 0:
+            # Fight or pivot: a bot about as deep as the deepest rival keeps fighting for the deck type's
+            # cards; a shallow one backs off (and so moves to something more open).
+            behind = max(0.0, 1.0 - mine[t] / leader)
+            eff[t] = mine[t] * (1.0 - k("crowd_cut") * behind)
+        else:
+            eff[t] = mine[t]
         open_[t] = 1.0 if seats_in == 0 else (0.5 if seats_in < k("crowd_seats") else 0.0)
     return eff, open_
 
@@ -595,14 +601,18 @@ def deck_factor(ctx: BotContext, card: CardInfo, eff: Dict[str, float], open_: D
 
 
 def focus_factor(ctx: BotContext, card: CardInfo, mine: Dict[str, float]) -> float:
-    """A bot deep in a deck type (an artifact deck with Academy and Urza) wants its cards more than a
-    good card from outside it: cards with no part in its strongest deck type lose a little."""
+    """The deeper a bot is in a deck type, the more it takes what that deck needs instead of generically
+    good cards: cards with no part in its strongest deck type lose value step by step (from deck-type
+    strength focus_start, up to deck_focus when fully in). Interaction (removal, counterspells), staples
+    and cards that go in every deck are always needed."""
     if not mine:
         return 1.0
     t, s = max(mine.items(), key=lambda kv: kv[1])
-    if s < 0.75 or card.staple or is_universal(card) or card.deck.get(t, 0.0) >= 0.5:
+    ramp = min(1.0, max(0.0, (s - ctx.k("focus_start")) / (1.0 - ctx.k("focus_start"))))
+    if not ramp or card.staple or is_universal(card) or card.roles & {"removal", "counter"}:
         return 1.0
-    return 1.0 - ctx.k("deck_focus") * s * (1.0 - card.deck.get(t, 0.0))
+    member = card.deck.get(t, 0.0)
+    return 1.0 - ctx.k("deck_focus") * ramp * (1.0 - min(1.0, member / 0.5))
 
 
 def commit_progress(ctx: BotContext, pool: List[CardInfo]) -> float:

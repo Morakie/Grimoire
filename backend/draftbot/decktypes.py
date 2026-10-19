@@ -18,14 +18,24 @@ from typing import Dict, Iterable
 
 from .features import CardInfo
 
-# Key cards by deck type (names as in Scryfall, matched case-insensitively). Role tags add more keys:
-# see ROLE_KEYS. Cards missing from a cube are simply ignored.
+# Key cards by deck type (names as in Scryfall, matched case-insensitively). Similar decks are separate
+# deck types: a Tolarian Academy deck, a Workshop deck and an artifact-synergy deck share some cards
+# (Moxen, Baubles) and compete for those, but not for each other's key cards. A card can key more than
+# one deck type. Role tags add more keys (ROLE_KEYS) for cards not named here. Cards missing from a cube
+# are simply ignored.
 KEYS: Dict[str, tuple] = {
-    "artifacts": (
-        "Tolarian Academy", "Urza, Lord High Artificer", "Mishra's Workshop", "Time Vault", "Mox Opal",
-        "Urza's Saga", "Retrofitter Foundry", "Kappa Cannoneer", "Emry, Lurker of the Loch", "Tinker",
-        "Forensic Gadgeteer", "Karn, the Great Creator", "Cranial Plating", "Sai, Master Thopterist",
-        "Thopter Foundry", "Sword of the Meek", "Transmute Artifact", "Saheeli, Sublime Artificer",
+    "tolarian": (    # blue artifact engines: Academy, Urza, Time Vault + Keys, Tinker
+        "Tolarian Academy", "Urza, Lord High Artificer", "Time Vault", "Tinker", "Transmute Artifact",
+        "Voltaic Key", "Manifold Key", "Power Artifact", "Paradox Engine", "Mystic Forge",
+    ),
+    "workshop": (    # colourless prison and big artifacts off Mishra's Workshop
+        "Mishra's Workshop", "Karn, the Great Creator", "Kappa Cannoneer", "Trinisphere", "Lodestone Golem",
+        "Sphere of Resistance", "Precursor Golem", "Phyrexian Revoker", "Foundry Inspector",
+    ),
+    "artifacts": (   # artifact synergy: Saga, Opal, Plating, Thopter-Sword, Retrofitter
+        "Urza's Saga", "Mox Opal", "Retrofitter Foundry", "Cranial Plating", "Sai, Master Thopterist",
+        "Thopter Foundry", "Sword of the Meek", "Emry, Lurker of the Loch", "Forensic Gadgeteer",
+        "Saheeli, Sublime Artificer", "Steel Overseer", "Arcbound Ravager", "Cori-Steel Cutter",
     ),
     "storm": (
         "Tendrils of Agony", "Brain Freeze", "Grapeshot", "Mind's Desire", "Underworld Breach",
@@ -45,12 +55,15 @@ KEYS: Dict[str, tuple] = {
         "Field of the Dead", "Titania, Protector of Argoth", "Dryad of the Ilysian Grove", "Splendid Reclamation",
     ),
 }
-# Role tags that make a card a key card of a deck type (from features.ROLE_PATTERNS).
+# Role tags that make a card a key card of a deck type (from features.ROLE_PATTERNS), for cards not named above.
 ROLE_KEYS = {"artifact_payoff": "artifacts", "storm_payoff": "storm", "reanimate": "reanimator",
              "cheat": "cheat", "land_recursion": "lands"}
 DECK_TYPES = tuple(KEYS)
 
-_KEY_NAMES = {n.lower(): t for t, names in KEYS.items() for n in names}
+_KEY_NAMES: Dict[str, set] = {}
+for _t, _names in KEYS.items():
+    for _n in _names:
+        _KEY_NAMES.setdefault(_n.lower(), set()).add(_t)
 
 # A card's membership in a deck type comes from the share of its CubeCobra partners (by strength) that
 # are that deck type's key cards: Mishra's Bauble 15% artifact keys, Retrofitter Foundry 20% (members);
@@ -61,14 +74,10 @@ MIN_KEY_STRENGTH = 1.5   # partner strength to key cards needed at all (cards wi
 
 
 def _key_types(card: CardInfo) -> set:
-    out = set()
-    t = _KEY_NAMES.get(card.name.lower()) or _KEY_NAMES.get(card.name.split(" // ")[0].lower())
-    if t:
-        out.add(t)
-    for role, t in ROLE_KEYS.items():
-        if role in card.roles:
-            out.add(t)
-    return out
+    named = _KEY_NAMES.get(card.name.lower()) or _KEY_NAMES.get(card.name.split(" // ")[0].lower())
+    if named:
+        return set(named)
+    return {t for role, t in ROLE_KEYS.items() if role in card.roles}
 
 
 def attach_deck_types(index: Dict[str, CardInfo]) -> None:
@@ -106,7 +115,7 @@ def is_universal(card: CardInfo) -> bool:
     return "mana" in card.roles
 
 
-NARROW_MEMBERSHIP = 0.5   # deck-type membership that makes a colourless spell narrow (Top, Baubles)
+NARROW_MEMBERSHIP = 0.4   # deck-type membership that makes a colourless spell narrow (Top, Baubles)
 
 
 def is_narrow(card: CardInfo, universal: bool, take_on_sight: bool) -> bool:
@@ -123,16 +132,27 @@ def is_narrow(card: CardInfo, universal: bool, take_on_sight: bool) -> bool:
     return bool(card.key_of) or max(card.deck.values(), default=0.0) >= NARROW_MEMBERSHIP
 
 
+KEY_WEIGHT = 1.0      # a key card: two make a full deck type
+MEMBER_WEIGHT = 0.3   # a member card (Bauble for artifacts), scaled by membership
+LEAN_WEIGHT = 0.5     # an open pick that still leans (Mana Vault -> Tolarian), scaled by membership:
+                      # Mana Vault is half a key, a Mox a small nudge, Sol Ring and Lotus mostly open
+LEAN_CAP = 0.6        # most that open picks add up to (a little more than one Mana Vault)
+
+
 def deck_strength(pool: Iterable[CardInfo]) -> Dict[str, float]:
-    """0..1 per deck type: how far a pool is into it. Key cards count fully (two make it a full deck type),
-    other members a quarter each."""
+    """0..1 per deck type: how far a pool is into it. Key cards count fully (two make a full deck type),
+    member cards and open picks that lean towards a deck type (Mana Vault) count partly."""
     raw = {t: 0.0 for t in DECK_TYPES}
+    lean = {t: 0.0 for t in DECK_TYPES}
     for c in pool:
-        if c.staple or (is_universal(c) and not c.key_of):
-            continue                        # Moxen and Sol Ring go in every deck: they don't make one
+        open_pick = c.staple or (is_universal(c) and not c.key_of)
         for t in DECK_TYPES:
             if t in c.key_of:
-                raw[t] += 1.0
+                raw[t] += KEY_WEIGHT
             elif t in c.deck:
-                raw[t] += 0.25 * c.deck[t]
-    return {t: min(1.0, v / 2.0) for t, v in raw.items()}
+                if open_pick:
+                    lean[t] += LEAN_WEIGHT * c.deck[t]
+                else:
+                    raw[t] += MEMBER_WEIGHT * c.deck[t]
+    # Open picks lean, but a pile of mana rocks doesn't make a deck type: only key cards and members do.
+    return {t: min(1.0, (raw[t] + min(lean[t], LEAN_CAP)) / 2.0) for t in DECK_TYPES}

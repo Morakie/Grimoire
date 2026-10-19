@@ -419,7 +419,7 @@ def test_narrow_artifacts_wait_for_an_artifact_deck():
     from draftbot.engine import TUNING
     cube = _artifact_cube()
     idx = build_card_index(cube, _artifact_stats())
-    assert idx["bauble"].deck.get("artifacts") == 1.0 and "artifacts" in idx["urza"].key_of
+    assert idx["bauble"].deck.get("tolarian") == 1.0 and "tolarian" in idx["urza"].key_of
 
     def bauble(mine):
         ctx = _two_seat_ctx(cube, [], mine, [], explain=True)
@@ -438,12 +438,19 @@ def test_crowded_deck_type_is_left_to_the_seats_in_it():
     idx = build_card_index(cube, _artifact_stats())
     ctx = _two_seat_ctx(cube, [], [], [])
     ctx.index = idx
-    rival = {t: 0.0 for t in ("artifacts", "storm", "reanimator", "cheat", "lands")}
-    mine = dict(rival, artifacts=0.5)
-    alone_eff, alone_open = deck_outlook(ctx, mine, [dict(rival, artifacts=1.0)])
-    crowd_eff, crowd_open = deck_outlook(ctx, mine, [dict(rival, artifacts=1.0), dict(rival, artifacts=0.9)])
-    assert alone_eff["artifacts"] == 0.5 and alone_open["artifacts"] == 0.5
-    assert crowd_eff["artifacts"] < 0.5 and crowd_open["artifacts"] == 0.0
+    from draftbot.decktypes import DECK_TYPES
+    rival = {t: 0.0 for t in DECK_TYPES}
+    mine = dict(rival, tolarian=0.5)
+    two = [dict(rival, tolarian=1.0), dict(rival, tolarian=0.9)]
+    alone_eff, alone_open = deck_outlook(ctx, mine, [dict(rival, tolarian=1.0)])
+    crowd_eff, crowd_open = deck_outlook(ctx, mine, two)
+    assert alone_eff["tolarian"] == 0.5 and alone_open["tolarian"] == 0.5
+    assert crowd_eff["tolarian"] < 0.5 and crowd_open["tolarian"] == 0.0      # shallow: pivot
+    deep_eff, _ = deck_outlook(ctx, dict(rival, tolarian=1.0), two)
+    assert deep_eff["tolarian"] == 1.0                                          # as deep as anyone: fight
+    # A similar deck type isn't crowded by them: an artifact-synergy deck still fights for its own cards.
+    other_eff, other_open = deck_outlook(ctx, dict(rival, artifacts=0.5), two)
+    assert other_eff["artifacts"] == 0.5 and other_open["artifacts"] == 1.0
 
 
 def test_only_peoples_fetch_picks_start_a_land_run():
@@ -466,3 +473,15 @@ def test_phyrexian_mana_cards_fit_every_deck():
     idx = build_card_index(cube, {"partners": {"dism": {f"B{i}": 1.0 for i in range(6)}}})
     c = idx["dism"]
     assert not c.home and not is_narrow(c, is_universal(c), c.staple)
+
+
+def test_open_picks_lean_but_do_not_commit():
+    """Mana Vault leans towards a Tolarian deck (half a key); a Mox barely moves a pool."""
+    from draftbot.decktypes import deck_strength
+    cube = _artifact_cube() + [card("vault", "Mana Vault", "{1}", 1, "Artifact", "{T}: Add {C}{C}{C}.", "", 1890),
+                               card("mox", "Mox Pearl", "{0}", 0, "Artifact", "{T}: Add {W}.", "", 2240)]
+    stats = _artifact_stats()
+    stats["partners"]["vault"] = {"acad": 1.0, "urza": 1.0, "W1": 0.5}
+    idx = build_card_index(cube, stats)
+    assert deck_strength([idx["vault"]])["tolarian"] == 0.25
+    assert deck_strength([idx["mox"]])["tolarian"] == 0.0
