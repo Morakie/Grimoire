@@ -396,3 +396,73 @@ def test_last_combo_piece_is_not_floated():
     combos = [Combo(("vault", "key"), 1.0)]
     rows = {cid: i for _, cid, i in score_pool(_two_seat_ctx(cube, combos, ["vault"], [], explain=True))}
     assert rows["key"]["risk"] == 1.0 and rows["key"]["contested"] == 1.0
+
+
+def _artifact_cube():
+    """Synthetic cube with an artifact deck type: two key cards and a Bauble drafted with them."""
+    return synthetic_cube() + [
+        card("acad", "Tolarian Academy", "", 0, "Legendary Land", "Add {U} for each artifact you control.", "U", 1840),
+        card("urza", "Urza, Lord High Artificer", "{2}{U}{U}", 4, "Legendary Creature — Human Artificer",
+             "Tap an untapped artifact you control: Add {U}.", "U", 1660),
+        card("saga", "Urza's Saga", "", 0, "Enchantment Land — Urza's Saga", "", "", 1720),
+        card("bauble", "Mishra's Bauble", "{0}", 0, "Artifact", "Draw a card at the beginning of the next turn's upkeep.", "", 1540),
+    ]
+
+
+def _artifact_stats():
+    # The Bauble's partners are mostly the artifact deck's key cards (like CubeCobra's data for it).
+    return {"partners": {"bauble": {"acad": 1.0, "urza": 1.0, "saga": 1.0, "W0": 0.5, "R0": 0.5}}}
+
+
+def test_narrow_artifacts_wait_for_an_artifact_deck():
+    """Mishra's Bauble is worth little to a bot outside artifacts, and full value inside them."""
+    from draftbot.engine import TUNING
+    cube = _artifact_cube()
+    idx = build_card_index(cube, _artifact_stats())
+    assert idx["bauble"].deck.get("artifacts") == 1.0 and "artifacts" in idx["urza"].key_of
+
+    def bauble(mine):
+        ctx = _two_seat_ctx(cube, [], mine, [], explain=True)
+        ctx.index = idx
+        return next(i for _, c, i in score_pool(ctx) if c == "bauble")
+    outside = bauble(["W0", "W1", "R0"])
+    inside = bauble(["acad", "urza", "U0"])
+    assert outside["deck"] <= TUNING["narrow_floor"] + 0.05
+    assert "deck" not in inside or inside["deck"] > 0.9
+
+
+def test_crowded_deck_type_is_left_to_the_seats_in_it():
+    """Two seats already in artifacts: a third bot that isn't leading values the deck type's cards less."""
+    from draftbot.engine import deck_outlook
+    cube = _artifact_cube()
+    idx = build_card_index(cube, _artifact_stats())
+    ctx = _two_seat_ctx(cube, [], [], [])
+    ctx.index = idx
+    rival = {t: 0.0 for t in ("artifacts", "storm", "reanimator", "cheat", "lands")}
+    mine = dict(rival, artifacts=0.5)
+    alone_eff, alone_open = deck_outlook(ctx, mine, [dict(rival, artifacts=1.0)])
+    crowd_eff, crowd_open = deck_outlook(ctx, mine, [dict(rival, artifacts=1.0), dict(rival, artifacts=0.9)])
+    assert alone_eff["artifacts"] == 0.5 and alone_open["artifacts"] == 0.5
+    assert crowd_eff["artifacts"] < 0.5 and crowd_open["artifacts"] == 0.0
+
+
+def test_only_peoples_fetch_picks_start_a_land_run():
+    from draftbot.engine import land_run
+    cube = synthetic_cube() + [card(f"f{i}", f"Fetch {i}", "", 0, "Land",
+                                    "Search your library for a Plains or Island card.", "", 1700) for i in range(4)]
+    idx = build_card_index(cube)
+    order = [0, 1, 1, 0] * 20
+    picks = {0: ["W0", "f0"], 1: ["f1", "f2"]}
+    ctx = BotContext(idx, [], [c for c in idx if c not in {"W0", "f0", "f1", "f2"}], picks, 0, order, 4, 40)
+    assert land_run(ctx) > 0.5                 # everyone counts as a person by default
+    ctx.people = frozenset({0})
+    assert land_run(ctx) == 0.0                # the bot in seat 1 taking fetches doesn't start a run
+
+
+def test_phyrexian_mana_cards_fit_every_deck():
+    from draftbot.decktypes import is_narrow, is_universal
+    cube = synthetic_cube() + [card("dism", "Dismember", "{1}{B/P}{B/P}", 3, "Instant",
+                                    "Target creature gets -5/-5 until end of turn.", "B", 1650)]
+    idx = build_card_index(cube, {"partners": {"dism": {f"B{i}": 1.0 for i in range(6)}}})
+    c = idx["dism"]
+    assert not c.home and not is_narrow(c, is_universal(c), c.staple)

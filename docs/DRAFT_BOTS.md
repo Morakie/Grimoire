@@ -66,7 +66,22 @@ Built when the draft starts and stored on the draft:
    up to 0.4 when a rival is building that deck. Never against the bot's own plan, less for each answer it already
    has, and none past four. In bot-only drafts a bot ends up with about one such card.
 10. **Float risk:** for the top candidates, each rival who picks before the bot's next turn ranks cards by their own
-   colours, combos and packages. Cards unlikely to be taken can wait, so a contested card is taken first.
+   colours, combos and packages. Cards unlikely to be taken can wait, so a contested card is taken first. A rival
+   counts as flexible about colours until it owns a few coloured spells (like the bot itself), and a rival holding
+   all but one piece of a combo is likely to take the last one. The bot never waits on the last piece of its own
+   combo. Fetchland "runs" start only from people's picks, so bots don't set one off by following each other.
+11. **Deck types** (`decktypes.py`): artifacts, storm, reanimator, cheat and lands are defined by **key cards**
+   (Tolarian Academy, Urza, Time Vault; Tendrils, Breach; Entomb, Reanimate; Sneak Attack, Show and Tell; Loam,
+   Crucible) plus role tags. Other cards belong to a deck type by the share of their CubeCobra partners that are
+   its key cards (Mishra's Bauble, Top and Retrofitter Foundry are artifact cards; Dismember is drafted with
+   everything). **Narrow** cards (colourless spells tied to a deck type, colourless key cards like Mox Opal and
+   Lion's Eye Diamond, one-colour utility lands like Karakas) keep only 40% of their rating until the bot is in a
+   deck that uses them; a key card of a deck type nobody is in is worth taking to start it. Once two seats are in
+   a deck type, a bot that isn't leading it values its cards half as much, so the table spreads out. A bot deep
+   in a deck type values cards outside it up to 30% less.
+12. **Power first:** the Power Nine (`TAKE_ON_SIGHT` in `features.py`) are rated at least at the cube's 98th
+   percentile Elo whatever CubeCobra says (Timetwister sits below Orcish Bowmasters there). Colourless non-mana
+   cards get a "home" from their partners' colours (Phyrexian-mana cards like Dismember don't).
 
 The final pick is sampled among the top cards within 90% of the best score (low temperature), so bots usually
 take their best card and occasionally a close second. Hidden personalities nudge a few weights by about ±5%.
@@ -81,6 +96,7 @@ backend/draftbot/
   cardstats.py   CubeCobra ratings and package partners (fetch + cache)
   combos.py      Commander Spellbook lookup and role packages
   engine.py      scoring and pick selection
+  decktypes.py   deck types, key cards and narrow cards
   personas.py    hidden personalities and bot names
   simulate.py    bot-only draft simulation and metrics
 ```
@@ -92,3 +108,6 @@ The engine is pure Python with no database access, so it is unit-tested directly
 `POST /api/bots/simulate` (only when `ENABLE_BOT_SIM=true`; staging only) runs a full bot-only draft of a CubeCobra
 cube and reports per seat: colours, share of spells on colour, win plan, creatures, fixing, combos completed and
 the pick list. `tuning` overrides any `TUNING` value for that run.
+
+To replay a real draft offline, save `GET /api/drafts/{id}/bot-inputs` (cards, CubeCobra stats, combos, order and
+picks) and run the engine on it; `GET /api/drafts/{id}/suggestions?seat=N&explain=1` shows the live score parts.

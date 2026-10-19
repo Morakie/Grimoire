@@ -41,10 +41,11 @@ def _stats(ranks: List[int]) -> dict:
 def build_report(index: Dict[str, CardInfo], combos: List[Combo], order: Sequence[int],
                  picks: Sequence[dict], picks_per_seat: int, seats: Sequence[dict],
                  skip_first: int = 5, ignore_names: Sequence[str] = (), top_disagreements: int = 20,
-                 singleton_names: bool = False) -> dict:
+                 singleton_names: bool = False, people=None) -> dict:
     """`picks` are the draft's pick records (order, seat_index, card_id) in order; `seats` the seat list
     (index, player_name). Picks of cards the engine doesn't know (custom cards) are skipped.
-    `singleton_names`: once a name is drafted, other printings of it don't count as available (mirror tables)."""
+    `singleton_names`: once a name is drafted, other printings of it don't count as available (mirror tables).
+    `people`: seats drafted by people (see BotContext.people)."""
     skip_names = {n.lower() for n in ignore_names}
     taken: set = set()
     taken_names: set = set()
@@ -59,7 +60,7 @@ def build_report(index: Dict[str, CardInfo], combos: List[Combo], order: Sequenc
             if cid not in remaining:
                 remaining.append(cid)
             ctx = BotContext(index, combos, remaining, by_seat, seat, order, p["order"], picks_per_seat,
-                             Persona("steady"), explain=True)
+                             Persona("steady"), explain=True, people=people)
             scored = score_pool(ctx)
             rank = next((i + 1 for i, (_, c, _) in enumerate(scored) if c == cid), len(scored))
             best_score = scored[0][0] if scored else 0.0
