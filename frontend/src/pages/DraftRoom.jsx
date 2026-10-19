@@ -1142,21 +1142,36 @@ export default function DraftRoom() {
                 <span className="text-xs font-display font-semibold">Table</span>
                 <span className="text-xs text-slate-500">({seatsSorted.length} seats)</span>
               </div>
-              <div className="overflow-y-auto p-1.5 space-y-0.5 max-h-[45vh] shrink-0 border-b border-slate-800" data-testid="seat-list">
+              {/* One row per seat: their latest pick as a thumbnail (hover for the big preview), then
+                  name · seat and the card's name. Pack drafts keep picks hidden, so no thumbnail there. */}
+              <div className="overflow-y-auto p-1.5 space-y-1 max-h-[55vh] shrink-0 border-b border-slate-800" data-testid="seat-list">
                 {seatsSorted.map((s) => {
                   const isCurrent = state.current_seat_index === s.index;
                   const mine = isMirror ? s.index === state.my_seat : me?.seats?.includes(s.index);
                   const picks = seatPicks(s.index);
-                  const last = picks[picks.length - 1];
+                  const last = state.mode === "packs" ? null : picks[picks.length - 1];
+                  const img = last && (last.image || last.art_crop);
                   return (
-                    <div key={s.index} data-testid={`seat-row-${s.index}`} title={last ? `Last pick: ${last.name}` : "No picks yet"}
-                      className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-xs ${isCurrent ? "border-amber-400/70 bg-amber-400/10" : "border-transparent"}`}>
-                      <span className="w-4 text-slate-500 tabular-nums shrink-0">{s.index + 1}</span>
-                      {s.player_name && <SeatIcon bot={isBotSeat(s.index)} />}
-                      <span className={`flex-1 min-w-0 truncate ${isCurrent ? "text-amber-200 font-semibold" : mine ? "text-slate-100" : "text-slate-300"}`}>
-                        {s.player_name || "unclaimed"}{mine && <span className="text-slate-500 font-normal"> · you</span>}
-                      </span>
-                      <span className="text-slate-500 tabular-nums shrink-0">{picks.length}/{state.pick_cap}</span>
+                    <div key={s.index} data-testid={`seat-row-${s.index}`}
+                      className={`flex items-center gap-2 rounded-md border px-1.5 py-1 ${isCurrent ? "border-amber-400/70 bg-amber-400/10" : "border-transparent hover:bg-slate-800/40"}`}>
+                      <div className="w-8 h-11 shrink-0 rounded-[3px] overflow-hidden bg-slate-800 border border-slate-700/60 flex items-center justify-center"
+                        data-testid={`seat-row-thumb-${s.index}`} onMouseEnter={last ? hoverIn(last) : undefined} onMouseLeave={last ? hoverOut(last) : undefined}>
+                        {img ? <img src={img} alt={last.name} loading="lazy" decoding="async" className="w-full h-full object-cover object-top" />
+                          : <span className="text-[9px] text-slate-600 tabular-nums">S{s.index + 1}</span>}
+                      </div>
+                      <div className="flex-1 min-w-0 leading-tight">
+                        <div className="flex items-center gap-1 text-xs min-w-0">
+                          {s.player_name && <SeatIcon bot={isBotSeat(s.index)} />}
+                          <span className={`truncate font-semibold ${isCurrent ? "text-amber-300" : mine ? "text-slate-100" : "text-slate-300"}`}>{s.player_name || "unclaimed"}</span>
+                          <span className="text-slate-500 shrink-0">· S{s.index + 1}{mine ? " · you" : ""}</span>
+                        </div>
+                        <div className="text-[11px] truncate mt-0.5" data-testid={`seat-row-last-${s.index}`}>
+                          {isCurrent ? <span className="text-amber-400">On the clock</span>
+                            : last ? <span className="text-slate-300">{last.name}</span>
+                            : <span className="text-slate-600">{state.mode === "packs" ? "" : "No picks yet"}</span>}
+                        </div>
+                      </div>
+                      <span className="text-[10px] text-slate-500 tabular-nums shrink-0 self-start mt-0.5">{picks.length}/{state.pick_cap}</span>
                     </div>
                   );
                 })}
