@@ -33,7 +33,7 @@ from draftbot.combos import attach_combos
 from draftbot.cardstats import draft_stats, ensure_stats
 from draftbot.report import build_report
 from draftbot.personas import Persona
-from draftbot.engine import suggest_picks
+from draftbot.engine import score_pool, suggest_picks
 from draftbot.deckbuild import suggest_deck
 from draftbot.packbot import choose_from_pack, rank_pack
 import packdraft as pd
@@ -2337,8 +2337,54 @@ async def bot_report(share_id: str):
     return fast_json(_REPORT_CACHE[key])
 
 
+_BOT_INPUT_FIELDS = ("id", "name", "mana_cost", "cmc", "type_line", "oracle_text", "color_identity", "elo", "is_custom")
+
+
+@api_router.get("/drafts/{share_id}/bot-inputs")
+async def bot_inputs(share_id: str):
+    """Everything the bots see at a rotisserie cube table, as one file: cards (no images), CubeCobra
+    ratings and package partners, combos, pick order and picks. For replaying a draft offline when tuning
+    the engine. All of it is public at the table (picks are face up, stats come from CubeCobra)."""
+    d = await _draft(share_id)
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("mode") == "packs" or d.get("pool") == "vintage":
+        raise HTTPException(status_code=400, detail="Bot inputs are for rotisserie cube drafts")
+    cards = await _cards(share_id)
+    out = {
+        "share_id": share_id,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "cube": [{k: c.get(k) for k in _BOT_INPUT_FIELDS if c.get(k) is not None} for c in cards["cube"]],
+        "stats": cards.get("stats") or {},
+        "combos": [c.to_dict() for c in cards["combos"]],
+        "order": d.get("order", []),
+        "pick_cap": d.get("pick_cap"),
+        "picks": [{k: p[k] for k in ("order", "seat_index", "card_id", "bot", "bot_top") if k in p} for p in d.get("picks", [])],
+        "seats": [{"index": s["index"], "name": s.get("player_name"),
+                   "bot": any(pl.get("is_bot") and s["index"] in pl["seats"] for pl in d["players"])} for s in d["seats"]],
+        "bot_ignore": d.get("bot_ignore", []),
+        "mirror": bool(d.get("mirror")),
+    }
+    return fast_json(out)
+
+
+def _explain_suggestions(d: dict, cards: dict, seat: int, n: int = 12) -> List[dict]:
+    """The engine's top cards for a seat with each score's parts (the `explain` view of suggestions)."""
+    picks_by_seat: Dict[int, List[str]] = {s["index"]: [] for s in d["seats"]}
+    for p in d["picks"]:
+        picks_by_seat.setdefault(p["seat_index"], []).append(p["card_id"])
+    remaining = _remaining_ids(d, cards)
+    if not remaining:
+        return []
+    pick_index = min(len(d["picks"]), len(d["order"]) - 1)
+    ctx = BotContext(cards["index"], cards["combos"], remaining, picks_by_seat, seat, d["order"], pick_index,
+                     d["pick_cap"], Persona("steady"), explain=True)
+    rows = score_pool(ctx)[:n]
+    return [{"card_id": cid, "name": cards["index"][cid].name, "score": round(s, 3), **info} for s, cid, info in rows]
+
+
 @api_router.get("/drafts/{share_id}/suggestions")
-async def pick_suggestions(share_id: str, seat: int, x_player_token: Optional[str] = Header(default=None)):
+async def pick_suggestions(share_id: str, seat: int, explain: int = 0, x_player_token: Optional[str] = Header(default=None)):
     """Two or three good picks for a seat right now, from the same engine the bots use.
     Rotisserie: uses only public information. Pack drafts: only the seat's own player may ask."""
     d = await _draft(share_id)
@@ -2358,6 +2404,9 @@ async def pick_suggestions(share_id: str, seat: int, x_player_token: Optional[st
         ranked = await run_in_threadpool(rank_pack, index, owned, pack, d["pick_cap"], combos)
         return {"suggestions": [cid for _, cid in ranked[:3]]}
     out: Dict[str, Any] = {"suggestions": await _rotisserie_suggestions(d, seat)}
+    if explain and d.get("pool") != "vintage":
+        # Score breakdown for checking the engine (not used by the page). Public: rotisserie picks are face up.
+        out["explain"] = await run_in_threadpool(_explain_suggestions, d, await _cards(share_id), seat)
     if d.get("pool") == "vintage":   # VRD: the page may not have these cards yet
         pool = {c["id"]: c for c in (await _cards(share_id))["pool_cards"]}
         out["cards"] = [pool[i] for i in out["suggestions"] if i in pool]
