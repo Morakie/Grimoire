@@ -100,6 +100,14 @@ class CardInfo:
     combos: List[int] = field(default_factory=list)   # indices into the draft's combo list
     partners: Dict[str, float] = field(default_factory=dict)  # CubeCobra package partners in this cube
     heavy: FrozenSet[str] = field(default_factory=frozenset)  # colours needed two or more times ({B}{B})
+    # Colourless non-mana cards (Top, Skullclamp): the colours of the decks they get drafted into, from
+    # their CubeCobra partners in this cube (share per colour), and how much evidence that rests on (0..1).
+    home: Dict[str, float] = field(default_factory=dict)
+    home_evidence: float = 0.0
+    staple: bool = False                    # on the TAKE_ON_SIGHT list
+    phyrexian: bool = False                 # Phyrexian mana in its cost (Dismember): castable in any deck
+    key_of: FrozenSet[str] = field(default_factory=frozenset)   # deck types this card defines (decktypes.py)
+    deck: Dict[str, float] = field(default_factory=dict)        # membership 0..1 per deck type
 
     @property
     def is_land(self) -> bool:
@@ -185,6 +193,37 @@ USE_CUBE_META = False    # merge synergy from CubeCobra's deck export (cubemeta.
                          # replay benchmark shows it helps (2026-10-14: +1.5% top-3 on one 139-pick draft, within noise)
 
 
+# Cards a group takes on sight whatever their CubeCobra rating says (Timetwister sits below Orcish
+# Bowmasters there): rated at least as high as the cube's top picks (its 98th percentile Elo).
+TAKE_ON_SIGHT = frozenset(n.lower() for n in (
+    "Black Lotus", "Ancestral Recall", "Time Walk", "Timetwister",
+    "Mox Pearl", "Mox Sapphire", "Mox Jet", "Mox Ruby", "Mox Emerald",
+))
+
+HOME_MIN_EVIDENCE = 1.0   # partner strength (in coloured cards) needed before a colourless card gets a home
+HOME_FULL_EVIDENCE = 4.0  # ... and for the home to count fully
+
+
+def _attach_homes(index: Dict[str, CardInfo]) -> None:
+    """Colourless non-mana spells go in some decks, not all (Top in blue control, Skullclamp in creature
+    decks): give each one a home from the colours of its CubeCobra partners in this cube."""
+    for info in index.values():
+        if info.need or info.is_land or info.phyrexian or "mana" in info.roles or not info.partners:
+            continue
+        weights = {c: 0.0 for c in COLORS}
+        for pid, strength in info.partners.items():
+            p = index.get(pid)
+            if p is None or p.is_land or not p.need:
+                continue
+            for col in p.need:
+                weights[col] += strength / len(p.need)
+        total = sum(weights.values())
+        if total < HOME_MIN_EVIDENCE:
+            continue
+        info.home = {c: v / total for c, v in weights.items() if v}
+        info.home_evidence = min(1.0, total / HOME_FULL_EVIDENCE)
+
+
 def build_card_index(cube: Iterable[dict], stats: Optional[dict] = None, meta: Optional[dict] = None) -> Dict[str, CardInfo]:
     """Build CardInfo for every non-custom card in a cube (cube entries are draft card dicts).
 
@@ -205,12 +244,17 @@ def build_card_index(cube: Iterable[dict], stats: Optional[dict] = None, meta: O
     lo = sorted(elos)[int(len(elos) * 0.05)] if elos else mid - 200
     hi = sorted(elos)[int(len(elos) * 0.95) - 1] if elos else mid + 200
     span = max(hi - lo, 1.0)
+    # Power is drafted first: TAKE_ON_SIGHT cards rank with the cube's top ~2% (the Moxen, in a powered cube).
+    staple_floor = sorted(elos)[int(len(elos) * 0.98) - 1] if elos else hi
 
     index: Dict[str, CardInfo] = {}
     for c in cards:
         text = (c.get("oracle_text") or "").lower()
         types = _types(c.get("type_line", ""))
         elo = float(c.get("elo") or _estimate_elo(c, types, text, elos, mid))
+        staple = (c.get("name") or "").lower() in TAKE_ON_SIGHT
+        if staple:
+            elo = max(elo, staple_floor)
         x = (elo - lo) / span                      # ~0 at the 5th percentile, 1 at the 95th
         power = max(-0.15, x if x <= 1 else 1 + 0.7 * (x - 1))   # bombs keep standing out, gently compressed
         need = _cost_colors(c.get("mana_cost", ""))
@@ -229,7 +273,14 @@ def build_card_index(cube: Iterable[dict], stats: Optional[dict] = None, meta: O
             roles=_roles(c, types, text),
             partners=dict(partners.get(c["id"], {})),
             heavy=frozenset() if "land" in types else _heavy_colors(c.get("mana_cost", "")),
+            staple=staple,
+            phyrexian="/P}" in (c.get("mana_cost") or "").upper(),
         )
+    _attach_homes(index)
+    from .decktypes import attach_deck_types
+    from .engine import register_colourless
+    attach_deck_types(index)
+    register_colourless(index)
     return index
 
 

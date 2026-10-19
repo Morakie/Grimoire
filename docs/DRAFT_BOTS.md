@@ -66,7 +66,29 @@ Built when the draft starts and stored on the draft:
    up to 0.4 when a rival is building that deck. Never against the bot's own plan, less for each answer it already
    has, and none past four. In bot-only drafts a bot ends up with about one such card.
 10. **Float risk:** for the top candidates, each rival who picks before the bot's next turn ranks cards by their own
-   colours, combos and packages. Cards unlikely to be taken can wait, so a contested card is taken first.
+   colours, combos and packages. Cards unlikely to be taken can wait, so a contested card is taken first. A rival
+   counts as flexible about colours until it owns a few coloured spells (like the bot itself), and a rival holding
+   all but one piece of a combo is likely to take the last one. The bot never waits on the last piece of its own
+   combo. Fetchland "runs" start only from people's picks, so bots don't set one off by following each other.
+11. **Deck types** (`decktypes.py`): Tolarian (Academy, Urza, Time Vault + Keys, Tinker), Workshop, artifact
+   synergy (Saga, Opal, Plating, Thopter-Sword, Retrofitter), storm, reanimator, cheat and lands, each defined by
+   **key cards** (plus role tags). Similar deck types are separate: a Tolarian deck and an artifact-synergy deck
+   compete only for the cards both use. Other cards belong to a deck type by the share of their CubeCobra
+   partners that are its key cards (Baubles and Top are artifact cards; Dismember is drafted with everything).
+   - **Commitment:** key cards count fully (two make a full deck type), member cards 30%. Open picks lean:
+     Mana Vault counts as half a Tolarian key, a Mox as a small nudge, Sol Ring as nearly nothing. Leans add up
+     to at most a little more than one Mana Vault, so a pile of mana rocks doesn't make a deck type.
+   - **Narrow cards** (colourless spells tied to a deck type, colourless key cards like Mox Opal and Lion's Eye
+     Diamond, one-colour utility lands like Karakas) keep 40% of their rating until the bot is in a deck that
+     uses them. A key card of a deck type nobody is in is worth taking to start it.
+   - **Fight or pivot:** once two other seats are in a deck type, a bot behind the deepest of them values its
+     cards up to 60% less, the further behind the more (so it moves to something open). A bot as deep as them
+     keeps fighting, and contested cards don't wait.
+   - **Focus:** from half-committed, cards outside the bot's deck type lose up to 30%, so it takes what its
+     deck needs over generically good cards. Removal and counterspells are always needed.
+12. **Power first:** the Power Nine (`TAKE_ON_SIGHT` in `features.py`) are rated at least at the cube's 98th
+   percentile Elo whatever CubeCobra says (Timetwister sits below Orcish Bowmasters there). Colourless non-mana
+   cards get a "home" from their partners' colours (Phyrexian-mana cards like Dismember don't).
 
 The final pick is sampled among the top cards within 90% of the best score (low temperature), so bots usually
 take their best card and occasionally a close second. Hidden personalities nudge a few weights by about ±5%.
@@ -81,6 +103,7 @@ backend/draftbot/
   cardstats.py   CubeCobra ratings and package partners (fetch + cache)
   combos.py      Commander Spellbook lookup and role packages
   engine.py      scoring and pick selection
+  decktypes.py   deck types, key cards and narrow cards
   personas.py    hidden personalities and bot names
   simulate.py    bot-only draft simulation and metrics
 ```
@@ -92,3 +115,6 @@ The engine is pure Python with no database access, so it is unit-tested directly
 `POST /api/bots/simulate` (only when `ENABLE_BOT_SIM=true`; staging only) runs a full bot-only draft of a CubeCobra
 cube and reports per seat: colours, share of spells on colour, win plan, creatures, fixing, combos completed and
 the pick list. `tuning` overrides any `TUNING` value for that run.
+
+To replay a real draft offline, save `GET /api/drafts/{id}/bot-inputs` (cards, CubeCobra stats, combos, order and
+picks) and run the engine on it; `GET /api/drafts/{id}/suggestions?seat=N&explain=1` shows the live score parts.

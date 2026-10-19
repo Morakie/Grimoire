@@ -11,7 +11,7 @@ import random
 from typing import Dict, List, Optional
 
 from .combos import Combo
-from .engine import TUNING, _lane_fit, best_pair, card_fit, combo_value, lane_distribution, partner_value
+from .engine import TUNING, _lane_fit, best_pair, card_fit, combo_value, lane_distribution, partner_sources, partner_value
 from .features import CardInfo
 
 
@@ -42,6 +42,7 @@ def rank_pack(index: Dict[str, CardInfo], owned_ids: List[str], pack_ids: List[s
         return fit_cache[cid]
 
     owned_set = {c.id for c in owned}
+    partners_from = partner_sources(index, owned_set)
     pack_set = set(pack_ids)
     out = []
     for cid in pack_ids:
@@ -59,7 +60,7 @@ def rank_pack(index: Dict[str, CardInfo], owned_ids: List[str], pack_ids: List[s
         if combos and card.combos:
             score += 0.5 * combo_value(card, owned_set, pack_set | owned_set, combos, fit_of)
         if card.partners:
-            score += TUNING["partner_weight"] * partner_value(card, owned_set, fit_of)
+            score += TUNING["partner_weight"] * partner_value(card, partners_from, fit_of, TUNING["drafted_with_share"])
         out.append((score, cid))
     out.sort(reverse=True)
     return out

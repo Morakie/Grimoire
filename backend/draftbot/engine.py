@@ -27,6 +27,7 @@ from itertools import combinations
 from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 
 from .combos import PACKAGES, Combo
+from .decktypes import DECK_TYPES, deck_strength, is_narrow, is_universal
 from .features import COLORS, CardInfo
 from .personas import Persona
 
@@ -39,6 +40,9 @@ TUNING: Dict[str, float] = {
     "flex_floor": 0.9,          # off-colour cards keep this share of their value while flexible...
     "committed_floor": 0.1,     # ...and this share once committed
     "openness_weight": 2.5,     # colour signals from the table (early picks only); tuned in simulations
+    "rival_committed_floor": 0.3,  # how much a committed rival still wants an off-colour card (float risk);
+                                # rivals who aren't committed yet want every colour (flex_floor), like the bot
+    "rival_combo_finish": 1.0,  # a rival holding all but one piece of a combo very likely takes the last piece
     # splash
     "splash_min_value": 1.2,    # owned power in the third colour before a splash is considered
     "splash_fit": 0.6,          # how on-colour splash cards count once the splash is real
@@ -51,7 +55,20 @@ TUNING: Dict[str, float] = {
     "combo_base": 0.35, "combo_growth": 0.45,
     "combo_rest_share": 0.25,   # a card's other combo lines add only this share (its best line counts in full)
     "combo_max_pieces": 3,      # longer lines are too hard to assemble in a draft to plan around
+    "combo_finish_weight": 0.8, # combo weight for the last piece of a line we hold (any time in the draft)
     "partner_weight": 0.3,      # CubeCobra package partners (value when fully "in" a package)
+    "drafted_with_share": 0.5,  # "often drafted with" partners count this share (it's partly just popularity)
+    # deck types (decktypes.py): narrow cards wait until the bot is in a deck that uses them
+    "narrow_floor": 0.4,        # share of a narrow card's rating it keeps for a bot not (yet) in its deck type
+    "key_floor": 0.55,          # ... the same for a coloured key card (Urza, Reanimate)
+    "key_open": 0.7,            # a key card of a deck type nobody at the table is in: worth starting it
+    "deck_seat": 0.5,           # deck-type strength at which a seat counts as being in that deck type
+    "crowd_seats": 2,           # seats already in a deck type before it counts as crowded...
+    "crowd_cut": 0.6,           # ...then a bot behind the deepest seat values its cards up to this much less
+    "deck_focus": 0.3,          # a bot fully in a deck type: cards outside it lose up to this share...
+    "focus_start": 0.5,         # ...starting from this deck-type strength
+    "home_weight": 0.7,         # colourless non-mana cards (Top, Skullclamp): how much their home colours matter
+    "home_floor": 0.3,          # ... never fitting less than this
     "style_weight": 1.0,        # colour-pair deck style nudge (after committing)
     # late needs / floating
     "needs_start": 0.45, "needs_slope": 1.8,
@@ -120,10 +137,12 @@ def land_run(ctx: "BotContext") -> float:
     recent_slots = ctx.order[start:ctx.pick_index]
     if len(recent_slots) < seats:
         return 0.0
-    # The window's picks are each seat's most recent ones.
+    # The window's picks are each seat's most recent ones. Only people's picks start a run: bots that
+    # follow each other's fetch picks would set one off by themselves.
     per_seat: Dict[int, int] = {}
     for s in recent_slots:
-        per_seat[s] = per_seat.get(s, 0) + 1
+        if ctx.people is None or s in ctx.people:
+            per_seat[s] = per_seat.get(s, 0) + 1
     fixing = total = 0
     for s, m in per_seat.items():
         for cid in ctx.picks_by_seat.get(s, [])[-m:]:
@@ -131,7 +150,9 @@ def land_run(ctx: "BotContext") -> float:
             card = ctx.index.get(cid)
             if card and card.is_land and card.is_fixing:
                 fixing += 1
-    return min(1.0, (fixing / total) / ctx.k("run_share")) if total else 0.0
+    if fixing < 2:
+        return 0.0                  # one fetch isn't a run
+    return min(1.0, (fixing / max(total, 4)) / ctx.k("run_share"))
 
 
 def plan_fill(role_counts: Dict[str, int]) -> Dict[str, Tuple[float, float]]:
@@ -218,6 +239,7 @@ class BotContext:
     persona: Persona = field(default_factory=lambda: Persona("steady"))
     tuning: Optional[Dict[str, float]] = None
     explain: bool = False                  # attach each card's score parts (for the bot report)
+    people: Optional[FrozenSet[int]] = None  # seats drafted by people (None: treat every seat as a person)
 
     def k(self, key: str) -> float:
         if self.tuning and key in self.tuning:
@@ -232,17 +254,28 @@ def _lane_fit(card: CardInfo, lane: FrozenSet[str]) -> float:
         if not card.produces:
             return 0.6                       # utility land: playable anywhere
         overlap = len(card.produces & lane)
+        if len(card.produces) == 1:          # one-colour utility land (Karakas): fits decks of that colour
+            return 1.0 if overlap else 0.0
         return 1.0 if overlap >= 2 or (len(lane) == 1 and overlap == 1) else (0.35 if overlap == 1 else 0.0)
+    if not card.need and card.home:
+        # Colourless card with a home: fits a lane holding a fair share of its partners' colours.
+        inside = sum(card.home.get(c, 0.0) for c in lane)
+        share = min(1.0, inside / (0.25 * len(lane)))
+        return max(TUNING["home_floor"], 1.0 - TUNING["home_weight"] * card.home_evidence * (1.0 - share))
     return 1.0 if card.need <= lane else 0.0
 
 
-_FIT_CACHE: Dict[str, Tuple[float, ...]] = {}
+_FIT_CACHE: Dict[tuple, Tuple[float, ...]] = {}
 
 
 def _fit_vector(card: CardInfo) -> Tuple[float, ...]:
-    vec = _FIT_CACHE.get(card.id)
+    # A card's home depends on the cube (its partners there), so it is part of the key.
+    key = (card.id, tuple(sorted(card.home.items())), card.home_evidence) if card.home else (card.id,)
+    vec = _FIT_CACHE.get(key)
     if vec is None:
-        vec = _FIT_CACHE[card.id] = tuple(_lane_fit(card, lane) for lane in LANES)
+        if len(_FIT_CACHE) > 50000:
+            _FIT_CACHE.clear()
+        vec = _FIT_CACHE[key] = tuple(_lane_fit(card, lane) for lane in LANES)
     return vec
 
 
@@ -314,6 +347,18 @@ def splash_colour(pool: List[CardInfo], pair: FrozenSet[str], k) -> Optional[str
 
 # ---------------------------------------------------------------- synergy
 
+_COLOURLESS_IDS: set = set()
+
+
+def _colourless_piece(cid: str) -> bool:
+    return cid in _COLOURLESS_IDS
+
+
+def register_colourless(index: Dict[str, CardInfo]) -> None:
+    """Remember which card ids are colourless spells (combo pieces that fit any deck)."""
+    _COLOURLESS_IDS.update(cid for cid, c in index.items() if not c.need and not c.is_land)
+
+
 def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo], fit_of,
                 rest_share: float = TUNING["combo_rest_share"], max_pieces: float = TUNING["combo_max_pieces"]) -> float:
     """Value toward combos given owned pieces; a line counts only as much as its pieces fit our colours."""
@@ -328,7 +373,8 @@ def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo],
         if any(p not in remaining for p in missing):
             continue
         progress = 0.06 if have == 0 else (have / len(others)) ** 1.2
-        fit = min(fit_of(p) for p in combo.pieces)
+        # Colourless pieces (Time Vault, a Key) go in any deck that runs the combo: only coloured ones limit it.
+        fit = min((fit_of(p) for p in combo.pieces if not _colourless_piece(p)), default=1.0)
         lines.append(combo.weight * progress * (0.25 + 0.75 * fit))
     if not lines:
         return 0.0
@@ -361,12 +407,20 @@ def package_value(card: CardInfo, role_counts: Dict[str, int], strengths=None) -
     return min(total, 0.3)
 
 
-def partner_value(card: CardInfo, owned: Iterable[str], fit_of) -> float:
+def partner_sources(index: Dict[str, CardInfo], owned: Iterable[str]) -> set:
+    """Owned cards whose CubeCobra partners count (everything but the universal staples)."""
+    return {o for o in owned if o in index and not is_universal(index[o])}
+
+
+def partner_value(card: CardInfo, owned: Iterable[str], fit_of, drafted_share: float = 1.0) -> float:
     """CubeCobra packages: how strongly this card goes with the (on-colour) cards we already own,
-    based on what real drafters put together ("synergistic" counts double "often drafted with")."""
+    based on what real drafters put together ("synergistic" partners have strength 1, "often drafted
+    with" ones 0.5, scaled by drafted_share because that list is partly just popular cards).
+    `owned` should be partner_sources(): universal staples like Sol Ring are drafted with everything."""
     if not card.partners:
         return 0.0
-    total = sum(strength * fit_of(o) for o, strength in card.partners.items() if o in owned)
+    total = sum((strength if strength >= 1.0 else strength * drafted_share) * fit_of(o)
+                for o, strength in card.partners.items() if o in owned)
     return min(1.0, total / 3.0)
 
 
@@ -497,6 +551,93 @@ def picks_until_next_turn(ctx: BotContext) -> Dict[int, int]:
     return {"end": 1}
 
 
+def deck_table(ctx: BotContext, rivals: List[int]) -> List[Dict[str, float]]:
+    """Every rival's deck-type strengths."""
+    return [deck_strength(ctx.index[c] for c in ctx.picks_by_seat.get(s, []) if c in ctx.index) for s in rivals]
+
+
+def deck_outlook(ctx: BotContext, mine: Dict[str, float], others: List[Dict[str, float]]) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """(effective strength per deck type, how open each one is for starting it: 1 nobody in it, 0.5 one seat,
+    0 two or more). A deck type with crowd_seats seats already in it is worth less to a bot that isn't
+    leading it, so four seats don't chase one artifact drafter's cards."""
+    k = ctx.k
+    eff, open_ = {}, {}
+    for t in DECK_TYPES:
+        theirs = [o[t] for o in others]
+        seats_in = sum(1 for v in theirs if v >= k("deck_seat"))
+        leader = max(theirs, default=0.0)
+        if seats_in >= k("crowd_seats") and leader > 0:
+            # Fight or pivot: a bot about as deep as the deepest rival keeps fighting for the deck type's
+            # cards; a shallow one backs off (and so moves to something more open).
+            behind = max(0.0, 1.0 - mine[t] / leader)
+            eff[t] = mine[t] * (1.0 - k("crowd_cut") * behind)
+        else:
+            eff[t] = mine[t]
+        open_[t] = 1.0 if seats_in == 0 else (0.5 if seats_in < k("crowd_seats") else 0.0)
+    return eff, open_
+
+
+def deck_factor(ctx: BotContext, card: CardInfo, eff: Dict[str, float], open_: Dict[str, float],
+                colour_q: float) -> float:
+    """Share of its rating a card is worth to a seat, given what that seat's deck is (1 for most cards).
+    Narrow cards (Top, Baubles, Karakas, Mox Opal) count fully only for a deck that uses them: one in their
+    deck type, or (for cards that go by colour) a deck committed to their colour (`colour_q`). Coloured key
+    cards (Urza, Reanimate) lose a little outside their deck type. A key card of an open deck type is
+    worth taking to start it."""
+    universal = is_universal(card)
+    narrow = is_narrow(card, universal, card.staple)
+    if not narrow and not card.key_of:
+        return 1.0
+    # Cards tied to a deck type (Baubles -> artifacts) wait for that deck type; others that go by colour
+    # (Karakas, Top-like cards with no deck type) count once the bot is committed to their colour.
+    tied = card.key_of or max(card.deck.values(), default=0.0) >= 0.5
+    q = colour_q if narrow and (card.is_land or not tied) else 0.0
+    for t, m in card.deck.items():
+        q = max(q, eff[t] * m)
+    for t in card.key_of:
+        q = max(q, ctx.k("key_open") * open_[t])
+    floor = ctx.k("narrow_floor") if narrow else ctx.k("key_floor")
+    return floor + (1.0 - floor) * min(1.0, q)
+
+
+def focus_factor(ctx: BotContext, card: CardInfo, mine: Dict[str, float]) -> float:
+    """The deeper a bot is in a deck type, the more it takes what that deck needs instead of generically
+    good cards: cards with no part in its strongest deck type lose value step by step (from deck-type
+    strength focus_start, up to deck_focus when fully in). Interaction (removal, counterspells), staples
+    and cards that go in every deck are always needed."""
+    if not mine:
+        return 1.0
+    t, s = max(mine.items(), key=lambda kv: kv[1])
+    ramp = min(1.0, max(0.0, (s - ctx.k("focus_start")) / (1.0 - ctx.k("focus_start"))))
+    if not ramp or card.staple or is_universal(card) or card.roles & {"removal", "counter"}:
+        return 1.0
+    member = card.deck.get(t, 0.0)
+    return 1.0 - ctx.k("deck_focus") * ramp * (1.0 - min(1.0, member / 0.5))
+
+
+def commit_progress(ctx: BotContext, pool: List[CardInfo]) -> float:
+    """0..1: how committed to colours a pool is (coloured spells owned, commit_start to commit_pick)."""
+    k = ctx.k
+    span = max(1.0, k("commit_pick") - k("commit_start"))
+    return min(1.0, max(0.0, (coloured_spells(pool) - k("commit_start")) / span))
+
+
+def rival_floor(ctx: BotContext, pool: List[CardInfo]) -> float:
+    """How much a rival with this pool still wants an off-colour card: like the bot's own off-colour
+    floor, generous until the rival owns a few coloured spells, then down to rival_committed_floor."""
+    k = ctx.k
+    return k("flex_floor") + (k("rival_committed_floor") - k("flex_floor")) * commit_progress(ctx, pool)
+
+
+def completes_combo(card: CardInfo, owned: set, combos: List[Combo], max_pieces: float) -> bool:
+    """True if taking this card finishes a combo line whose other pieces we already own."""
+    for ci in card.combos:
+        pieces = combos[ci].pieces
+        if len(pieces) <= max_pieces and all(p in owned for p in pieces if p != card.id):
+            return True
+    return False
+
+
 def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[str, float]:
     """Probability each candidate is taken by someone else before our next pick."""
     window = picks_until_next_turn(ctx)
@@ -513,10 +654,21 @@ def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[s
         dist = lane_distribution(pool, len(pool))
         strengths = package_strengths(_role_counts(pool))
         fit_of = fitter(ctx.index, dist)
-        desires = sorted(((max(ctx.index[cid].power, 0.0) * (0.3 + 0.7 * fit_of(cid))
+        # A rival who isn't committed yet still wants every colour (as the bot itself does early on):
+        # treating three blue picks as a blue drafter made Ragavan look like it would come back.
+        floor = rival_floor(ctx, pool)
+        partners_from = partner_sources(ctx.index, owned)
+        r_deck = deck_strength(pool)
+        r_eff, r_open = deck_outlook(ctx, r_deck, [deck_strength(ctx.index[c] for c in ctx.picks_by_seat.get(o, []) if c in ctx.index)
+                                                     for o in ctx.picks_by_seat if o != seat])
+        r_prog = commit_progress(ctx, pool)
+        desires = sorted(((max(ctx.index[cid].power, 0.0) * (floor + (1 - floor) * fit_of(cid))
+                           * deck_factor(ctx, ctx.index[cid], r_eff, r_open, r_prog * fit_of(cid))
                            + 0.8 * combo_value(ctx.index[cid], owned, remaining, ctx.combos, fit_of)
                            + package_value(ctx.index[cid], None, strengths)
-                           + 0.3 * partner_value(ctx.index[cid], owned, fit_of), cid) for cid in plausible), reverse=True)
+                           + 0.3 * partner_value(ctx.index[cid], partners_from, fit_of, ctx.k("drafted_with_share"))
+                           + (ctx.k("rival_combo_finish") if completes_combo(ctx.index[cid], owned, ctx.combos, ctx.k("combo_max_pieces")) else 0.0), cid)
+                          for cid in plausible), reverse=True)
         spread = 1.0 + 0.35 * n_picks
         for rank, (_, cid) in enumerate(desires):
             if cid in cand_set:
@@ -588,7 +740,9 @@ def colour_state(ctx: BotContext, mine: List[CardInfo], n: int, rivals: List[int
              * sum(open_by_colour[c] for c in lane) / len(lane) for lane in LANES}
     dist = lane_distribution(mine, col, prior)
     pair = best_pair(mine, prior) if col >= k("commit_start") else None
-    splash = splash_colour(mine, pair, k) if pair else None
+    # A splash only once the two main colours are fairly settled (half way to committed).
+    splash_from = k("commit_start") + 0.5 * (k("commit_pick") - k("commit_start"))
+    splash = splash_colour(mine, pair, k) if pair and col >= splash_from else None
     return dist, pair, splash
 
 
@@ -634,6 +788,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         return fit_cache[cid]
 
     role_counts = _role_counts(mine)
+    partners_from = partner_sources(ctx.index, my_ids)
     strengths = package_strengths(role_counts)
     support_ramp = min(1.0, n / k("support_after"))
     fill = plan_fill(role_counts)
@@ -668,6 +823,8 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
 
     # A pool that can cheat or reanimate fatties doesn't need to cast them: their colours stop mattering.
     cheat_plan = max(plans["cheat"], plans["reanimator"])
+    deck_mine = deck_strength(mine)
+    deck_eff, deck_open = deck_outlook(ctx, deck_mine, deck_table(ctx, rivals))
     rows = []
     for cid in remaining:
         card = ctx.index[cid]
@@ -681,15 +838,19 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
                 power *= 1.0 - k("plan_conflict_cut") * plan_ramp * plan_conflict(card, plans)
         if rock_glut and _is_rock(card) and card.cmc >= 2:
             power *= 1.0 - k("rock_cut")
+        d_mult = deck_factor(ctx, card, deck_eff, deck_open, progress * (_lane_fit(card, pair) if pair else 0.0)) \
+            * focus_factor(ctx, card, deck_mine)
+        power *= d_mult
         if card.is_land and card.is_fixing:
             damp = k("early_fixing_damp")
             # Spells first, fixing later... unless the table is in a land run: then they won't come back.
             power *= (damp + (1 - damp) * max(min(1.0, 2 * t), run)) * (1 + k("run_boost") * run)
         t_rating = w_power * power
-        t_combo = w_combo * combo_value(card, owned, remaining, ctx.combos, fit_of,
-                                        k("combo_rest_share"), k("combo_max_pieces"))
+        finishes = bool(card.combos) and completes_combo(card, owned, ctx.combos, k("combo_max_pieces"))
+        t_combo = (max(w_combo, k("combo_finish_weight")) if finishes else w_combo) * combo_value(
+            card, owned, remaining, ctx.combos, fit_of, k("combo_rest_share"), k("combo_max_pieces"))
         t_plan = package_value(card, None, strengths) + k("plan_weight") * plan_ramp * plan_value(card, fill, plans)
-        t_partner = k("partner_weight") * p.w("combo") * partner_value(card, owned, fit_of)
+        t_partner = k("partner_weight") * p.w("combo") * partner_value(card, partners_from, fit_of, k("drafted_with_share"))
         t_needs = w_needs * needs_value(card, mine, p, counts)
         t_hate = k("hate_weight") * hate_ramp * hate_value(card, table, own_decks, owned_hate) if hate_ramp else 0.0
         t_other = 0.0
@@ -704,6 +865,8 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         base = t_rating + t_combo + t_plan + t_partner + t_needs + t_other + t_hate
         lane_mult = floor + (1 - floor) * fit
         info = {"fit": round(fit, 2)}
+        if d_mult < 1.0:
+            info["deck"] = round(d_mult, 2)
         if ctx.explain:
             info.update(rating=round(t_rating, 3), combo=round(t_combo, 3), plan=round(t_plan, 3),
                         partners=round(t_partner, 3), needs=round(t_needs, 3), other=round(t_other, 3), hate=round(t_hate, 3),
@@ -714,6 +877,9 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     top = rows[:30]
     risk = float_risk(ctx, [r[1] for r in top], remaining)
     for r in top:
+        # Never gamble on the last piece of our own combo coming back: a person can take it to stop us.
+        if ctx.index[r[1]].combos and completes_combo(ctx.index[r[1]], owned, ctx.combos, k("combo_max_pieces")):
+            risk[r[1]] = 1.0
         r[2]["risk"] = round(risk[r[1]], 2)
         mult = 1.0 - min(k("float_cap"), w_float) * (1.0 - risk[r[1]])
         r[0] *= mult

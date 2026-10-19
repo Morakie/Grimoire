@@ -281,8 +281,9 @@ def test_cube_combos_are_added_when_every_piece_is_in_the_cube():
 
 def test_extra_mana_rocks_lose_value_without_an_artifact_plan():
     cube = synthetic_cube() + [card(f"rock{i}", f"Rock {i}", "{3}", 3, "Artifact", "{T}: Add {C}{C}.", "", 1600) for i in range(5)]
-    few = {cid: s for s, cid, _ in score_pool(_two_seat_ctx(cube, [], ["rock0"], []))}
-    glut = {cid: s for s, cid, _ in score_pool(_two_seat_ctx(cube, [], ["rock0", "rock1", "rock2"], []))}
+    # Compare the rating part: the float discount (only applied to the top 30) would blur the totals.
+    few = {cid: i["rating"] for s, cid, i in score_pool(_two_seat_ctx(cube, [], ["rock0"], [], explain=True))}
+    glut = {cid: i["rating"] for s, cid, i in score_pool(_two_seat_ctx(cube, [], ["rock0", "rock1", "rock2"], [], explain=True))}
     assert glut["rock4"] < few["rock4"] * 0.8, (few["rock4"], glut["rock4"])
 
 
@@ -338,3 +339,149 @@ def test_sideboard_hate_only_late_and_only_against_a_real_target():
     assert hate(mine, rival_ids=rival_arts) > 0.1                          # own 25th pick, rival on artifacts
     assert hate(mine, rival_ids=[f"W{i}" for i in range(10)]) == 0.0       # nobody to answer
     assert hate(mine[:14] + rival_arts, rival_ids=rival_arts) == 0.0        # our own artifact deck
+
+
+def test_uncommitted_rivals_still_want_top_cards_of_any_colour():
+    """Rivals with a couple of blue picks aren't blue drafters yet: a top red card won't come back."""
+    cube = synthetic_cube() + [card("rag", "Ragavan", "{R}", 1, "Creature — Monkey", "", "R", 1840)] + [
+        card(f"ub{i}", f"Blue bomb {i}", "{1}{U}", 2, "Instant", "", "U", 1800) for i in range(3)]
+    ctx = _two_seat_ctx(cube, [], [], ["U0", "U1"])
+    remaining = set(build_card_index(cube)) - {"U0", "U1"}
+    assert float_risk(ctx, ["rag"], remaining)["rag"] > 0.5
+
+
+def test_universal_staples_do_not_make_partners():
+    """Owning Sol Ring and a Mox says nothing about packages, however often they're drafted together."""
+    from draftbot.engine import partner_sources, partner_value
+    cube = synthetic_cube() + [
+        card("sol", "Sol Ring", "{1}", 1, "Artifact", "{T}: Add {C}{C}.", "", 2260),
+        card("strip", "Strip Mine", "", 0, "Land", "{T}: Add {C}. {T}, Sacrifice Strip Mine: Destroy target land.", "", 1800),
+        card("top", "Top", "{1}", 1, "Artifact", "{1}: Look at the top three cards of your library.", "", 1550),
+    ]
+    idx = build_card_index(cube, {"partners": {"top": {"sol": 1.0, "strip": 1.0, "U0": 1.0}}})
+    sources = partner_sources(idx, {"sol", "strip", "U0"})
+    assert sources == {"U0"}
+    assert partner_value(idx["top"], sources, lambda c: 1.0) < partner_value(idx["top"], {"sol", "strip", "U0"}, lambda c: 1.0)
+
+
+def test_colourless_cards_with_a_home_fit_its_colours_only():
+    """Top drafted with blue cards fits blue decks; it no longer counts as fitting a red-green deck."""
+    from draftbot.engine import _lane_fit
+    cube = synthetic_cube() + [card("top", "Top", "{1}", 1, "Artifact", "{1}: Look at the top three cards of your library.", "", 1550)]
+    idx = build_card_index(cube, {"partners": {"top": {f"U{i}": 1.0 for i in range(5)}}})
+    assert idx["top"].home == {"U": 1.0}
+    assert _lane_fit(idx["top"], frozenset("UB")) == 1.0
+    assert _lane_fit(idx["top"], frozenset("RG")) <= 0.4
+
+
+def test_one_colour_utility_land_fits_decks_of_its_colour():
+    from draftbot.engine import _lane_fit
+    idx = build_card_index([card("kar", "Karakas", "", 0, "Legendary Land", "{T}: Add {W}.", "W", 1790)])
+    assert _lane_fit(idx["kar"], frozenset("WR")) == 1.0
+    assert _lane_fit(idx["kar"], frozenset("UB")) == 0.0
+
+
+def test_power_nine_rated_with_the_top_picks():
+    cube = synthetic_cube() + [card("tw", "Timetwister", "{2}{U}", 3, "Sorcery", "Each player shuffles their hand and graveyard into their library, then draws seven cards.", "U", 1300)]
+    idx = build_card_index(cube)
+    assert idx["tw"].power >= 0.99
+
+
+def test_last_combo_piece_is_not_floated():
+    """Holding Time Vault, the bot takes the Key now instead of hoping nobody else does."""
+    cube = synthetic_cube() + [
+        card("vault", "Vault", "{2}", 2, "Artifact", "", "", 2000),
+        card("key", "Key", "{1}", 1, "Artifact", "", "", 1450),
+    ]
+    combos = [Combo(("vault", "key"), 1.0)]
+    rows = {cid: i for _, cid, i in score_pool(_two_seat_ctx(cube, combos, ["vault"], [], explain=True))}
+    assert rows["key"]["risk"] == 1.0 and rows["key"]["contested"] == 1.0
+
+
+def _artifact_cube():
+    """Synthetic cube with an artifact deck type: two key cards and a Bauble drafted with them."""
+    return synthetic_cube() + [
+        card("acad", "Tolarian Academy", "", 0, "Legendary Land", "Add {U} for each artifact you control.", "U", 1840),
+        card("urza", "Urza, Lord High Artificer", "{2}{U}{U}", 4, "Legendary Creature — Human Artificer",
+             "Tap an untapped artifact you control: Add {U}.", "U", 1660),
+        card("saga", "Urza's Saga", "", 0, "Enchantment Land — Urza's Saga", "", "", 1720),
+        card("bauble", "Mishra's Bauble", "{0}", 0, "Artifact", "Draw a card at the beginning of the next turn's upkeep.", "", 1540),
+    ]
+
+
+def _artifact_stats():
+    # The Bauble's partners are mostly the artifact deck's key cards (like CubeCobra's data for it).
+    return {"partners": {"bauble": {"acad": 1.0, "urza": 1.0, "saga": 1.0, "W0": 0.5, "R0": 0.5}}}
+
+
+def test_narrow_artifacts_wait_for_an_artifact_deck():
+    """Mishra's Bauble is worth little to a bot outside artifacts, and full value inside them."""
+    from draftbot.engine import TUNING
+    cube = _artifact_cube()
+    idx = build_card_index(cube, _artifact_stats())
+    assert idx["bauble"].deck.get("tolarian") == 1.0 and "tolarian" in idx["urza"].key_of
+
+    def bauble(mine):
+        ctx = _two_seat_ctx(cube, [], mine, [], explain=True)
+        ctx.index = idx
+        return next(i for _, c, i in score_pool(ctx) if c == "bauble")
+    outside = bauble(["W0", "W1", "R0"])
+    inside = bauble(["acad", "urza", "U0"])
+    assert outside["deck"] <= TUNING["narrow_floor"] + 0.05
+    assert "deck" not in inside or inside["deck"] > 0.9
+
+
+def test_crowded_deck_type_is_left_to_the_seats_in_it():
+    """Two seats already in artifacts: a third bot that isn't leading values the deck type's cards less."""
+    from draftbot.engine import deck_outlook
+    cube = _artifact_cube()
+    idx = build_card_index(cube, _artifact_stats())
+    ctx = _two_seat_ctx(cube, [], [], [])
+    ctx.index = idx
+    from draftbot.decktypes import DECK_TYPES
+    rival = {t: 0.0 for t in DECK_TYPES}
+    mine = dict(rival, tolarian=0.5)
+    two = [dict(rival, tolarian=1.0), dict(rival, tolarian=0.9)]
+    alone_eff, alone_open = deck_outlook(ctx, mine, [dict(rival, tolarian=1.0)])
+    crowd_eff, crowd_open = deck_outlook(ctx, mine, two)
+    assert alone_eff["tolarian"] == 0.5 and alone_open["tolarian"] == 0.5
+    assert crowd_eff["tolarian"] < 0.5 and crowd_open["tolarian"] == 0.0      # shallow: pivot
+    deep_eff, _ = deck_outlook(ctx, dict(rival, tolarian=1.0), two)
+    assert deep_eff["tolarian"] == 1.0                                          # as deep as anyone: fight
+    # A similar deck type isn't crowded by them: an artifact-synergy deck still fights for its own cards.
+    other_eff, other_open = deck_outlook(ctx, dict(rival, artifacts=0.5), two)
+    assert other_eff["artifacts"] == 0.5 and other_open["artifacts"] == 1.0
+
+
+def test_only_peoples_fetch_picks_start_a_land_run():
+    from draftbot.engine import land_run
+    cube = synthetic_cube() + [card(f"f{i}", f"Fetch {i}", "", 0, "Land",
+                                    "Search your library for a Plains or Island card.", "", 1700) for i in range(4)]
+    idx = build_card_index(cube)
+    order = [0, 1, 1, 0] * 20
+    picks = {0: ["W0", "f0"], 1: ["f1", "f2"]}
+    ctx = BotContext(idx, [], [c for c in idx if c not in {"W0", "f0", "f1", "f2"}], picks, 0, order, 4, 40)
+    assert land_run(ctx) > 0.5                 # everyone counts as a person by default
+    ctx.people = frozenset({0})
+    assert land_run(ctx) == 0.0                # the bot in seat 1 taking fetches doesn't start a run
+
+
+def test_phyrexian_mana_cards_fit_every_deck():
+    from draftbot.decktypes import is_narrow, is_universal
+    cube = synthetic_cube() + [card("dism", "Dismember", "{1}{B/P}{B/P}", 3, "Instant",
+                                    "Target creature gets -5/-5 until end of turn.", "B", 1650)]
+    idx = build_card_index(cube, {"partners": {"dism": {f"B{i}": 1.0 for i in range(6)}}})
+    c = idx["dism"]
+    assert not c.home and not is_narrow(c, is_universal(c), c.staple)
+
+
+def test_open_picks_lean_but_do_not_commit():
+    """Mana Vault leans towards a Tolarian deck (half a key); a Mox barely moves a pool."""
+    from draftbot.decktypes import deck_strength
+    cube = _artifact_cube() + [card("vault", "Mana Vault", "{1}", 1, "Artifact", "{T}: Add {C}{C}{C}.", "", 1890),
+                               card("mox", "Mox Pearl", "{0}", 0, "Artifact", "{T}: Add {W}.", "", 2240)]
+    stats = _artifact_stats()
+    stats["partners"]["vault"] = {"acad": 1.0, "urza": 1.0, "W1": 0.5}
+    idx = build_card_index(cube, stats)
+    assert deck_strength([idx["vault"]])["tolarian"] == 0.25
+    assert deck_strength([idx["mox"]])["tolarian"] == 0.0

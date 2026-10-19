@@ -2295,7 +2295,7 @@ async def _bot_pick_once(d: dict):
     rng = random.Random(f"{d['share_id']}:{pick_index}:{bot['id']}")
     if remaining:
         ctx = BotContext(index, combos, remaining, picks_by_seat, seat, d["order"], pick_index,
-                         d["pick_cap"], Persona.from_dict(bot.get("persona", {})))
+                         d["pick_cap"], Persona.from_dict(bot.get("persona", {})), people=_people_seats(d))
         card_id = await run_in_threadpool(choose_pick, ctx, rng)
     else:
         # Bots ignore custom cards, but if those are all that's left they take one so the draft can finish.
@@ -2309,6 +2309,11 @@ async def _bot_pick_once(d: dict):
     if cards.get("vintage"):       # VRD: the draft's card list grows as cards are picked
         card_doc = next((c for c in cards["pool_cards"] if c["id"] == card_id), None)
     return pick, card_doc
+
+
+def _people_seats(d: dict) -> frozenset:
+    """Seats drafted by people (bots react to what people do, e.g. a run on fetchlands)."""
+    return frozenset(s for p in d.get("players", []) if not p.get("is_bot") for s in p.get("seats", []))
 
 
 _SUGGEST_CACHE: Dict[tuple, list] = {}
@@ -2330,7 +2335,7 @@ async def bot_report(share_id: str):
         cards = await _cards(share_id)
         rep = await run_in_threadpool(build_report, cards["index"], cards["combos"], d["order"], picks,
                                       d["pick_cap"], d["seats"], 5, d.get("bot_ignore", []),
-                                      singleton_names=bool(d.get("mirror")))
+                                      singleton_names=bool(d.get("mirror")), people=_people_seats(d))
         if len(_REPORT_CACHE) > 20:
             _REPORT_CACHE.clear()
         _REPORT_CACHE[key] = rep
@@ -2378,7 +2383,7 @@ def _explain_suggestions(d: dict, cards: dict, seat: int, n: int = 12) -> List[d
         return []
     pick_index = min(len(d["picks"]), len(d["order"]) - 1)
     ctx = BotContext(cards["index"], cards["combos"], remaining, picks_by_seat, seat, d["order"], pick_index,
-                     d["pick_cap"], Persona("steady"), explain=True)
+                     d["pick_cap"], Persona("steady"), explain=True, people=_people_seats(d))
     rows = score_pool(ctx)[:n]
     return [{"card_id": cid, "name": cards["index"][cid].name, "score": round(s, 3), **info} for s, cid, info in rows]
 
@@ -2428,7 +2433,7 @@ async def _rotisserie_suggestions(d: dict, seat: int) -> List[str]:
         if not remaining:
             return []
         ctx = BotContext(index, combos, remaining, picks_by_seat, seat, d["order"], min(pick_index, len(d["order"]) - 1),
-                         d["pick_cap"], Persona("steady"))
+                         d["pick_cap"], Persona("steady"), people=_people_seats(d))
         top = await run_in_threadpool(suggest_picks, ctx, 3)
         if len(_SUGGEST_CACHE) > 500:
             _SUGGEST_CACHE.clear()
