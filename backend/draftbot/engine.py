@@ -39,6 +39,9 @@ TUNING: Dict[str, float] = {
     "flex_floor": 0.9,          # off-colour cards keep this share of their value while flexible...
     "committed_floor": 0.1,     # ...and this share once committed
     "openness_weight": 2.5,     # colour signals from the table (early picks only); tuned in simulations
+    "rival_committed_floor": 0.3,  # how much a committed rival still wants an off-colour card (float risk);
+                                # rivals who aren't committed yet want every colour (flex_floor), like the bot
+    "rival_combo_finish": 1.0,  # a rival holding all but one piece of a combo very likely takes the last piece
     # splash
     "splash_min_value": 1.2,    # owned power in the third colour before a splash is considered
     "splash_fit": 0.6,          # how on-colour splash cards count once the splash is real
@@ -52,6 +55,9 @@ TUNING: Dict[str, float] = {
     "combo_rest_share": 0.25,   # a card's other combo lines add only this share (its best line counts in full)
     "combo_max_pieces": 3,      # longer lines are too hard to assemble in a draft to plan around
     "partner_weight": 0.3,      # CubeCobra package partners (value when fully "in" a package)
+    "drafted_with_share": 0.5,  # "often drafted with" partners count this share (it's partly just popularity)
+    "home_weight": 0.7,         # colourless non-mana cards (Top, Skullclamp): how much their home colours matter
+    "home_floor": 0.3,          # ... never fitting less than this
     "style_weight": 1.0,        # colour-pair deck style nudge (after committing)
     # late needs / floating
     "needs_start": 0.45, "needs_slope": 1.8,
@@ -232,17 +238,28 @@ def _lane_fit(card: CardInfo, lane: FrozenSet[str]) -> float:
         if not card.produces:
             return 0.6                       # utility land: playable anywhere
         overlap = len(card.produces & lane)
+        if len(card.produces) == 1:          # one-colour utility land (Karakas): fits decks of that colour
+            return 1.0 if overlap else 0.0
         return 1.0 if overlap >= 2 or (len(lane) == 1 and overlap == 1) else (0.35 if overlap == 1 else 0.0)
+    if not card.need and card.home:
+        # Colourless card with a home: fits a lane holding a fair share of its partners' colours.
+        inside = sum(card.home.get(c, 0.0) for c in lane)
+        share = min(1.0, inside / (0.25 * len(lane)))
+        return max(TUNING["home_floor"], 1.0 - TUNING["home_weight"] * card.home_evidence * (1.0 - share))
     return 1.0 if card.need <= lane else 0.0
 
 
-_FIT_CACHE: Dict[str, Tuple[float, ...]] = {}
+_FIT_CACHE: Dict[tuple, Tuple[float, ...]] = {}
 
 
 def _fit_vector(card: CardInfo) -> Tuple[float, ...]:
-    vec = _FIT_CACHE.get(card.id)
+    # A card's home depends on the cube (its partners there), so it is part of the key.
+    key = (card.id, tuple(sorted(card.home.items())), card.home_evidence) if card.home else (card.id,)
+    vec = _FIT_CACHE.get(key)
     if vec is None:
-        vec = _FIT_CACHE[card.id] = tuple(_lane_fit(card, lane) for lane in LANES)
+        if len(_FIT_CACHE) > 50000:
+            _FIT_CACHE.clear()
+        vec = _FIT_CACHE[key] = tuple(_lane_fit(card, lane) for lane in LANES)
     return vec
 
 
@@ -361,12 +378,30 @@ def package_value(card: CardInfo, role_counts: Dict[str, int], strengths=None) -
     return min(total, 0.3)
 
 
-def partner_value(card: CardInfo, owned: Iterable[str], fit_of) -> float:
+def is_universal(card: CardInfo) -> bool:
+    """Cards that go in nearly every deck (Moxen, Sol Ring, Strip Mine): owning one says nothing about
+    which package a pool is building, so they don't make other cards "partners"."""
+    if card.need:
+        return False
+    if card.is_land:
+        return not card.produces
+    return "mana" in card.roles
+
+
+def partner_sources(index: Dict[str, CardInfo], owned: Iterable[str]) -> set:
+    """Owned cards whose CubeCobra partners count (everything but the universal staples)."""
+    return {o for o in owned if o in index and not is_universal(index[o])}
+
+
+def partner_value(card: CardInfo, owned: Iterable[str], fit_of, drafted_share: float = 1.0) -> float:
     """CubeCobra packages: how strongly this card goes with the (on-colour) cards we already own,
-    based on what real drafters put together ("synergistic" counts double "often drafted with")."""
+    based on what real drafters put together ("synergistic" partners have strength 1, "often drafted
+    with" ones 0.5, scaled by drafted_share because that list is partly just popular cards).
+    `owned` should be partner_sources(): universal staples like Sol Ring are drafted with everything."""
     if not card.partners:
         return 0.0
-    total = sum(strength * fit_of(o) for o, strength in card.partners.items() if o in owned)
+    total = sum((strength if strength >= 1.0 else strength * drafted_share) * fit_of(o)
+                for o, strength in card.partners.items() if o in owned)
     return min(1.0, total / 3.0)
 
 
@@ -497,6 +532,24 @@ def picks_until_next_turn(ctx: BotContext) -> Dict[int, int]:
     return {"end": 1}
 
 
+def rival_floor(ctx: BotContext, pool: List[CardInfo]) -> float:
+    """How much a rival with this pool still wants an off-colour card: like the bot's own off-colour
+    floor, generous until the rival owns a few coloured spells, then down to rival_committed_floor."""
+    k = ctx.k
+    span = max(1.0, k("commit_pick") - k("commit_start"))
+    progress = min(1.0, max(0.0, (coloured_spells(pool) - k("commit_start")) / span))
+    return k("flex_floor") + (k("rival_committed_floor") - k("flex_floor")) * progress
+
+
+def completes_combo(card: CardInfo, owned: set, combos: List[Combo], max_pieces: float) -> bool:
+    """True if taking this card finishes a combo line whose other pieces we already own."""
+    for ci in card.combos:
+        pieces = combos[ci].pieces
+        if len(pieces) <= max_pieces and all(p in owned for p in pieces if p != card.id):
+            return True
+    return False
+
+
 def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[str, float]:
     """Probability each candidate is taken by someone else before our next pick."""
     window = picks_until_next_turn(ctx)
@@ -513,10 +566,16 @@ def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[s
         dist = lane_distribution(pool, len(pool))
         strengths = package_strengths(_role_counts(pool))
         fit_of = fitter(ctx.index, dist)
-        desires = sorted(((max(ctx.index[cid].power, 0.0) * (0.3 + 0.7 * fit_of(cid))
+        # A rival who isn't committed yet still wants every colour (as the bot itself does early on):
+        # treating three blue picks as a blue drafter made Ragavan look like it would come back.
+        floor = rival_floor(ctx, pool)
+        partners_from = partner_sources(ctx.index, owned)
+        desires = sorted(((max(ctx.index[cid].power, 0.0) * (floor + (1 - floor) * fit_of(cid))
                            + 0.8 * combo_value(ctx.index[cid], owned, remaining, ctx.combos, fit_of)
                            + package_value(ctx.index[cid], None, strengths)
-                           + 0.3 * partner_value(ctx.index[cid], owned, fit_of), cid) for cid in plausible), reverse=True)
+                           + 0.3 * partner_value(ctx.index[cid], partners_from, fit_of, ctx.k("drafted_with_share"))
+                           + (ctx.k("rival_combo_finish") if completes_combo(ctx.index[cid], owned, ctx.combos, ctx.k("combo_max_pieces")) else 0.0), cid)
+                          for cid in plausible), reverse=True)
         spread = 1.0 + 0.35 * n_picks
         for rank, (_, cid) in enumerate(desires):
             if cid in cand_set:
@@ -634,6 +693,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         return fit_cache[cid]
 
     role_counts = _role_counts(mine)
+    partners_from = partner_sources(ctx.index, my_ids)
     strengths = package_strengths(role_counts)
     support_ramp = min(1.0, n / k("support_after"))
     fill = plan_fill(role_counts)
@@ -689,7 +749,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         t_combo = w_combo * combo_value(card, owned, remaining, ctx.combos, fit_of,
                                         k("combo_rest_share"), k("combo_max_pieces"))
         t_plan = package_value(card, None, strengths) + k("plan_weight") * plan_ramp * plan_value(card, fill, plans)
-        t_partner = k("partner_weight") * p.w("combo") * partner_value(card, owned, fit_of)
+        t_partner = k("partner_weight") * p.w("combo") * partner_value(card, partners_from, fit_of, k("drafted_with_share"))
         t_needs = w_needs * needs_value(card, mine, p, counts)
         t_hate = k("hate_weight") * hate_ramp * hate_value(card, table, own_decks, owned_hate) if hate_ramp else 0.0
         t_other = 0.0
@@ -714,6 +774,9 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     top = rows[:30]
     risk = float_risk(ctx, [r[1] for r in top], remaining)
     for r in top:
+        # Never gamble on the last piece of our own combo coming back: a person can take it to stop us.
+        if completes_combo(ctx.index[r[1]], owned, ctx.combos, k("combo_max_pieces")):
+            risk[r[1]] = 1.0
         r[2]["risk"] = round(risk[r[1]], 2)
         mult = 1.0 - min(k("float_cap"), w_float) * (1.0 - risk[r[1]])
         r[0] *= mult

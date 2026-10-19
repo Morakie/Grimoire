@@ -281,8 +281,9 @@ def test_cube_combos_are_added_when_every_piece_is_in_the_cube():
 
 def test_extra_mana_rocks_lose_value_without_an_artifact_plan():
     cube = synthetic_cube() + [card(f"rock{i}", f"Rock {i}", "{3}", 3, "Artifact", "{T}: Add {C}{C}.", "", 1600) for i in range(5)]
-    few = {cid: s for s, cid, _ in score_pool(_two_seat_ctx(cube, [], ["rock0"], []))}
-    glut = {cid: s for s, cid, _ in score_pool(_two_seat_ctx(cube, [], ["rock0", "rock1", "rock2"], []))}
+    # Compare the rating part: the float discount (only applied to the top 30) would blur the totals.
+    few = {cid: i["rating"] for s, cid, i in score_pool(_two_seat_ctx(cube, [], ["rock0"], [], explain=True))}
+    glut = {cid: i["rating"] for s, cid, i in score_pool(_two_seat_ctx(cube, [], ["rock0", "rock1", "rock2"], [], explain=True))}
     assert glut["rock4"] < few["rock4"] * 0.8, (few["rock4"], glut["rock4"])
 
 
@@ -338,3 +339,60 @@ def test_sideboard_hate_only_late_and_only_against_a_real_target():
     assert hate(mine, rival_ids=rival_arts) > 0.1                          # own 25th pick, rival on artifacts
     assert hate(mine, rival_ids=[f"W{i}" for i in range(10)]) == 0.0       # nobody to answer
     assert hate(mine[:14] + rival_arts, rival_ids=rival_arts) == 0.0        # our own artifact deck
+
+
+def test_uncommitted_rivals_still_want_top_cards_of_any_colour():
+    """Rivals with a couple of blue picks aren't blue drafters yet: a top red card won't come back."""
+    cube = synthetic_cube() + [card("rag", "Ragavan", "{R}", 1, "Creature — Monkey", "", "R", 1840)] + [
+        card(f"ub{i}", f"Blue bomb {i}", "{1}{U}", 2, "Instant", "", "U", 1800) for i in range(3)]
+    ctx = _two_seat_ctx(cube, [], [], ["U0", "U1"])
+    remaining = set(build_card_index(cube)) - {"U0", "U1"}
+    assert float_risk(ctx, ["rag"], remaining)["rag"] > 0.5
+
+
+def test_universal_staples_do_not_make_partners():
+    """Owning Sol Ring and a Mox says nothing about packages, however often they're drafted together."""
+    from draftbot.engine import partner_sources, partner_value
+    cube = synthetic_cube() + [
+        card("sol", "Sol Ring", "{1}", 1, "Artifact", "{T}: Add {C}{C}.", "", 2260),
+        card("strip", "Strip Mine", "", 0, "Land", "{T}: Add {C}. {T}, Sacrifice Strip Mine: Destroy target land.", "", 1800),
+        card("top", "Top", "{1}", 1, "Artifact", "{1}: Look at the top three cards of your library.", "", 1550),
+    ]
+    idx = build_card_index(cube, {"partners": {"top": {"sol": 1.0, "strip": 1.0, "U0": 1.0}}})
+    sources = partner_sources(idx, {"sol", "strip", "U0"})
+    assert sources == {"U0"}
+    assert partner_value(idx["top"], sources, lambda c: 1.0) < partner_value(idx["top"], {"sol", "strip", "U0"}, lambda c: 1.0)
+
+
+def test_colourless_cards_with_a_home_fit_its_colours_only():
+    """Top drafted with blue cards fits blue decks; it no longer counts as fitting a red-green deck."""
+    from draftbot.engine import _lane_fit
+    cube = synthetic_cube() + [card("top", "Top", "{1}", 1, "Artifact", "{1}: Look at the top three cards of your library.", "", 1550)]
+    idx = build_card_index(cube, {"partners": {"top": {f"U{i}": 1.0 for i in range(5)}}})
+    assert idx["top"].home == {"U": 1.0}
+    assert _lane_fit(idx["top"], frozenset("UB")) == 1.0
+    assert _lane_fit(idx["top"], frozenset("RG")) <= 0.4
+
+
+def test_one_colour_utility_land_fits_decks_of_its_colour():
+    from draftbot.engine import _lane_fit
+    idx = build_card_index([card("kar", "Karakas", "", 0, "Legendary Land", "{T}: Add {W}.", "W", 1790)])
+    assert _lane_fit(idx["kar"], frozenset("WR")) == 1.0
+    assert _lane_fit(idx["kar"], frozenset("UB")) == 0.0
+
+
+def test_power_nine_rated_with_the_top_picks():
+    cube = synthetic_cube() + [card("tw", "Timetwister", "{2}{U}", 3, "Sorcery", "Each player shuffles their hand and graveyard into their library, then draws seven cards.", "U", 1300)]
+    idx = build_card_index(cube)
+    assert idx["tw"].power >= 0.99
+
+
+def test_last_combo_piece_is_not_floated():
+    """Holding Time Vault, the bot takes the Key now instead of hoping nobody else does."""
+    cube = synthetic_cube() + [
+        card("vault", "Vault", "{2}", 2, "Artifact", "", "", 2000),
+        card("key", "Key", "{1}", 1, "Artifact", "", "", 1450),
+    ]
+    combos = [Combo(("vault", "key"), 1.0)]
+    rows = {cid: i for _, cid, i in score_pool(_two_seat_ctx(cube, combos, ["vault"], [], explain=True))}
+    assert rows["key"]["risk"] == 1.0 and rows["key"]["contested"] == 1.0
