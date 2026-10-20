@@ -11,6 +11,9 @@ and Reanimate for reanimator), not just good cards:
   like Karakas) only pays off in some decks; engine.narrow_factor discounts it until the bot is in one;
 - a pool's strength in a deck type comes from the key cards it owns (and a little from members);
 - engine.deck_crowding keeps more than two seats from chasing the same deck type.
+
+Aggro is a deck type too: Ajani or Ocelot Pride only belong in a creature-aggro deck, so a seat that
+isn't building one shouldn't take them just for their rating, least of all once another seat is deep in it.
 """
 from __future__ import annotations
 
@@ -53,6 +56,13 @@ KEYS: Dict[str, tuple] = {
     "lands": (
         "Life from the Loam", "Crucible of Worlds", "Ramunap Excavator", "Azusa, Lost but Seeking",
         "Field of the Dead", "Titania, Protector of Argoth", "Dryad of the Ilysian Grove", "Splendid Reclamation",
+    ),
+    "aggro": (       # cheap attackers that only pay off in a creature-aggro deck (white weenie, Boros, red aggro)
+        "Ocelot Pride", "Ajani, Nacatl Pariah", "Thalia, Guardian of Thraben", "Mother of Runes",
+        "Giver of Runes", "Kytheon, Hero of Akros", "Guide of Souls", "Adeline, Resplendent Cathar",
+        "Luminarch Aspirant", "Monastery Swiftspear", "Goblin Guide", "Inti, Seneschal of the Sun",
+        "Figure of Destiny", "Champion of the Parish", "Student of Warfare", "Isamaru, Hound of Konda",
+        "Phelia, Exuberant Shepherd", "Sanguine Evangelist", "Zurgo Bellstriker",
     ),
 }
 # Role tags that make a card a key card of a deck type (from features.ROLE_PATTERNS), for cards not named above.

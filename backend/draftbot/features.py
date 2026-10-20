@@ -75,7 +75,9 @@ ROLE_PATTERNS = {
     "graveyard_cast": r"from your graveyard|flashback|escape|you may cast[^.]*graveyard",
     # Vintage-cube packages (enablers and payoffs, see combos.PACKAGES)
     "storm_payoff": r"(^|\n)storm\b|\bstorm \(",
-    "flicker": r"exile (up to one )?(another |other )?target[^.]*(creature|permanent)s? you (control|own)[^.]*return|exile (it|them), then return|then return (it|that card|those cards) to the battlefield",
+    # Blinking OTHER creatures. Not cards that exile and return themselves transformed (Fable's chapter III,
+    # Ajani): those aren't blink payoffs and were losing most of their rating for lack of "etb" creatures.
+    "flicker": r"exile (up to one )?(another |other )?target[^.]*(creature|permanent)s? you (control|own)[^.]*return|exile (it|them), then return(?! (it|him|her|them) to the battlefield transformed)|then return (it|that card|those cards) to the battlefield(?! transformed)",
     "equip_fetch": r"search your library for an equipment|equipment card from your hand onto the battlefield",
     "land_recursion": r"play lands? from your graveyard|land cards? from your graveyard",
     "landfall": r"landfall|whenever a land (you control )?enters|whenever one or more lands (you control )?enter",

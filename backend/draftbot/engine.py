@@ -46,23 +46,31 @@ TUNING: Dict[str, float] = {
     # splash
     "splash_min_value": 1.2,    # owned power in the third colour before a splash is considered
     "splash_fit": 0.6,          # how on-colour splash cards count once the splash is real
-    "splash_fixing_bonus": 0.3, # value of a land that fixes the splash
-    # fixing
+    "splash_fixing_bonus": 0.2, # value of a land that fixes the splash (until the bot owns splash_fixing_target)
+    "splash_fixing_target": 2,
+    # fixing (basic lands come from outside the draft, so a two-colour deck needs only a few duals)
     "early_fixing_damp": 0.5,   # dual/fetch lands count at 50% power at pick 1, full by mid-draft
-    "fixing_bonus": 0.25,       # late-draft value of an on-colour dual/fetch
-    "fixing_target": 5,         # duals/fetches a deck would like
+    "fixing_bonus": 0.15,       # late-draft value of an on-colour dual/fetch
+    "fixing_target": 3,         # duals/fetches a deck would like
     # synergy
     "combo_base": 0.35, "combo_growth": 0.45,
     "combo_rest_share": 0.25,   # a card's other combo lines add only this share (its best line counts in full)
     "combo_max_pieces": 3,      # longer lines are too hard to assemble in a draft to plan around
     "combo_finish_weight": 0.8, # combo weight for the last piece of a line we hold (any time in the draft)
-    "partner_weight": 0.3,      # CubeCobra package partners (value when fully "in" a package)
+    "partner_weight": 0.45,     # CubeCobra package partners (value when fully "in" a package)
+    # synergy over rating: once a bot is committed (colours or deck type), what fits its deck counts for more
+    # than raw Elo, so a high-rated card that only goes in other decks doesn't win on rating alone
+    "commit_rating_cut": 0.25,  # share of the rating weight dropped when fully committed
     "drafted_with_share": 0.5,  # "often drafted with" partners count this share (it's partly just popularity)
     # deck types (decktypes.py): narrow cards wait until the bot is in a deck that uses them
     "narrow_floor": 0.4,        # share of a narrow card's rating it keeps for a bot not (yet) in its deck type
     "key_floor": 0.55,          # ... the same for a coloured key card (Urza, Reanimate)
     "key_open": 0.7,            # a key card of a deck type nobody at the table is in: worth starting it
+    "entry_window": 0.5,        # ...early on: starting a new deck type gets less appealing until this share of
+                                # the bot's picks, when it stops (decide fairly early, then build)
     "deck_seat": 0.5,           # deck-type strength at which a seat counts as being in that deck type
+    "contest_weight": 0.15,     # a deck type the bot shares with a rival: its key/member cards are worth this
+                                # much more (if you fight for a lane, take the contested cards, not filler)
     "crowd_seats": 2,           # seats already in a deck type before it counts as crowded...
     "crowd_cut": 0.6,           # ...then a bot behind the deepest seat values its cards up to this much less
     "deck_focus": 0.3,          # a bot fully in a deck type: cards outside it lose up to this share...
@@ -88,13 +96,16 @@ TUNING: Dict[str, float] = {
     "run_share": 0.25,          # share of those picks being fixing lands that counts as a full run
     "run_boost": 0.6,           # fixing lands' rating boost during a full run (and no early-draft discount)
     "unsupported_cut": 0.7,     # share of such a card's rating lost when the pool has none of its support
+    # reanimation spells need something to reanimate: owned fatties, or ones still likely to come
+    "reanimate_cut": 0.6,       # share of a reanimation spell's rating lost with no target owned or available
+    "reanimate_targets": 2,     # targets that make it fully live (owned count fully, available ones partly)
     # extra mana rocks: a deck without an artifact plan only needs a few
     "rock_limit": 3,            # mana artifacts owned before more of them lose value
     "rock_cut": 0.35,           # share of a 2+ mana rock's rating lost past the limit (no artifact plan)
     # sideboard / counter picks: answers to a deck someone at the table is building, late in the draft only
     "hate_start": 19,           # cards the bot owns before it looks at hate cards (its own 20th pick)
-    "hate_full": 25,            # ... fully by its 26th pick
-    "hate_weight": 0.4,         # value of a hate card against a fully built target deck
+    "hate_full": 33,            # ... growing slowly to full by its 34th pick
+    "hate_weight": 0.3,         # value of a hate card against a fully built target deck
     "hate_max": 4,              # hate cards a bot wants in all (sideboard space)
     "support_after": 6,         # picks before that cut fully applies (early picks keep options open)
 }
@@ -573,17 +584,25 @@ def deck_outlook(ctx: BotContext, mine: Dict[str, float], others: List[Dict[str,
             eff[t] = mine[t] * (1.0 - k("crowd_cut") * behind)
         else:
             eff[t] = mine[t]
-        open_[t] = 1.0 if seats_in == 0 else (0.5 if seats_in < k("crowd_seats") else 0.0)
+        # One seat in it: less open the deeper that seat already is (0.5 at the threshold, 0.25 when full).
+        open_[t] = 1.0 if seats_in == 0 else (0.5 * (1.5 - leader) if seats_in < k("crowd_seats") else 0.0)
     return eff, open_
 
 
+def shared_types(ctx: BotContext, mine: Dict[str, float], others: List[Dict[str, float]]) -> Dict[str, float]:
+    """Deck types this bot is in that a rival is in too: how far in the bot is (0 if not shared)."""
+    k = ctx.k
+    return {t: mine[t] for t in DECK_TYPES
+            if mine[t] >= k("deck_seat") and any(o[t] >= k("deck_seat") for o in others)}
+
+
 def deck_factor(ctx: BotContext, card: CardInfo, eff: Dict[str, float], open_: Dict[str, float],
-                colour_q: float) -> float:
+                colour_q: float, entry: float = 1.0) -> float:
     """Share of its rating a card is worth to a seat, given what that seat's deck is (1 for most cards).
     Narrow cards (Top, Baubles, Karakas, Mox Opal) count fully only for a deck that uses them: one in their
     deck type, or (for cards that go by colour) a deck committed to their colour (`colour_q`). Coloured key
-    cards (Urza, Reanimate) lose a little outside their deck type. A key card of an open deck type is
-    worth taking to start it."""
+    cards (Urza, Reanimate, Ajani) lose some value outside their deck type. A key card of an open deck type
+    is worth taking to start it, early in the draft (`entry` falls from 1 to 0 over entry_window)."""
     universal = is_universal(card)
     narrow = is_narrow(card, universal, card.staple)
     if not narrow and not card.key_of:
@@ -595,7 +614,7 @@ def deck_factor(ctx: BotContext, card: CardInfo, eff: Dict[str, float], open_: D
     for t, m in card.deck.items():
         q = max(q, eff[t] * m)
     for t in card.key_of:
-        q = max(q, ctx.k("key_open") * open_[t])
+        q = max(q, ctx.k("key_open") * open_[t] * entry)
     floor = ctx.k("narrow_floor") if narrow else ctx.k("key_floor")
     return floor + (1.0 - floor) * min(1.0, q)
 
@@ -806,7 +825,22 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     # Extra mana rocks: past a few, a deck with no artifact plan gets little from another one.
     rocks_owned = sum(1 for c in mine if _is_rock(c))
     rock_glut = rocks_owned >= k("rock_limit") and plans["artifacts"] < 0.5
-    w_power = (1.0 - k("power_late_drop") * t) * p.w("power")
+    # A cheat/reanimator plan doesn't need to cast its fatties, and its deck types (worked out here because
+    # the rating weight below depends on how committed the bot is).
+    cheat_plan = max(plans["cheat"], plans["reanimator"])
+    deck_mine = deck_strength(mine)
+    others = deck_table(ctx, rivals)
+    deck_eff, deck_open = deck_outlook(ctx, deck_mine, others)
+    shared = shared_types(ctx, deck_mine, others)
+    entry = max(0.0, 1.0 - t / k("entry_window"))
+    commitment = max(progress, max(deck_mine.values(), default=0.0))
+    w_power = (1.0 - k("power_late_drop") * t) * (1.0 - k("commit_rating_cut") * commitment) * p.w("power")
+    # Reanimation spells: targets owned count fully, strong fatties still in the pool count a little each.
+    owned_targets = sum(1 for c in mine if "fatty" in c.roles)
+    open_targets = sum(1 for c in remaining if "fatty" in ctx.index[c].roles and ctx.index[c].power >= 0.5)
+    target_fill = min(1.0, (owned_targets + 0.25 * open_targets) / k("reanimate_targets"))
+    splash_fixing = sum(1 for c in mine if c.is_land and splash and splash in c.produces and pair and c.produces & pair) \
+        if splash else 0
     w_combo = (k("combo_base") + k("combo_growth") * min(1.0, 2 * t)) * p.w("combo")
     w_needs = max(0.0, (t - k("needs_start")) * k("needs_slope"))
     w_float = (k("float_base") + k("float_growth") * min(1.0, 2 * t)) * p.w("float")
@@ -821,10 +855,6 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         ramp = min(1.0, (t - k("wincon_start")) / 0.25)
         wincon_gap = max(0.0, 1.0 - plan_score) * ramp * k("wincon_weight")
 
-    # A pool that can cheat or reanimate fatties doesn't need to cast them: their colours stop mattering.
-    cheat_plan = max(plans["cheat"], plans["reanimator"])
-    deck_mine = deck_strength(mine)
-    deck_eff, deck_open = deck_outlook(ctx, deck_mine, deck_table(ctx, rivals))
     rows = []
     for cid in remaining:
         card = ctx.index[cid]
@@ -838,8 +868,10 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
                 power *= 1.0 - k("plan_conflict_cut") * plan_ramp * plan_conflict(card, plans)
         if rock_glut and _is_rock(card) and card.cmc >= 2:
             power *= 1.0 - k("rock_cut")
-        d_mult = deck_factor(ctx, card, deck_eff, deck_open, progress * (_lane_fit(card, pair) if pair else 0.0)) \
-            * focus_factor(ctx, card, deck_mine)
+        if "reanimate" in card.roles and "fatty" not in card.roles and support_ramp:
+            power *= 1.0 - k("reanimate_cut") * support_ramp * (1.0 - target_fill)
+        d_mult = deck_factor(ctx, card, deck_eff, deck_open, progress * (_lane_fit(card, pair) if pair else 0.0),
+                             entry) * focus_factor(ctx, card, deck_mine)
         power *= d_mult
         if card.is_land and card.is_fixing:
             damp = k("early_fixing_damp")
@@ -850,6 +882,11 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         t_combo = (max(w_combo, k("combo_finish_weight")) if finishes else w_combo) * combo_value(
             card, owned, remaining, ctx.combos, fit_of, k("combo_rest_share"), k("combo_max_pieces"))
         t_plan = package_value(card, None, strengths) + k("plan_weight") * plan_ramp * plan_value(card, fill, plans)
+        if shared:
+            # Fighting a rival for a deck type: its key and member cards come first.
+            t_plan += k("contest_weight") * max(
+                (s * (1.0 if dt in card.key_of else min(1.0, card.deck.get(dt, 0.0) / 0.5))
+                 for dt, s in shared.items()), default=0.0)
         t_partner = k("partner_weight") * p.w("combo") * partner_value(card, partners_from, fit_of, k("drafted_with_share"))
         t_needs = w_needs * needs_value(card, mine, p, counts)
         t_hate = k("hate_weight") * hate_ramp * hate_value(card, table, own_decks, owned_hate) if hate_ramp else 0.0
@@ -859,8 +896,9 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         if pair:
             t_other += w_style * style_value(card, pair)
             if card.is_land and len(card.produces & pair) >= 2 and fixing_owned < k("fixing_target"):
-                t_other += k("fixing_bonus") * t * (1.5 if fixing_owned < 2 and t > 0.5 else 1.0)
-            if splash and card.is_land and splash in card.produces and card.produces & pair:
+                t_other += k("fixing_bonus") * t * (1.5 if fixing_owned == 0 and t > 0.5 else 1.0)
+            if splash and card.is_land and splash in card.produces and card.produces & pair \
+                    and splash_fixing < k("splash_fixing_target"):
                 t_other += k("splash_fixing_bonus")
         base = t_rating + t_combo + t_plan + t_partner + t_needs + t_other + t_hate
         lane_mult = floor + (1 - floor) * fit
