@@ -46,9 +46,11 @@ def run_metrics(index, combos, engine: str, seeds: List[int], seats: int = 8, pi
         interaction = []
         for s, ids in pools.items():
             pool = [index[c] for c in ids]
-            d = deck_strength(pool)
-            t, v = max(d.items(), key=lambda kv: kv[1])
-            if v >= 0.5:
+            # A seat's lane: the deck type it holds the most KEY cards of (two or more), else "good stuff".
+            # Membership alone isn't a lane: a black control deck with Dark Ritual and Oracle isn't storm.
+            keys = {t: sum(1 for c in pool if t in c.key_of) for t in DECK_TYPES}
+            t, v = max(keys.items(), key=lambda kv: kv[1])
+            if v >= 2:
                 main.append(t)
             else:
                 no_type += 1
@@ -64,10 +66,10 @@ def run_metrics(index, combos, engine: str, seeds: List[int], seats: int = 8, pi
         for t in set(main):
             if main.count(t) > LANE_CAPACITY.get(t, 1):
                 over += main.count(t) - LANE_CAPACITY.get(t, 1)
-        per_seed.append({"over_capacity": over, "no_type": no_type, "distinct": len(set(main)),
+        per_seed.append({"over_capacity": over, "good_stuff": no_type, "distinct": len(set(main)),
                          "colours": mean(colours), "on_colour": mean(on_colour), "elo": mean(elo),
                          "interaction": mean(interaction), "main": sorted(main)})
-    agg = {k: round(mean(x[k] for x in per_seed), 2) for k in ("over_capacity", "no_type", "distinct", "colours",
+    agg = {k: round(mean(x[k] for x in per_seed), 2) for k in ("over_capacity", "good_stuff", "distinct", "colours",
                                                                "on_colour", "elo", "interaction")}
     agg["seconds_per_draft"] = round((time.time() - started) / max(len(seeds), 1), 2)
     agg["avg_pick"] = {n: round(mean(v), 1) for n, v in when.items() if v}
