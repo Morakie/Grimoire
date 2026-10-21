@@ -108,9 +108,8 @@ KEYS: Dict[str, tuple] = {
         "Zurgo Bellstriker", "Inti, Seneschal of the Sun", "Figure of Destiny", "Ragavan, Nimble Pilferer",
         "Goblin Rabblemaster", "Laelia, the Blade Reforged", "Sanguine Evangelist", "Rampaging Ferocidon",
     ),
-    "gruul": (        # RG beats
-        "Bloodbraid Elf", "Minsc & Boo, Timeless Heroes", "Escape to the Wilds", "Burning-Tree Emissary",
-        "Halana and Alena, Partners",
+    "gruul": (        # RG beats (strong gold cards like Minsc & Boo are core: their colours already limit them)
+        "Burning-Tree Emissary", "Halana and Alena, Partners", "Escape to the Wilds", "Questing Beast",
     ),
     "pox": (          # mono-black disruption: symmetrical discard and land loss with recursive creatures
         "Pox", "Smallpox", "Sinkhole", "Braids, Cabal Minion", "Gravecrawler", "Phyrexian Obliterator",
@@ -152,7 +151,7 @@ CORE: Dict[str, tuple] = {
              "Sylvan Caryatid"),
     "wildfire": ("Grim Monolith", "Mana Vault", "Basalt Monolith"),
     "welder": ("Triplicate Titan", "Blightsteel Colossus", "Myr Battlesphere"),
-    "gruul": ("Lightning Bolt", "Questing Beast"),
+    "gruul": ("Lightning Bolt", "Minsc & Boo, Timeless Heroes", "Bloodbraid Elf"),
 }
 # Only coloured cards and mana rocks belong here: a colourless spell with this membership would count as narrow.
 CORE_MEMBERSHIP = 0.6
