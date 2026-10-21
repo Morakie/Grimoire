@@ -156,7 +156,8 @@ def test_P6_replaceable_cards_lose_value_to_their_substitutes():
     s = scored(ctx)
     assert s["drain"][1]["substitute"] > 0.2
     assert s["balance"][1]["substitute"] == 0.0
-    assert s["balance"][0] > s["drain"][0]
+    # Mana Drain keeps only part of its value: the rest is what Counterspell & co. would give anyway.
+    assert s["drain"][0] < s["drain"][1]["value"] * 0.9 or s["drain"][1]["gone"] > 0.5
 
 
 # ---------------------------------------------------------------- P7

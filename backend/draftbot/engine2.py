@@ -25,6 +25,7 @@ import random
 from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 from . import knowledge as K
+from .pick_order import PICK_ORDER
 from .decktypes import ARTIFACT_TYPES, DECK_TYPES, deck_strength, is_narrow, is_universal
 from .engine import (BotContext, _is_rock, _is_utility_artifact, _lane_fit, best_pair, colour_state, coloured_spells,
                      combo_value, commit_progress, completes_combo, deck_targets, fitter, hate_value, lane_distribution,
@@ -68,11 +69,12 @@ TUNING2: Dict[str, float] = {
     "generic_power": 0.9,       # cards rated this high (about the cube's top 5%) go in any deck of their colours:
                                 # never discounted as a deck type's key card, never "replaceable" (P9: Ragavan,
                                 # Demonic Tutor)
-    "tier_blend": 0.5,          # how far a card's quality moves towards how early people take it (PICK_TIERS)
+    # People's value of a card (pick_order.py: how early real rotisserie tables take it) against its CubeCobra
+    # rating: experienced roto drafters take fetches, tutors, cheap discard and blasts much earlier than ratings
+    # suggest, and Timetwister or Chrome Mox later.
+    "human_weight": 0.7,        # share of a card's quality that comes from how early people take it
+    "human_top": 1.45, "human_floor": 0.2, "human_scale": 12.0,   # round 1 -> 1.45, round 10 -> ~0.8, never -> 0.2
 }
-# Where each pick tier sits in the cube's own quality ranking (quantile): a card people take in round 2 is
-# rated at least like the cube's top 2% (blended by tier_blend).
-TIER_QUANTILE = {1: 0.995, 2: 0.98, 3: 0.96, 5: 0.92, 8: 0.85, 12: 0.75}
 
 _REANIMATE_ROLES = frozenset({"reanimate", "cheat"})
 
@@ -94,6 +96,13 @@ _TIER = {}
 for _round, _names in sorted(K.PICK_TIERS.items(), reverse=True):
     for _n in _names:
         _TIER[_norm(_n)] = _round          # a card listed twice keeps its earliest round
+_ORDER = {_norm(n): v for n, v in PICK_ORDER.items()}
+
+
+def human_quality(avg_round: float) -> float:
+    """People's value of a card from the round it's usually taken in, on the same scale as CardInfo.power."""
+    return TUNING2["human_floor"] + (TUNING2["human_top"] - TUNING2["human_floor"]) * math.exp(
+        -(avg_round - 1.0) / TUNING2["human_scale"])
 _DISCARD = {_norm(n) for n in K.DISCARD}
 
 
@@ -139,19 +148,20 @@ class Static:
         self.narrow: Dict[str, bool] = {}
         self.universal: Dict[str, bool] = {}
         self.interaction: Dict[str, bool] = {}
-        ranked = sorted(max(c.power, 0.0) for c in index.values())
-
-        def quantile(q):
-            return ranked[min(len(ranked) - 1, int(len(ranked) * q))] if ranked else 0.0
-        blend = TUNING2["tier_blend"]
+        w = TUNING2["human_weight"]
         for cid, c in index.items():
             name = _norm(c.name)
-            q = max(c.power, 0.0) * _ADJUST.get(name, 1.0)
-            if name in _TIER:
+            q = max(c.power, 0.0)
+            seen = _ORDER.get(name)
+            if seen is not None:
+                # How early people take it (the people's value), blended with the rating.
+                q = w * human_quality(seen[0]) + (1 - w) * q
+                self.tier[cid] = seen[0]
+            elif name in _TIER:
                 self.tier[cid] = _TIER[name]
-                # People take this card by round N: rate it at least part of the way to where that sits.
-                q = max(q, (1 - blend) * q + blend * quantile(TIER_QUANTILE.get(_TIER[name], 0.75)))
-            self.quality[cid] = q
+            if c.staple:
+                q = max(q, human_quality(1.5))       # Power stays Power whatever the data says
+            self.quality[cid] = q * _ADJUST.get(name, 1.0)
             self.job[cid] = job_of(c)
             uni = is_universal(c)
             self.universal[cid] = uni
