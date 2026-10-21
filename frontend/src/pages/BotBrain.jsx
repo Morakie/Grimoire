@@ -5,7 +5,7 @@ import { resolveCube, stepError } from "@/lib/cube";
 import BotLab from "@/components/BotLab";
 import { DECK_NAMES, deckName, deckCol } from "@/lib/deckTypes";
 import { startEngine, poolBytes } from "@/lib/labEngine";
-import { Sparkles, Loader2, Brain, Search, Shuffle, Dices, Play, Network, Library, RefreshCw, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, GitCompare, Zap, Cpu, Server, Square } from "lucide-react";
+import { Sparkles, Loader2, Brain, Search, Shuffle, Dices, Play, Network, Library, RefreshCw, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, GitCompare, Zap, Cpu, Server, Square, Download, ClipboardCopy, Maximize2, Minimize2 } from "lucide-react";
 
 // Bot Brain: how the draft bots think, outside any draft. Load a cube (CubeCobra) or the VRD pool, then
 // look up any card (what the bots know about it and what it links to) or run an all-bot draft, turn the
@@ -204,16 +204,16 @@ function slotFocus(order, slot) {
   return { seat, pickNo: n };
 }
 
-function DraftBoard({ sim, base, byId, seats, viewSlot, changed, kept, onPick }) {
+function DraftBoard({ sim, base, byId, seats, viewSlot, changed, kept, onPick, full = false }) {
   const n = seats.length;
   const rounds = Math.ceil(sim.order.length / n);       // the whole board, filling in as picks stream in
   const bySlot = sim.picks;
   const cell = (r, s) => r * n + (r % 2 === 0 ? s : n - 1 - s);
   const viewRef = useRef(null);
-  useEffect(() => { viewRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" }); }, [viewSlot]);
+  useEffect(() => { if (!full) viewRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" }); }, [viewSlot, full]);
   return (
-    <div className="overflow-auto max-h-[46vh] rounded-lg border border-slate-800 bg-slate-950" data-testid="brain-board">
-      <table className="text-[11px] border-separate border-spacing-0 w-full">
+    <div className={`overflow-auto rounded-lg border border-slate-800 bg-slate-950 ${full ? "" : "max-h-[46vh]"}`} data-testid="brain-board">
+      <table className={`${full ? "text-[10px] leading-tight" : "text-[11px]"} border-separate border-spacing-0 w-full`}>
         <thead className="sticky top-0 z-10 bg-slate-950">
           <tr><th className="px-1.5 py-1 text-slate-500 font-normal text-right w-7">#</th>
             {seats.map((s) => <th key={s.index} className="px-1.5 py-1 text-slate-300 font-semibold text-left min-w-[104px]">{s.player_name}</th>)}</tr>
@@ -234,9 +234,9 @@ function DraftBoard({ sim, base, byId, seats, viewSlot, changed, kept, onPick })
                   <td key={s.index} className="p-0.5" ref={here ? viewRef : undefined}>
                     <button type="button" onClick={() => onPick(slot)} title={`Table pick ${slot + 1}: ${c?.name || "?"}${was ? ` (was ${was} with the current weights)` : ""}`}
                       data-testid={`brain-board-${slot}`}
-                      className={`w-full text-left flex items-center gap-1 rounded px-1 py-0.5 border ${here ? "border-amber-400 bg-amber-400/15 text-amber-100" : ch ? "border-sky-400/70 bg-sky-400/10 text-slate-100" : "border-transparent hover:bg-slate-800/70 text-slate-300"} ${slot < kept ? "opacity-60" : ""}`}>
+                      className={`w-full text-left flex items-center gap-1 rounded px-1 ${full ? "py-0" : "py-0.5"} border ${here ? "border-amber-400 bg-amber-400/15 text-amber-100" : ch ? "border-sky-400/70 bg-sky-400/10 text-slate-100" : "border-transparent hover:bg-slate-800/70 text-slate-300"} ${slot < kept ? "opacity-60" : ""}`}>
                       <span className="w-1.5 h-3 rounded-sm shrink-0" style={{ background: c ? colourOf(c) : "#334155" }} />
-                      <span className="truncate max-w-[118px]">{shortName(c?.name)}</span>
+                      <span className={`truncate ${full ? "max-w-[150px]" : "max-w-[118px]"}`}>{shortName(c?.name)}</span>
                     </button>
                   </td>
                 );
@@ -398,6 +398,50 @@ function SeatWeb({ web, seatName, scores, took, onPick }) {
   );
 }
 
+// ---------------------------------------------------------------- export
+
+// The draft as data (JSON) or as text to paste into a message: settings, weights, every seat's picks in order,
+// what each seat ended up with, and the picks that differ from the current weights' draft.
+function draftExport({ src, sim, base, byId, changed, engineVersion }) {
+  const name = (id) => byId[id]?.name || id;
+  const seats = Array.from(new Set(sim.order)).sort((a, b) => a - b);
+  const summary = Object.fromEntries((sim.seats || []).map((x) => [x.seat, x]));
+  const persona = (i) => sim.personas?.[i] || summary[i]?.persona || null;
+  return {
+    exported_at: new Date().toISOString(),
+    pool: { label: src.label, key: src.source, cards: src.summary.cards, combos: src.summary.combos, built_at: src.built_at, partial: !!src.partial },
+    engine: engineVersion || null,
+    settings: { seats: seats.length, picks_each: sim.per_seat, seed: base?.seed ?? null, personalities: !!base?.cfg?.personas,
+      weights: sim.tuning || {}, weights_from_pick: (sim.from || 0) + 1, weights_for_seats: sim.tuned_seats ? sim.tuned_seats.map((x) => x + 1) : "all" },
+    seats: seats.map((i) => ({
+      bot: i + 1, persona: persona(i),
+      colours: summary[i]?.pair ?? null, deck_types: summary[i]?.decks ?? null, on_colour: summary[i]?.on_colour ?? null,
+      avg_elo: summary[i]?.avg_elo ?? null, combos: summary[i]?.combos ?? [],
+      picks: sim.picks.filter((p) => p.seat_index === i).map((p) => name(p.card_id)),
+    })),
+    changed_from_current_weights: [...changed].sort((a, b) => a - b).map((slot) => ({
+      table_pick: slot + 1, bot: sim.picks[slot].seat_index + 1, took: name(sim.picks[slot].card_id), was: name(base.picks[slot]?.card_id),
+    })),
+  };
+}
+
+function exportText(x) {
+  const lines = [`Bot Brain draft (bots ${x.engine ? x.engine.slice(0, 7) : "server"}): ${x.pool.label} (${x.pool.cards} cards, ${x.pool.combos} combos${x.pool.partial ? ", partial" : ""}), seed ${x.settings.seed}, ${x.settings.seats} bots x ${x.settings.picks_each}, personalities ${x.settings.personalities ? "on" : "off"}`];
+  const w = Object.entries(x.settings.weights);
+  lines.push(w.length ? `Weights changed: ${w.map(([k, v]) => `${k}=${v}`).join(", ")} (from pick ${x.settings.weights_from_pick}, seats: ${x.settings.weights_for_seats})` : "Weights: current defaults");
+  x.seats.forEach((s) => {
+    const decks = Object.entries(s.deck_types || {}).map(([t, v]) => `${deckName(t)} ${Math.round(v * 100)}%`).join(", ");
+    const p = s.persona ? ` · ${s.persona.archetype}${s.persona.lean ? `, leans ${deckName(s.persona.lean)}` : ""}` : "";
+    lines.push("", `Bot ${s.bot} [${s.colours || "open"}${decks ? ` · ${decks}` : ""}${s.avg_elo ? ` · Elo ${s.avg_elo}` : ""}${p}]`);
+    lines.push(s.picks.map((n, i) => `${i + 1}. ${n.split(" // ")[0]}`).join(", "));
+  });
+  if (x.changed_from_current_weights.length) {
+    lines.push("", "Changed picks (took / was with current weights):");
+    x.changed_from_current_weights.slice(0, 80).forEach((c) => lines.push(`  #${c.table_pick} Bot ${c.bot}: ${c.took} / ${c.was}`));
+  }
+  return lines.join("\n");
+}
+
 // ---------------------------------------------------------------- page
 
 const sameCfg = (a, b) => a && b && a.seats === b.seats && a.picks === b.picks && a.seed === b.seed && a.pool === b.pool && !!a.personas === !!b.personas;
@@ -432,6 +476,9 @@ export default function BotBrain() {
   const [tunedSeats, setTunedSeats] = useState(null); // null = new weights for every bot
   const [lanes, setLanes] = useState(null);
   const [labView, setLabView] = useState(null);
+  const [fullBoard, setFullBoard] = useState(false);
+  const [engineVersion, setEngineVersion] = useState("");
+  const [exported, setExported] = useState("");
   const [web, setWeb] = useState(null);
   const cubeCards = useRef(null);          // the resolved cube, to send again if the server forgot the pool
   const engine = useRef(null);
@@ -446,7 +493,7 @@ export default function BotBrain() {
   useEffect(() => {
     try {
       engine.current = startEngine();
-      engine.current.ready.then(() => setEngineState("ready"), () => setEngineState("failed"));
+      engine.current.ready.then((v) => { setEngineState("ready"); setEngineVersion(v || ""); }, () => setEngineState("failed"));
     } catch { setEngineState("failed"); }
   }, []);
 
@@ -754,7 +801,7 @@ export default function BotBrain() {
               <span><span className="text-slate-100 font-semibold tabular-nums">{src.summary.combos}</span> combos</span>
               {src.label && <span title={src.built_at ? `Built ${new Date(src.built_at).toLocaleString()}` : undefined}>Saved as <span className="text-slate-200">{PRESETS.find(([, v]) => v === src.label)?.[0] || src.label}</span>{src.built_at && <> · built {new Date(src.built_at).toLocaleDateString()}</>}</span>}
               <span className={`flex items-center gap-1 ${local ? "text-emerald-400" : "text-slate-400"}`} title={local ? "The bots run in this browser: turning knobs and re-drafting don't call the server" : "The bots run on the server"} data-testid="brain-where">
-                {local ? <Cpu className="w-3.5 h-3.5" /> : <Server className="w-3.5 h-3.5" />} {where}</span>
+                {local ? <Cpu className="w-3.5 h-3.5" /> : <Server className="w-3.5 h-3.5" />} {where}{local && engineVersion && <span className="text-slate-500" title="Bot logic version loaded when this page opened: reload the page to pick up newer bot changes"> · bots {engineVersion.slice(0, 7)}</span>}</span>
               {poolUpdate && <button type="button" onClick={() => loadSource({ pool: poolUpdate.key })} data-testid="brain-pool-update"
                 className="text-xs px-2 py-1 rounded bg-emerald-500/15 border border-emerald-400/60 text-emerald-300 hover:bg-emerald-500/25">The rest of the combos arrived: load the updated pool</button>}
               {src.partial && !poolUpdate && <span className="text-amber-300">Some combos or CubeCobra links were still loading when this pool was built{src.vrd ? " (1,500 card pages, about 10–20 minutes the first time)" : ""}. Late combos are saved by themselves (this page offers the update when they land); missing links need a Rebuild later.</span>}
@@ -860,7 +907,29 @@ export default function BotBrain() {
                       )}
                     </div>
 
-                    <DraftBoard sim={sim} base={tunedRun ? base : null} byId={byId} seats={simSeatsUsed} viewSlot={viewSlot} changed={changed} kept={sim.from || 0} onPick={goSlot} />
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <button type="button" onClick={() => setFullBoard((v) => !v)} data-testid="brain-full-board"
+                        className="px-2 py-1 rounded border border-slate-700 text-slate-300 hover:text-amber-300 flex items-center gap-1">
+                        {fullBoard ? <><Minimize2 className="w-3 h-3" /> Scrolling board</> : <><Maximize2 className="w-3 h-3" /> Whole board (for screenshots)</>}</button>
+                      <button type="button" disabled={!sim.seats} onClick={() => {
+                        const x = draftExport({ src, sim, base, byId, changed, engineVersion });
+                        const url = URL.createObjectURL(new Blob([JSON.stringify(x, null, 1)], { type: "application/json" }));
+                        const a = document.createElement("a");
+                        a.href = url; a.download = `bot-brain-seed-${x.settings.seed}.json`; a.click();
+                        setTimeout(() => URL.revokeObjectURL(url), 2000);
+                      }} data-testid="brain-export" title="Download this draft (settings, weights, every pick, seat summaries) to attach to a message"
+                        className="px-2 py-1 rounded border border-slate-700 text-slate-300 hover:text-amber-300 disabled:opacity-40 flex items-center gap-1"><Download className="w-3 h-3" /> Export draft</button>
+                      <button type="button" disabled={!sim.seats} onClick={async () => {
+                        const text = exportText(draftExport({ src, sim, base, byId, changed, engineVersion }));
+                        try { await navigator.clipboard.writeText(text); setExported("Copied: paste it into a message."); }
+                        catch { setExported(text); }
+                        setTimeout(() => setExported(""), 6000);
+                      }} data-testid="brain-copy-text" title="Copy every seat's picks as text to paste into a message"
+                        className="px-2 py-1 rounded border border-slate-700 text-slate-300 hover:text-amber-300 disabled:opacity-40 flex items-center gap-1"><ClipboardCopy className="w-3 h-3" /> Copy as text</button>
+                      {exported && (exported.startsWith("Copied") ? <span className="text-emerald-400">{exported}</span>
+                        : <textarea readOnly value={exported} onFocus={(e) => e.target.select()} className="basis-full h-32 bg-slate-900 border border-slate-700 rounded p-2 text-slate-200" />)}
+                    </div>
+                    <DraftBoard sim={sim} base={tunedRun ? base : null} byId={byId} seats={simSeatsUsed} viewSlot={viewSlot} changed={changed} kept={sim.from || 0} onPick={goSlot} full={fullBoard} />
 
                     {local && <LanesStrip lanes={lanes} personas={sim.personas} focusSeat={sim.order[viewSlot]} onSeat={(s) => {
                       const slot = sim.order.findIndex((x, i) => i >= viewSlot && x === s);
