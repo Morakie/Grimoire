@@ -78,7 +78,7 @@ TUNING2: Dict[str, float] = {
     "fetch_fit": 0.75,          # colour fit a fetchland always has
     # Whose pick order counts most (owner, 2026-10-21): LSV's tables, then the VRD sheets, then the owner's group.
     # Weight per draft that took the card (pick_order.combined_order).
-    "lsv_source": 6.0, "vrd_source": 1.0, "group_source": 0.5,
+    "lsv_source": 24.0, "vrd_source": 1.0, "group_source": 0.2,   # held-out benchmark sweep 2026-10-21
     "human_weight": 0.7,        # share of a card's quality that comes from how early people take it
     "human_top": 1.45, "human_floor": 0.2, "human_scale": 12.0,   # round 1 -> 1.45, round 10 -> ~0.8, never -> 0.2
 }
