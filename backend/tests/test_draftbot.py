@@ -444,7 +444,9 @@ def test_crowded_deck_type_is_left_to_the_seats_in_it():
     two = [dict(rival, tolarian=1.0), dict(rival, tolarian=0.9)]
     alone_eff, alone_open = deck_outlook(ctx, mine, [dict(rival, tolarian=1.0)])
     crowd_eff, crowd_open = deck_outlook(ctx, mine, two)
-    assert alone_eff["tolarian"] == 0.5 and alone_open["tolarian"] == 0.5
+    assert alone_eff["tolarian"] == 0.5 and alone_open["tolarian"] == 0.25    # one seat, fully in: barely open
+    _, shallow_open = deck_outlook(ctx, mine, [dict(rival, tolarian=0.5)])
+    assert shallow_open["tolarian"] == 0.5                                     # one seat, just in: half open
     assert crowd_eff["tolarian"] < 0.5 and crowd_open["tolarian"] == 0.0      # shallow: pivot
     deep_eff, _ = deck_outlook(ctx, dict(rival, tolarian=1.0), two)
     assert deep_eff["tolarian"] == 1.0                                          # as deep as anyone: fight
@@ -485,3 +487,235 @@ def test_open_picks_lean_but_do_not_commit():
     idx = build_card_index(cube, stats)
     assert deck_strength([idx["vault"]])["tolarian"] == 0.25
     assert deck_strength([idx["mox"]])["tolarian"] == 0.0
+
+
+def test_transforming_sagas_are_not_blink_payoffs():
+    """Fable's chapter III exiles and returns itself transformed: not a blink card (it was losing 70% of its
+    rating for lack of blink creatures). Real blink still is."""
+    cube = [
+        card("fable", "Fable of the Mirror-Breaker // Reflection of Kiki-Jiki", "{2}{R}", 3,
+             "Enchantment — Saga // Enchantment Creature — Goblin Shaman",
+             "I — Create a 2/2 red Goblin Shaman creature token.\nIII — Exile this Saga, then return it to the "
+             "battlefield transformed under your control.", "R", 1660),
+        card("ajani", "Ajani, Nacatl Pariah // Ajani, Nacatl Avenger", "{1}{W}", 2, "Legendary Creature — Cat Warrior",
+             "Whenever one or more other Cats you control die, you may exile Ajani, then return him to the battlefield "
+             "transformed under his owner's control.", "RW", 1680),
+        card("ephem", "Ephemerate", "{W}", 1, "Instant",
+             "Exile target creature you control, then return it to the battlefield under its owner's control.", "W", 1600),
+    ]
+    idx = build_card_index(cube)
+    assert "flicker" not in idx["fable"].roles and "flicker" not in idx["ajani"].roles
+    assert "flicker" in idx["ephem"].roles
+    assert "aggro" in idx["ajani"].key_of
+
+
+def _aggro_cube():
+    return synthetic_cube() + [
+        card("ajani", "Ajani, Nacatl Pariah // Ajani, Nacatl Avenger", "{1}{W}", 2, "Legendary Creature — Cat Warrior",
+             "When Ajani enters, create a 2/1 white Cat Warrior creature token.", "RW", 1700),
+        card("ocelot", "Ocelot Pride", "{W}", 1, "Creature — Cat Cleric", "First strike, lifelink", "W", 1700),
+        card("thalia", "Thalia, Guardian of Thraben", "{1}{W}", 2, "Legendary Creature — Human Soldier",
+             "First strike", "W", 1650),
+        card("mom", "Mother of Runes", "{W}", 1, "Creature — Human Cleric", "", "W", 1640),
+    ]
+
+
+def test_late_entry_into_an_established_aggro_deck_is_not_worth_it():
+    """A seat with no aggro cards shouldn't pick up Ajani just for its rating once another seat is deep in
+    aggro, least of all late in the draft."""
+    cube = _aggro_cube()
+    idx = build_card_index(cube)
+
+    def ajani_deck(mine, rival, slot_pick):
+        ctx = _two_seat_ctx(cube, [], mine, rival, explain=True)
+        ctx.index = idx
+        ctx.picks_per_seat = 20
+        rows = {c: i for _, c, i in score_pool(ctx)}
+        return rows["ajani"].get("deck", 1.0)
+    early_open = ajani_deck(["U0"], [], 1)
+    early_taken = ajani_deck(["U0"], ["ocelot", "thalia", "mom"], 1)
+    late_taken = ajani_deck(["U0", "U1", "U2", "U3", "U4", "U5", "U6", "U7", "U8", "U9"], ["ocelot", "thalia", "mom"], 1)
+    assert early_open > early_taken > late_taken
+    assert late_taken <= 0.56                       # down to the key-card floor
+
+
+def test_committed_bot_values_synergy_over_raw_rating():
+    """Once committed, a card that goes with the deck beats a slightly higher-rated card that doesn't."""
+    cube = synthetic_cube() + [
+        card("syn", "Synergy card", "{1}{U}", 2, "Creature — Test", "", "U", 1560),
+        card("big", "Generic good card", "{1}{U}", 2, "Creature — Test", "", "U", 1760),
+    ]
+    stats = {"partners": {"syn": {"U0": 1.0, "U1": 1.0, "U2": 1.0, "U3": 1.0}}}
+    idx = build_card_index(cube, stats)
+    mine = ["U0", "U1", "U2", "U3", "U4", "U5", "B0", "B1", "B2", "B3"]
+    ctx = _two_seat_ctx(cube, [], mine, [], explain=True)
+    ctx.index = idx
+    ctx.order = [0] + [1] * 79          # our last pick: nothing floats, so this is rating vs synergy alone
+    order = [c for _, c, _ in score_pool(ctx)]
+    assert order.index("syn") < order.index("big")
+
+
+def test_shared_deck_type_puts_its_cards_first():
+    """A bot fighting a rival for a deck type gets a bonus on that deck type's key cards."""
+    cube = _aggro_cube() + [card("adeline", "Adeline, Resplendent Cathar", "{1}{W}{W}", 3, "Legendary Creature",
+                                 "Vigilance", "W", 1650)]
+    idx = build_card_index(cube)
+
+    def plan_part(rival):
+        ctx = _two_seat_ctx(cube, [], ["ocelot", "thalia"], rival, explain=True)
+        ctx.index = idx
+        return {c: i for _, c, i in score_pool(ctx)}["adeline"]["plan"]
+    assert plan_part(["mom", "ajani"]) > plan_part(["U0", "U1"]) + 0.1
+
+
+def test_hate_cards_start_low_and_grow():
+    """Sideboard answers count only a little at the bot's 20th pick and grow later."""
+    from draftbot.engine import TUNING
+    cube = synthetic_cube() + [
+        card("rod", "Null Rod", "{2}", 2, "Artifact", "Activated abilities of artifacts can't be activated.", "", 1500),
+    ] + [card(f"a{i}", f"Rock {i}", "{1}", 1, "Artifact", "{T}: Add {C}.", "", 1400) for i in range(12)]
+    idx = build_card_index(cube)
+    rival = [f"a{i}" for i in range(12)]
+    mine_ids = [c for c in idx if c.startswith("U") or c.startswith("B")]
+
+    def hate(n):
+        ctx = _two_seat_ctx(cube, [], mine_ids[:n], rival, explain=True)
+        ctx.index = idx
+        return {c: i for _, c, i in score_pool(ctx)}["rod"]["hate"]
+    early, later = hate(19), hate(30)
+    assert early < 0.05 and later > 2 * early and later <= TUNING["hate_weight"]
+
+
+def test_late_lands_do_not_outscore_real_cards_once_fixed():
+    """Basics come from outside the draft: with a couple of duals owned, a five-colour land isn't the pick."""
+    cube = synthetic_cube() + [
+        card("gem", "Gemstone Mine", "", 0, "Land", "{T}: Add one mana of any color.", "", 1300),
+    ]
+    idx = build_card_index(cube)
+    mine = [f"U{i}" for i in range(14)] + [f"W{i}" for i in range(14)] + ["land0", "land4"]
+    ctx = _two_seat_ctx(cube, [], mine, [], explain=True)
+    ctx.index = idx
+    rows = {c: i for _, c, i in score_pool(ctx)}
+    assert rows["gem"]["other"] <= 0.15
+
+
+def test_reanimation_needs_something_to_reanimate():
+    cube = synthetic_cube() + [
+        card("rean", "Reanimate", "{B}", 1, "Sorcery",
+             "Put target creature card from a graveyard onto the battlefield under your control.", "B", 1700),
+        card("fat", "Griselbrand", "{4}{B}{B}{B}{B}", 8, "Legendary Creature — Demon", "Flying, lifelink", "B", 1500),
+    ]
+    idx = build_card_index(cube)
+
+    def rating(mine, rival):
+        ctx = _two_seat_ctx(cube, [], mine, rival, explain=True)
+        ctx.index = idx
+        return {c: i for _, c, i in score_pool(ctx)}["rean"]["rating"]
+    base = [f"B{i}" for i in range(7)]
+    with_target = rating(base + ["fat"], [])
+    without = rating(base, ["fat"])          # the only fatty is gone
+    assert without < 0.6 * with_target
+
+
+def test_duals_do_not_win_on_drafted_with_partners():
+    """A dual is drafted with every card of its colours: that says "these colours", not synergy."""
+    cube = synthetic_cube() + [
+        card("dual", "Hallowed Fountain", "", 0, "Land — Plains Island", "({T}: Add {W} or {U}.)", "WU", 1500),
+        card("spell", "Real card", "{1}{U}", 2, "Instant", "Counter target spell.", "U", 1500),
+    ]
+    stats = {"partners": {"dual": {f"U{i}": 1.0 for i in range(6)}, "spell": {f"U{i}": 1.0 for i in range(6)}}}
+    idx = build_card_index(cube, stats)
+    ctx = _two_seat_ctx(cube, [], [f"U{i}" for i in range(6)] + [f"W{i}" for i in range(4)], [], explain=True)
+    ctx.index = idx
+    rows = {c: i for _, c, i in score_pool(ctx)}
+    assert rows["dual"]["partners"] < 0.5 * rows["spell"]["partners"]
+
+
+def test_role_tags_skip_reminder_text_and_known_misfires():
+    cube = [
+        card("hull", "Hullbreacher", "{2}{U}", 3, "Creature — Merfolk Rogue",
+             "Flash\nIf an opponent would draw a card except the first one they draw in each of their draw steps, "
+             "instead you create a Treasure token. (It's an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")", "U"),
+        card("thop", "Thopter Foundry", "{W/B}{U}", 2, "Artifact",
+             "{1}, Sacrifice a nontoken artifact: Create a 1/1 blue Thopter artifact creature token with flying. You gain 1 life.", "WUB"),
+        card("cradle", "Gaea's Cradle", "", 0, "Legendary Land", "{T}: Add {G} for each creature you control.", "G"),
+        card("mono", "Grim Monolith", "{2}", 2, "Artifact",
+             "Grim Monolith doesn't untap during your untap step.\n{T}: Add {C}{C}{C}.\n{4}: Untap Grim Monolith."),
+        card("rit", "Dark Ritual", "{B}", 1, "Instant", "Add {B}{B}{B}.", "B"),
+        card("sword", "Sword of the Meek", "{2}", 2, "Artifact — Equipment",
+             "Whenever a 1/1 creature you control enters, you may return Sword of the Meek from your graveyard to the "
+             "battlefield, then attach it to that creature."),
+        card("snuff", "Snuff Out", "{3}{B}", 4, "Instant", "Destroy target nonblack creature. It can't be regenerated.", "B"),
+        card("kitten", "Displacer Kitten", "{3}{U}", 4, "Creature — Cat Nightmare",
+             "Whenever you cast a noncreature spell, exile up to one target nonland permanent you control, then return "
+             "that card to the battlefield under its owner's control.", "U"),
+        card("stock", "Stock Up", "{2}{U}", 3, "Sorcery",
+             "Look at the top five cards of your library. Put two of them into your hand and the rest on the bottom.", "U"),
+        card("goryo", "Goryo's Vengeance", "{1}{R}", 2, "Instant",
+             "Return target legendary creature card from your graveyard to the battlefield. It gains haste.", "R"),
+    ]
+    idx = build_card_index(cube)
+    assert "mana" not in idx["hull"].roles                     # Treasure reminder text isn't the card's own mana
+    assert "removal" not in idx["thop"].roles                  # a sacrifice cost isn't an edict
+    assert "sweeper" not in idx["cradle"].roles
+    assert "ritual" not in idx["mono"].roles and "ritual" in idx["rit"].roles
+    assert "reanimate" not in idx["sword"].roles and "reanimate" in idx["goryo"].roles
+    assert "removal" in idx["snuff"].roles
+    assert "removal" not in idx["kitten"].roles and "flicker" in idx["kitten"].roles
+    assert "draw" in idx["stock"].roles                        # ROLE_OVERRIDES
+
+
+def test_role_saturation_and_utility_artifacts():
+    from draftbot.engine import saturation_factor
+    sweeper = build_card_index([card("w", "Wrath", "{2}{W}{W}", 4, "Sorcery", "Destroy all creatures.", "W")])["w"]
+    assert saturation_factor(sweeper, {"sweeper": 2}, 0.5) == 1.0       # room for a third
+    assert saturation_factor(sweeper, {"sweeper": 3}, 0.5) == 0.75      # one past the limit
+    assert saturation_factor(sweeper, {"sweeper": 5}, 0.5) == 0.5
+    # Colourless utility artifacts: past two, a deck without an artifact plan wants another one less.
+    cube = synthetic_cube() + [card(f"ut{i}", f"Trinket {i}", "{1}", 1, "Artifact",
+                                    "{1}, {T}: Look at the top card of your library.", "", 1600) for i in range(4)]
+    few = {cid: i["rating"] for s, cid, i in score_pool(_two_seat_ctx(cube, [], ["ut0"], [], explain=True))}
+    glut = {cid: i["rating"] for s, cid, i in score_pool(_two_seat_ctx(cube, [], ["ut0", "ut1"], [], explain=True))}
+    assert glut["ut3"] < few["ut3"] * 0.7, (few["ut3"], glut["ut3"])
+
+
+def test_cheat_spells_and_big_fatties_need_each_other():
+    cube = synthetic_cube() + [
+        card("sneak", "Sneak Attack", "{3}{R}", 4, "Enchantment",
+             "{R}: You may put a creature card from your hand onto the battlefield. It gains haste.", "R", 1700),
+        card("rean", "Reanimate", "{B}", 1, "Sorcery",
+             "Put target creature card from a graveyard onto the battlefield under your control.", "B", 1700),
+        card("fat", "Griselbrand", "{4}{B}{B}{B}{B}", 8, "Legendary Creature — Demon", "Flying, lifelink", "B", 1700),
+        card("fat2", "Big Wurm", "{6}{B}", 7, "Creature — Wurm", "Trample", "B", 1500),
+    ]
+    idx = build_card_index(cube)
+
+    def part(mine, rival, cid):
+        ctx = _two_seat_ctx(cube, [], mine, rival, explain=True)
+        ctx.index = idx
+        return {c: i for _, c, i in score_pool(ctx)}[cid]["rating"]
+    base = [f"B{i}" for i in range(4)] + [f"R{i}" for i in range(3)]
+    # A cheat spell with no fatty to cheat in is worth much less (as reanimation spells already were).
+    assert part(base, ["fat", "fat2"], "sneak") < 0.6 * part(base + ["fat2"], ["fat"], "sneak")
+    # A fatty nobody can cast: worth much less without a reanimation or cheat spell.
+    assert part(base, ["rean", "sneak"], "fat") < 0.6 * part(base + ["rean"], ["sneak"], "fat")
+
+
+def test_bot_lab_rebuilds_a_pick_and_tries_other_weights():
+    from draftbot.lab import clean_tuning, lab_view, pick_slot
+    cube = synthetic_cube()
+    idx = build_card_index(cube)
+    order = [0, 1, 1, 0] * 6
+    ids = sorted(idx, key=lambda c: -idx[c].elo)
+    picks = [{"order": i, "seat_index": s, "card_id": ids[i]} for i, s in enumerate(order[:9])]
+    # Only known weights, clamped to the knob's range; unchanged values dropped.
+    assert clean_tuning({"partner_weight": 9, "nope": 1, "rock_cut": 0.35}) == {"partner_weight": 1.5}
+    assert pick_slot(order, 9, 0, 2, None) == 3           # seat 0's 2nd pick
+    assert pick_slot(order, 9, 1, None, None) == 9        # seat 1's next pick (slot 9 not made yet)
+    v = lab_view(idx, [], order, picks, 12, 3, {"commit_rating_cut": 1.0}, n=5)
+    assert v["seat"] == 0 and v["pick_no"] == 2 and v["took"]["card"] == ids[3]
+    assert ids[3] in {r["card"] for r in v["rows"]} or v["took"]["rank"] > 5
+    assert all(r["base_rank"] for r in v["rows"]) and "rating" in v["rows"][0]["parts"]
+    assert ids[0] not in {r["card"] for r in v["rows"]}   # taken before this pick
+    nxt = lab_view(idx, [], order, picks, 12, 9)
+    assert nxt["next_pick"] and nxt["took"] is None

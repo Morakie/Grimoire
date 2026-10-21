@@ -22,7 +22,9 @@ Built when the draft starts and stored on the draft:
 
 1. **Features per card** (`features.py`): colours needed to cast (hybrid/Phyrexian are optional), colours a land
    or rock produces, types, mana value, and role tags from rules text (removal, counter, ramp, burn, finisher,
-   aggro creature, reanimate, cheat, sac outlet, …).
+   aggro creature, reanimate, cheat, sac outlet, …). Reminder text in parentheses is ignored (Treasure's "add one
+   mana" doesn't make a mana dork), rituals are instants and sorceries only, and `ROLE_OVERRIDES` fixes the odd
+   card the patterns get wrong (add a line when `?explain=1` shows a misfire).
 2. **Power:** CubeCobra Elo normalised to the cube (5th–95th percentile → 0–1, bombs above 1, gently compressed).
    Cards with no Elo get the cube median, except fast mana (0–1 mana non-creature that taps for mana), which is
    rated like the cube's best cards.
@@ -53,7 +55,12 @@ Built when the draft starts and stored on the draft:
    or more cards are ignored. CubeCobra partners add
    value for cards that go with what the bot already owns; role packages add a little more.
 4. **Mana rocks:** once a deck owns three mana artifacts and has no artifact plan, further rocks costing 2 or more
-   lose 35% of their rating.
+   lose 35% of their rating. The same goes for colourless utility artifacts (Top, Baubles, Skullclamp): past two,
+   a deck with no artifact plan values another one 40% less.
+   **Role saturation:** past a deck's fill of one job (5 fatties, 5 reanimation spells, 3 cheat spells, 3 sweepers,
+   3 equipment, 5 tutors, 6 planeswalkers) another card doing it loses 25%, then 50% (`ROLE_SATURATION`).
+   **Enablers and payoffs:** reanimation and cheat spells lose up to 60% with no fatty owned or still likely to come;
+   7+ mana fatties lose up to 60% with no reanimation or cheat spell owned or likely to come.
 5. **Fixing:** on-colour duals/fetches gain value from mid-draft, more if the bot has few.
 6. **Deck style:** once committed, a light nudge towards what that colour pair usually does.
 7. **Win condition:** from about a third of the way in, the bot checks it can win: a live, reasonably popular
@@ -118,3 +125,9 @@ the pick list. `tuning` overrides any `TUNING` value for that run.
 
 To replay a real draft offline, save `GET /api/drafts/{id}/bot-inputs` (cards, CubeCobra stats, combos, order and
 picks) and run the engine on it; `GET /api/drafts/{id}/suggestions?seat=N&explain=1` shows the live score parts.
+
+**Bot Lab** (draft room → "Bot Lab", rotisserie cube tables): `POST /api/drafts/{id}/bot-lab {seat, pick_no | slot, tuning}`
+rebuilds the table just before a pick and returns the engine's top cards with every score part, the card actually
+taken and its rank, and the seat's colours and deck types. `tuning` overrides any weight listed in `draftbot/lab.py`
+`KNOBS` for that view only (each card also gets its rank under the current weights); the live bots never see it.
+The page keeps tried weights in the browser and "Copy" gives them as JSON to bake into `TUNING`.

@@ -34,6 +34,7 @@ from draftbot.cardstats import draft_stats, ensure_stats
 from draftbot.report import build_report
 from draftbot.personas import Persona
 from draftbot.engine import score_pool, suggest_picks
+from draftbot.lab import clean_tuning, knob_list, lab_view, pick_slot
 from draftbot.deckbuild import suggest_deck
 from draftbot.packbot import choose_from_pack, rank_pack
 import packdraft as pd
@@ -2370,6 +2371,36 @@ async def bot_inputs(share_id: str):
         "bot_ignore": d.get("bot_ignore", []),
         "mirror": bool(d.get("mirror")),
     }
+    return fast_json(out)
+
+
+class BotLabInput(BaseModel):
+    seat: Optional[int] = None                  # a seat and its Nth pick (latest if no number)...
+    pick_no: Optional[int] = None
+    slot: Optional[int] = None                  # ...or a pick slot (0-based; up to the next pick to be made)
+    tuning: Dict[str, float] = Field(default_factory=dict)   # weights to try (only for this view)
+    n: int = 15
+
+
+@api_router.post("/drafts/{share_id}/bot-lab")
+async def bot_lab(share_id: str, body: BotLabInput):
+    """Bot Lab: the engine's scores (with their parts) for one pick of a rotisserie cube table, with the
+    current weights and, if `tuning` is given, with those weights too. Nothing is saved and the live bots
+    are unaffected. Picks are public in a rotisserie draft, so anyone at the table may look."""
+    d = await _draft(share_id)
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("mode") == "packs" or d.get("pool") == "vintage":
+        raise HTTPException(status_code=400, detail="The Bot Lab is for rotisserie cube drafts")
+    if not d.get("order") or d.get("status") not in ("drafting", "complete"):
+        raise HTTPException(status_code=400, detail="The draft hasn't started yet")
+    cards = await _cards(share_id)
+    slot = pick_slot(d["order"], len(d.get("picks", [])), body.seat, body.pick_no, body.slot)
+    out = await run_in_threadpool(
+        lab_view, cards["index"], cards["combos"], d["order"], d.get("picks", []), d["pick_cap"], slot,
+        clean_tuning(body.tuning), _people_seats(d), d.get("bot_ignore", []), bool(d.get("mirror")),
+        max(5, min(body.n, 40)))
+    out["knobs"] = knob_list()
     return fast_json(out)
 
 

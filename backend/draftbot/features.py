@@ -55,13 +55,17 @@ ROLE_PATTERNS = {
     "hate_counters": r"spells you control can't be countered|except during its controller's turn|counter target spell if it's blue|destroy target permanent if it's blue",
     "hate_creatures": r"creatures with power greater than the number|creatures without flying can't attack|can't attack you unless",
     "hate_spells": r"can't cast more than one spell|whenever a player casts their second spell|spells your opponents cast cost \{",
-    "removal": r"(destroy|exile) target (creature|nonland|permanent|artifact|planeswalker|tapped)|deals? (\d+|x) damage to (any target|target creature)|target creature gets -\d|sacrifices? (a|an) (creature|nontoken)|exile up to one (other )?target",
+    # "exile up to one target" but not graveyard cards or our own permanents (Displacer Kitten blinks its own);
+    # edicts only when an opponent sacrifices (a "Sacrifice a creature:" cost isn't removal).
+    "removal": r"(destroy|exile) target (non\w+ )?(creature|nonland|permanent|artifact|planeswalker|tapped)|deals? (\d+|x) damage to (any target|target creature)|target creature gets -\d|(opponent|player)s? sacrifices? (a|an) (creature|nontoken)|exile up to one (other )?target (?!card)(?![^.]*you (control|own))|among any number of target creatures|deals that much damage to that (creature|permanent)",
     "counter": r"counter target",
-    "sweeper": r"(destroy|exile) all (creatures|nonland)|each creature|all creatures get -",
+    # Not "put a +1/+1 counter on each creature" (Ouroboroid) or "for each creature you control" (Gaea's Cradle).
+    "sweeper": r"(destroy|exile) all (creatures|nonland)|(destroy|exile|damage to) each (other )?(creature|nonland)|all creatures get -|each creature[^.]{0,30} gets? -",
     "draw": r"draws? (a|two|three|four|seven|x|that many) cards?|investigate",
     "tutor": r"search your library for (a|an|up to one) (?!basic|land|plains|island|swamp|mountain|forest)",
     "ritual": r"add \{[wubrgc]\}\{[wubrgc]\}\{[wubrgc]\}",
-    "reanimate": r"(return|put) (target |a |up to one )?(creature card|the top creature card|target card).{0,40}graveyard (to|onto) the battlefield|enchant creature card in a graveyard|from your graveyard to the battlefield",
+    # Creature cards only: Sword of the Meek, Titania (lands) and Otharri return themselves or lands, not fatties.
+    "reanimate": r"(return|put) (target |a |up to one )?(creature card|the top creature card|target card).{0,40}graveyard (to|onto) the battlefield|enchant creature card in a graveyard|creature cards?[^.]{0,40}from (your|a|their) graveyards? (to|onto) the battlefield",
     "cheat": r"put (a|an|that) (creature|artifact|permanent)? ?card from your hand onto the battlefield|creature card from your hand onto the battlefield",
     "artifact_cheat": r"search your library for an artifact card, put (it|that card) onto the battlefield",
     "self_mill": r"put that card into your graveyard|mills? (two|three|four|\d+|x) cards|surveil",
@@ -70,12 +74,14 @@ ROLE_PATTERNS = {
     "death_payoff": r"whenever (a|another|one or more)[^.]* (creature|creatures)[^.]* (dies|die|is put into a graveyard)",
     "spells_payoff": r"whenever you cast (an|a) (instant|noncreature|instant or sorcery)|magecraft|prowess|storm",
     "artifact_payoff": r"for each artifact you control|whenever you cast an artifact|tap an untapped artifact|artifacts? you control",
-    "token_maker": r"create (a|an|two|three|x|that many)[^.]*token",
+    "token_maker": r"create (a|an|two|three|x|that many)[^.]*token|\b(investigate|mobilize|offspring|squad|amass|incubate)\b|for mirrodin!",
     "anthem": r"creatures you control get \+",
     "graveyard_cast": r"from your graveyard|flashback|escape|you may cast[^.]*graveyard",
     # Vintage-cube packages (enablers and payoffs, see combos.PACKAGES)
     "storm_payoff": r"(^|\n)storm\b|\bstorm \(",
-    "flicker": r"exile (up to one )?(another |other )?target[^.]*(creature|permanent)s? you (control|own)[^.]*return|exile (it|them), then return|then return (it|that card|those cards) to the battlefield",
+    # Blinking OTHER creatures. Not cards that exile and return themselves transformed (Fable's chapter III,
+    # Ajani): those aren't blink payoffs and were losing most of their rating for lack of "etb" creatures.
+    "flicker": r"exile (up to one )?(another |other )?target[^.]*(creature|permanent)s? you (control|own)[^.]*return|exile (it|them), then return(?! (it|him|her|them) to the battlefield transformed)|then return (it|that card|those cards) to the battlefield(?! transformed)",
     "equip_fetch": r"search your library for an equipment|equipment card from your hand onto the battlefield",
     "land_recursion": r"play lands? from your graveyard|land cards? from your graveyard",
     "landfall": r"landfall|whenever a land (you control )?enters|whenever one or more lands (you control )?enter",
@@ -132,7 +138,26 @@ _AGGRO_KEYWORDS = re.compile(r"\b(haste|first strike|double strike|prowess|menac
 _BURN = re.compile(r"deals? (\d+|x) damage to (any target|target (player|opponent|creature or player|player or planeswalker))|each opponent loses")
 
 
+# Hand-checked fixes for cards the patterns above get wrong: front-face name -> (roles to add, roles to drop).
+# Cheaper and safer than bending a pattern for one card; add a line whenever `?explain=1` shows a misfire.
+ROLE_OVERRIDES: Dict[str, tuple] = {
+    "stock up": ({"draw"}, set()),                       # "put two of them into your hand"
+    "oust": ({"removal"}, set()),                        # puts the creature into its owner's library
+    "fable of the mirror-breaker": (set(), {"flicker"}), # chapter III transforms itself, not a blink payoff
+    "displacer kitten": (set(), {"removal"}),            # blinks our own permanents
+    "strip mine": (set(), {"land_sac"}),                 # land destruction, not a lands-deck sac outlet
+    "wasteland": (set(), {"land_sac"}),
+    "balance": ({"sweeper"}, set()),
+    "gaea's cradle": (set(), {"sweeper"}),
+}
+
+# Reminder text "(...)" explains a keyword; it isn't what the card does. Treasure's "(... Add one mana of any
+# color.)" made Hullbreacher a mana dork and cycling's "(... Draw a card.)" made every triome card draw.
+_REMINDER = re.compile(r"\([^)]*\)")
+
+
 def _roles(card: dict, types: FrozenSet[str], text: str) -> FrozenSet[str]:
+    text = _REMINDER.sub("", text)
     roles = {name for name, rx in _ROLE_RE.items() if rx.search(text)}
     cmc = card.get("cmc") or 0
     if "artifact" in types:
@@ -167,7 +192,10 @@ def _roles(card: dict, types: FrozenSet[str], text: str) -> FrozenSet[str]:
             roles.add("ramp")
     if "creature" in types and (card.get("cmc") or 0) <= 2:
         roles.add("cheap_threat")
-    return frozenset(roles)
+    if "ritual" in roles and not ({"instant", "sorcery"} & types):
+        roles.discard("ritual")               # Grim Monolith, Workshop, Ugin: mana, but not storm rituals
+    add, drop = ROLE_OVERRIDES.get(front_name(card.get("name") or "").lower(), (set(), set()))
+    return frozenset((roles | add) - drop)
 
 
 def _estimate_elo(card: dict, types: FrozenSet[str], text: str, elos: List[float], mid: float) -> float:
