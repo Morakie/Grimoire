@@ -615,3 +615,17 @@ def test_reanimation_needs_something_to_reanimate():
     with_target = rating(base + ["fat"], [])
     without = rating(base, ["fat"])          # the only fatty is gone
     assert without < 0.6 * with_target
+
+
+def test_duals_do_not_win_on_drafted_with_partners():
+    """A dual is drafted with every card of its colours: that says "these colours", not synergy."""
+    cube = synthetic_cube() + [
+        card("dual", "Hallowed Fountain", "", 0, "Land — Plains Island", "({T}: Add {W} or {U}.)", "WU", 1500),
+        card("spell", "Real card", "{1}{U}", 2, "Instant", "Counter target spell.", "U", 1500),
+    ]
+    stats = {"partners": {"dual": {f"U{i}": 1.0 for i in range(6)}, "spell": {f"U{i}": 1.0 for i in range(6)}}}
+    idx = build_card_index(cube, stats)
+    ctx = _two_seat_ctx(cube, [], [f"U{i}" for i in range(6)] + [f"W{i}" for i in range(4)], [], explain=True)
+    ctx.index = idx
+    rows = {c: i for _, c, i in score_pool(ctx)}
+    assert rows["dual"]["partners"] < 0.5 * rows["spell"]["partners"]

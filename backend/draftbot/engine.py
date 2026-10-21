@@ -61,6 +61,8 @@ TUNING: Dict[str, float] = {
     # synergy over rating: once a bot is committed (colours or deck type), what fits its deck counts for more
     # than raw Elo, so a high-rated card that only goes in other decks doesn't win on rating alone
     "commit_rating_cut": 0.25,  # share of the rating weight dropped when fully committed
+    "fixing_partner_share": 0.3,  # duals and Talismans are drafted with every card of their colours: their
+                                  # partners say "these colours" (colour fit covers that), not synergy
     "drafted_with_share": 0.5,  # "often drafted with" partners count this share (it's partly just popularity)
     # deck types (decktypes.py): narrow cards wait until the bot is in a deck that uses them
     "narrow_floor": 0.4,        # share of a narrow card's rating it keeps for a bot not (yet) in its deck type
@@ -888,6 +890,8 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
                 (s * (1.0 if dt in card.key_of else min(1.0, card.deck.get(dt, 0.0) / 0.5))
                  for dt, s in shared.items()), default=0.0)
         t_partner = k("partner_weight") * p.w("combo") * partner_value(card, partners_from, fit_of, k("drafted_with_share"))
+        if card.is_fixing:
+            t_partner *= k("fixing_partner_share")
         t_needs = w_needs * needs_value(card, mine, p, counts)
         t_hate = k("hate_weight") * hate_ramp * hate_value(card, table, own_decks, owned_hate) if hate_ramp else 0.0
         t_other = 0.0
