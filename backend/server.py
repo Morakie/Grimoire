@@ -498,7 +498,9 @@ async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
 
     Resolved names are remembered in Mongo (`card_names`, a month), so a cube the server has seen
     before loads without asking Scryfall again; only new names are looked up."""
-    names = [" ".join(n.split())[:150] for n in names if n and n.strip()][:800]
+    names = [" ".join(n.split())[:150] for n in names if n and n.strip()]
+    over = names[800:]              # one request resolves up to 800 names; the page sends bigger lists in parts
+    names = names[:800]
     keys = list(dict.fromkeys(_name_key(n) for n in names))
     cutoff = (datetime.now(timezone.utc) - timedelta(days=_NAME_CACHE_DAYS)).isoformat()
     known: Dict[str, dict] = {k: _NAME_MEM[k] for k in keys if k in _NAME_MEM}
@@ -552,7 +554,7 @@ async def _collection_by_names(names: List[str]) -> Dict[str, Any]:
             seen.add(c["id"])
             out.append(c)
     out += [c for c in extra if c["id"] not in seen]
-    return {"cards": out, "not_found": missed, "cache": {"hits": len(known), "looked_up": len(todo), "saved": saved}}
+    return {"cards": out, "not_found": missed + over, "cache": {"hits": len(known), "looked_up": len(todo), "saved": saved}}
 
 
 async def _remember_names(fresh: Dict[str, dict]) -> int:

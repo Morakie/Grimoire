@@ -98,9 +98,15 @@ export async function resolveCube({ cubeCobra = "", text = "", keep = [], onStep
   if (lookup.length) {
     onStep?.("Loading cube… This may take a moment");
     try {
-      const { data } = await withRetry(() => api.post("/cards/collection", { names: lookup }));
-      found = data.cards || [];
-      notFound = data.not_found || [];
+      // The server resolves up to 800 names per request: send big (combined) cubes in parts.
+      for (let i = 0; i < lookup.length; i += 600) {
+        const part = lookup.slice(i, i + 600);
+        const { data } = await withRetry(() => api.post("/cards/collection", { names: part }));
+        found = found.concat(data.cards || []);
+        notFound = notFound.concat(data.not_found || []);
+      }
+      const ids = new Set();
+      found = found.filter((c) => !ids.has(c.id) && ids.add(c.id));
     } catch (e) { throw new Error(stepError("Couldn't look up the cards", e)); }
   }
   return { cards: [...reuse, ...found], notFound, total: uniq.length, cubecobraId: cubeCobra.trim() ? cubeCobraId(cubeCobra) : null };
