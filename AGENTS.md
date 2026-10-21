@@ -28,6 +28,7 @@ something they describe.
 | `frontend/src/components/CommanderCheck.jsx` | Commander legality + bracket panel and toolbar badge |
 | `backend/commander.py` | Commander legality rules and bracket estimate (`POST /api/commander/check`) |
 | `frontend/src/components/MyCubes.jsx`, `src/lib/cube.js` | Saved cubes (dashboard Cubes tab), cube list parsing and resolving (`/api/cubes`) |
+| `backend/draftbot/engine.py`, `engine2.py`, `knowledge.py` | Pick engines (engine 1 live, engine 2 in testing) and the drafting knowledge engine 2 reads. Principles: `docs/project-notes/bot-principles.md`, tested in `backend/tests/test_principles.py` |
 | `backend/packdraft.py`, `backend/draftbot/packbot.py`, `frontend/src/components/PackDraftView.jsx` | Pack drafts: dealing/passing/timer logic, pack bots, picking UI |
 | `backend/vrd.py` | VRD (every Vintage-legal card): legality rules and the bots' top-rated card pool (`vrd_pool` collection) |
 

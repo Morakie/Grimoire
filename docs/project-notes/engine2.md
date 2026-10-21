@@ -67,3 +67,28 @@ Same seeds in Bot Brain, engine 1 vs engine 2, on the group cube + PowerLSV pool
 - deck strength (top-23 Elo);
 - agreement with people on replayed real drafts (bot-inputs exports, the VRD sheets as mirror replays);
 - every test in `test_principles.py` passing.
+
+## Status (2026-10-21)
+
+- On `dev`: `engine2.py`, `knowledge.py`, `engines.py`, `compare.py`; Bot Brain has a "Bot logic" switch (Current
+  bots / Engine 2). Live tables, pick suggestions and the bot report still use engine 1.
+- `backend/tests/test_principles.py`: 18 tests (P1-P16), all passing on engine 2.
+- First comparison, group cube + PowerLSV (903 cards, 181 combos), 8 bots x 45 picks, personalities on, seeds 11-14:
+
+| | Engine 1 | Engine 2 |
+|---|---|---|
+| Seats over lane capacity per table (lane = deck type with most key cards) | 1.0 | 0.25 |
+| Distinct lanes per table | 5.25 | 6.0 |
+| Deck strength (top-23 Elo) | 1611 | 1614 |
+| On-colour spells | 95% | 98% |
+| Seconds per draft (browser) | 8.7 | 7.1 |
+
+  Average pick, engine 1 -> engine 2: Ragavan 38 -> 16, Spell Pierce 148 -> 62, Underworld Breach 107 -> 52,
+  Flash 126 -> 48, Tinker 111 -> 24, Remand 57 -> 121 (worse in roto), Polluted Delta 223 -> 157, Underground Sea
+  282 -> 185, Balance 292 -> 160, Demonic Tutor 21 -> 34, Tolarian Academy 48 -> 58.
+- Fixed on the way: big fatties count as narrow (Griselbrand went ~26th); top-rated coloured key cards (Ragavan)
+  aren't discounted as key cards; a one-colour pool keeps its second colour open (engine 1 commits to the first
+  pair it tries).
+- Known gaps: the Lab's weight sliders tune engine 1 (engine 2's weights are in `TUNING2`); Demonic Tutor and
+  Academy go later than people take them in bot-only drafts; combo lines from Commander Spellbook can still pull
+  in weak pieces (Enter the Infinite with Oracle); Worldspine Wurm sometimes goes undrafted.

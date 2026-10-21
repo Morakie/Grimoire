@@ -411,7 +411,7 @@ function draftExport({ src, sim, base, byId, changed, engineVersion }) {
     exported_at: new Date().toISOString(),
     pool: { label: src.label, key: src.source, cards: src.summary.cards, combos: src.summary.combos, built_at: src.built_at, partial: !!src.partial },
     engine: engineVersion || null,
-    settings: { seats: seats.length, picks_each: sim.per_seat, seed: base?.seed ?? null, personalities: !!base?.cfg?.personas,
+    settings: { seats: seats.length, picks_each: sim.per_seat, seed: base?.seed ?? null, personalities: !!base?.cfg?.personas, pick_engine: base?.cfg?.engine || "engine1",
       weights: sim.tuning || {}, weights_from_pick: (sim.from || 0) + 1, weights_for_seats: sim.tuned_seats ? sim.tuned_seats.map((x) => x + 1) : "all" },
     seats: seats.map((i) => ({
       bot: i + 1, persona: persona(i),
@@ -426,7 +426,7 @@ function draftExport({ src, sim, base, byId, changed, engineVersion }) {
 }
 
 function exportText(x) {
-  const lines = [`Bot Brain draft (bots ${x.engine ? x.engine.slice(0, 7) : "server"}): ${x.pool.label} (${x.pool.cards} cards, ${x.pool.combos} combos${x.pool.partial ? ", partial" : ""}), seed ${x.settings.seed}, ${x.settings.seats} bots x ${x.settings.picks_each}, personalities ${x.settings.personalities ? "on" : "off"}`];
+  const lines = [`Bot Brain draft (bots ${x.engine ? x.engine.slice(0, 7) : "server"}): ${x.pool.label} (${x.pool.cards} cards, ${x.pool.combos} combos${x.pool.partial ? ", partial" : ""}), seed ${x.settings.seed}, ${x.settings.seats} bots x ${x.settings.picks_each}, personalities ${x.settings.personalities ? "on" : "off"}, logic ${x.settings.pick_engine === "engine2" ? "engine 2" : "current"}`];
   const w = Object.entries(x.settings.weights);
   lines.push(w.length ? `Weights changed: ${w.map(([k, v]) => `${k}=${v}`).join(", ")} (from pick ${x.settings.weights_from_pick}, seats: ${x.settings.weights_for_seats})` : "Weights: current defaults");
   x.seats.forEach((s) => {
@@ -444,7 +444,10 @@ function exportText(x) {
 
 // ---------------------------------------------------------------- page
 
-const sameCfg = (a, b) => a && b && a.seats === b.seats && a.picks === b.picks && a.seed === b.seed && a.pool === b.pool && !!a.personas === !!b.personas;
+const sameCfg = (a, b) => a && b && a.seats === b.seats && a.picks === b.picks && a.seed === b.seed && a.pool === b.pool && !!a.personas === !!b.personas
+  && (a.engine || "engine1") === (b.engine || "engine1");
+// The pick engines Bot Brain can run: the live bots and the one being tested (docs/project-notes/engine2.md).
+const ENGINES = [["engine1", "Current bots"], ["engine2", "Engine 2 (testing)"]];
 
 export default function BotBrain() {
   const saved = load(STORE, {});
@@ -463,7 +466,7 @@ export default function BotBrain() {
   // Drafts: `base` is the draft with the current (default) weights; `sim` is what the board shows: the base
   // draft, or the same draft with the Lab's weights from table pick `from` on. Same seed, so every difference
   // between the two comes from the weights.
-  const [simCfg, setSimCfg] = useState({ seats: 8, picks: 45, seed: Math.floor(Math.random() * 10000), personas: saved.personas ?? true });
+  const [simCfg, setSimCfg] = useState({ seats: 8, picks: 45, seed: Math.floor(Math.random() * 10000), personas: saved.personas ?? true, engine: saved.engine || "engine1" });
   const [base, setBase] = useState(null);
   const [sim, setSim] = useState(null);
   const [running, setRunning] = useState("");
@@ -485,9 +488,11 @@ export default function BotBrain() {
   const runId = useRef(0);
   const simRef = useRef(null);
   simRef.current = sim;
+  const baseRef = useRef(null);
+  baseRef.current = base;
   const local = !!src?.local;
 
-  useEffect(() => { save(STORE, { ...load(STORE, {}), tab, live, personas: simCfg.personas }); }, [tab, live, simCfg.personas]);
+  useEffect(() => { save(STORE, { ...load(STORE, {}), tab, live, personas: simCfg.personas, engine: simCfg.engine }); }, [tab, live, simCfg.personas, simCfg.engine]);
 
   // The in-browser engine: started once per visit. If it can't start, the server runs the bots.
   useEffect(() => {
@@ -640,7 +645,7 @@ export default function BotBrain() {
     if (!src) return;
     const id = ++runId.current;
     lastKey.current = tuningKeyRef.current;     // a live re-draft still waiting would only repeat this one
-    const cfg = { ...(cfgIn || (base ? { seats: base.seats_n, picks: base.picks_n, seed: base.seed, personas: base.cfg.personas } : simCfg)), pool: src.source };
+    const cfg = { ...(cfgIn || (base ? { seats: base.seats_n, picks: base.picks_n, seed: base.seed, personas: base.cfg.personas, engine: base.cfg.engine } : simCfg)), pool: src.source };
     setError("");
     const started = performance.now();
     try {
@@ -648,7 +653,7 @@ export default function BotBrain() {
       if (!sameCfg(b?.cfg, cfg)) {
         setRunning("Drafting with the current weights…");
         setSim(null);
-        const r = await draft({ seats: cfg.seats, picks: cfg.picks, seed: cfg.seed, personas: !!cfg.personas }, id, (run) => setSim({ ...run, tuning: {}, from: 0 }));
+        const r = await draft({ seats: cfg.seats, picks: cfg.picks, seed: cfg.seed, personas: !!cfg.personas, engine: cfg.engine || "engine1" }, id, (run) => setSim({ ...run, tuning: {}, from: 0 }));
         if (id !== runId.current || !r) return;
         b = { ...r, cfg, seed: cfg.seed, seats_n: cfg.seats, picks_n: cfg.picks, seconds: (performance.now() - started) / 1000 };
         setBase(b);
@@ -662,7 +667,7 @@ export default function BotBrain() {
       const at = Math.min(from, b.picks.length);
       setRunning(`Re-drafting from pick ${at + 1} with your weights…`);
       const t0 = performance.now();
-      const body = { seats: cfg.seats, picks: cfg.picks, seed: cfg.seed, personas: !!cfg.personas, tuning: labTuning, tuned_seats: tunedSeats ? [...tunedSeats] : null, start: b.picks.slice(0, at) };
+      const body = { seats: cfg.seats, picks: cfg.picks, seed: cfg.seed, personas: !!cfg.personas, engine: cfg.engine || "engine1", tuning: labTuning, tuned_seats: tunedSeats ? [...tunedSeats] : null, start: b.picks.slice(0, at) };
       const r = await draft(body, id, (run) => setSim({ ...run, tuning: labTuning, tuned_seats: body.tuned_seats, from: at }));
       if (id !== runId.current || !r) return;
       setSim({ ...r, tuning: labTuning, tuned_seats: body.tuned_seats, from: at, seconds: (performance.now() - t0) / 1000 });
@@ -685,7 +690,7 @@ export default function BotBrain() {
 
   const labFetch = useCallback((body) => {
     const s = simRef.current;
-    return ask("view", { order: s.order, picks: s.picks, ...body }).then((data) => ({ data }));
+    return ask("view", { order: s.order, picks: s.picks, engine: baseRef.current?.cfg?.engine || "engine1", ...body }).then((data) => ({ data }));
   }, [ask]);
   const simSeats = useMemo(() => Array.from({ length: simCfg.seats }, (_, i) => ({ index: i, player_name: `Bot ${i + 1}` })), [simCfg.seats]);
   const simSeatsUsed = useMemo(() => (sim ? Array.from(new Set(sim.order)).sort((a, b) => a - b).map((i) => ({ index: i, player_name: `Bot ${i + 1}` })) : simSeats), [sim?.order, simSeats]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -860,6 +865,11 @@ export default function BotBrain() {
                   <label className="text-sm flex items-center gap-2 pb-2 cursor-pointer" title="Each bot gets a random style and a different deck type to lean towards early, as at a real table. Off: every bot drafts the same way.">
                     <input type="checkbox" checked={!!simCfg.personas} onChange={(e) => setSimCfg((c) => ({ ...c, personas: e.target.checked }))} className="accent-amber-400" data-testid="brain-personas" />
                     Bot personalities</label>
+                  <label className="text-sm" title="Which pick logic the bots use. Engine 2 is being tested here before it goes to real tables.">
+                    <span className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Bot logic</span>
+                    <select value={simCfg.engine || "engine1"} onChange={(e) => setSimCfg((c) => ({ ...c, engine: e.target.value }))} className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5" data-testid="brain-engine">
+                      {ENGINES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+                    </select></label>
                   <button type="submit" className="px-4 py-2 rounded-lg bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold text-sm flex items-center gap-2" data-testid="brain-run">
                     <Play className="w-4 h-4" /> {base ? "New draft" : "Run draft"}</button>
                   {running && <button type="button" onClick={stop} className="px-3 py-2 rounded-lg border border-slate-700 text-sm text-slate-200 hover:text-rose-300 flex items-center gap-1.5" data-testid="brain-stop"><Square className="w-3.5 h-3.5" /> Stop</button>}

@@ -2452,6 +2452,7 @@ class LabSimInput(BaseModel):
     tuned_seats: Optional[List[int]] = Field(None, max_length=12)      # weights only for these seats
     stop: Optional[int] = Field(None, ge=0, le=800)                    # end at this table pick
     personas: bool = False                                             # bot personalities as at a real table
+    engine: str = ""                                                   # "engine2" to try the new pick engine
 
 
 class LabViewInput(BaseModel):
@@ -2463,6 +2464,7 @@ class LabViewInput(BaseModel):
     slot: Optional[int] = None
     tuning: Dict[str, float] = Field(default_factory=dict)
     n: int = 15
+    engine: str = ""
 
 
 def _lab_source(key: str) -> dict:
@@ -2669,7 +2671,7 @@ async def lab_simulate(body: LabSimInput):
     attach_combos(src["index"], src["combos"])
     started = time.time()
     out = await run_in_threadpool(simulate, src["index"], src["combos"], body.seats, body.picks, body.seed,
-                                  clean_tuning(body.tuning), body.start, body.tuned_seats, body.stop, body.personas)
+                                  clean_tuning(body.tuning), body.start, body.tuned_seats, body.stop, body.personas, body.engine)
     out["seconds"] = round(time.time() - started, 2)
     return fast_json(out)
 
@@ -2686,7 +2688,7 @@ async def lab_view_any(body: LabViewInput):
     slot = pick_slot(body.order, len(picks), seat, body.pick_no, body.slot)
     attach_combos(src["index"], src["combos"])
     out = await run_in_threadpool(lab_view, src["index"], src["combos"], body.order, picks, per_seat, slot,
-                                  clean_tuning(body.tuning), frozenset(), (), True, max(5, min(body.n, 40)))
+                                  clean_tuning(body.tuning), frozenset(), (), True, max(5, min(body.n, 40)), body.engine)
     out["knobs"] = knob_list()
     return fast_json(out)
 
