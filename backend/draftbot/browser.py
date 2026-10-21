@@ -47,9 +47,9 @@ class Session:
         cfg = json.loads(raw)
         self.run = DraftRun(self.index, self.combos, int(cfg.get("seats", 8)), int(cfg.get("picks", 45)),
                             int(cfg.get("seed", 0)), clean_tuning(cfg.get("tuning")) or None, cfg.get("start") or [],
-                            cfg.get("tuned_seats"), cfg.get("stop"), bool(cfg.get("personas")))
+                            cfg.get("tuned_seats"), cfg.get("stop"), bool(cfg.get("personas")), str(cfg.get("engine") or ""))
         return json.dumps({"order": self.run.order, "per_seat": self.run.per, "kept": self.run.kept,
-                           "picks": self.run.picks, "end": self.run.end,
+                           "picks": self.run.picks, "end": self.run.end, "engine": self.run.engine,
                            "personas": [{"archetype": p.archetype, "lean": p.lean} for p in self.run.personas]})
 
     def run_step(self, n: int) -> str:
@@ -70,7 +70,7 @@ class Session:
         seat = None if body.get("slot") is not None else body.get("seat")
         slot = pick_slot(order, len(picks), seat, body.get("pick_no"), body.get("slot"))
         out = lab_view(self.index, self.combos, order, picks, per_seat, slot, clean_tuning(body.get("tuning")),
-                       frozenset(), (), True, max(5, min(int(body.get("n", 15)), 40)))
+                       frozenset(), (), True, max(5, min(int(body.get("n", 15)), 40)), str(body.get("engine") or ""))
         out["knobs"] = knob_list()
         return json.dumps(out)
 

@@ -10,7 +10,8 @@ from typing import Dict, Iterable, List, Optional, Sequence
 
 from .combos import Combo
 from .decktypes import deck_strength
-from .engine import TUNING, BotContext, coloured_spells, colour_state, commit_progress, score_pool
+from . import engines
+from .engine import TUNING, BotContext, coloured_spells, colour_state, commit_progress
 from .features import CardInfo
 from .personas import Persona
 
@@ -90,7 +91,7 @@ def pick_slot(order: Sequence[int], made: int, seat: Optional[int], pick_no: Opt
 def lab_view(index: Dict[str, CardInfo], combos: List[Combo], order: Sequence[int], picks: Sequence[dict],
              picks_per_seat: int, slot: int, tuning: Optional[Dict[str, float]] = None,
              people: Optional[Iterable[int]] = None, skip_names: Iterable[str] = (), singleton_names: bool = False,
-             n: int = 15) -> dict:
+             n: int = 15, engine: str = "") -> dict:
     """The engine's view of pick `slot` (0-based, up to the next pick still to be made)."""
     slot = max(0, min(int(slot), len(order) - 1, len(picks)))
     seat = order[slot]
@@ -115,7 +116,7 @@ def lab_view(index: Dict[str, CardInfo], combos: List[Combo], order: Sequence[in
     def run(t):
         ctx = BotContext(index, combos, remaining, by_seat, seat, order, slot, picks_per_seat, Persona("steady"),
                          t or None, explain=True, people=people)
-        return ctx, score_pool(ctx)
+        return ctx, engines.get(engine).score_pool(ctx)
 
     ctx, base = run(None)
     tuned = run(tuning)[1] if tuning else base
@@ -145,7 +146,7 @@ def lab_view(index: Dict[str, CardInfo], combos: List[Combo], order: Sequence[in
             "coloured_spells": coloured_spells(mine), "commit": round(commit_progress(ctx, mine), 2),
             "decks": {t: round(v, 2) for t, v in sorted(decks.items(), key=lambda kv: -kv[1]) if v > 0.05},
         },
-        "tuning": tuning or {},
+        "tuning": tuning or {}, "engine": engine or engines.DEFAULT,
     }
 
 
@@ -239,8 +240,10 @@ class DraftRun:
 
     def __init__(self, index: Dict[str, CardInfo], combos: List[Combo], seats: int, per_seat: int, seed: int = 0,
                  tuning: Optional[Dict[str, float]] = None, start: Sequence[dict] = (),
-                 tuned_seats: Optional[Iterable[int]] = None, stop: Optional[int] = None, personas: bool = False):
+                 tuned_seats: Optional[Iterable[int]] = None, stop: Optional[int] = None, personas: bool = False,
+                 engine: str = ""):
         self.index, self.combos, self.seed, self.tuning = index, combos, seed, tuning
+        self.engine = engine if engine in engines.NAMES else engines.DEFAULT
         # Personalities as at a real table (from the seed, so a re-draft gets the same ones): a random archetype
         # each and a different deck type to lean towards. Without them every bot drafts as "steady".
         if personas:
@@ -282,7 +285,7 @@ class DraftRun:
 
     def step(self, n: int = 1) -> List[dict]:
         """Make up to n more picks; returns them."""
-        from .engine import choose_pick
+        choose_pick = engines.get(self.engine).choose_pick
         made = []
         while n > 0 and not self.done:
             slot = len(self.picks)
@@ -300,19 +303,21 @@ class DraftRun:
         for s in seats:
             p = self.personas[s["seat"]]
             s["persona"] = {"archetype": p.archetype, "lean": p.lean}
-        return {"order": self.order, "picks": self.picks, "per_seat": self.per, "kept": self.kept, "seats": seats}
+        return {"order": self.order, "picks": self.picks, "per_seat": self.per, "kept": self.kept, "seats": seats,
+                "engine": self.engine}
 
 
 def simulate(index: Dict[str, CardInfo], combos: List[Combo], seats: int, per_seat: int, seed: int = 0,
              tuning: Optional[Dict[str, float]] = None, start: Sequence[dict] = (),
-             tuned_seats: Optional[Iterable[int]] = None, stop: Optional[int] = None, personas: bool = False) -> dict:
+             tuned_seats: Optional[Iterable[int]] = None, stop: Optional[int] = None, personas: bool = False,
+             engine: str = "") -> dict:
     """An all-bot rotisserie draft (snake order) with the given weights. Returns the order and picks in
     the same shape as a real draft, so lab_view can look at any of its picks.
 
     `start` keeps the first picks of an earlier run (a rewind): the bots re-draft only from there on.
     `tuned_seats` limits the weights to some seats (the others use the current ones), to compare the two
     side by side in one draft. `stop` ends the draft at that table pick."""
-    run = DraftRun(index, combos, seats, per_seat, seed, tuning, start, tuned_seats, stop, personas)
+    run = DraftRun(index, combos, seats, per_seat, seed, tuning, start, tuned_seats, stop, personas, engine)
     run.step(len(run.order))
     return run.result()
 
