@@ -902,3 +902,21 @@ def test_bots_get_different_leans_that_fade_when_a_lane_is_taken():
         return {c: i for _, c, i in score_pool(ctx)}["thalia"]["plan"]
     assert plan_part(["U1"], "white_aggro") > plan_part(["U1"], "") + 0.05
     assert plan_part(["ocelot", "mom", "ajani"], "white_aggro") < plan_part(["U1"], "white_aggro")
+
+
+def test_colourless_bombs_and_hybrid_cards_are_not_narrow():
+    """The One Ring (top-3% colourless) goes in any deck even though artifact drafters take it most; a
+    hybrid-only card (Lutri) needs one of its colours instead of looking colourless."""
+    from draftbot.decktypes import is_narrow, is_universal
+    from draftbot.engine import _is_utility_artifact
+    cube = synthetic_cube() + [
+        card("ring", "The One Ring", "{4}", 4, "Legendary Artifact", "Indestructible. Draw a card.", "", 2016),
+        card("bauble", "Urza's Bauble", "{0}", 0, "Artifact", "Draw a card at the beginning of the next upkeep.", "", 1540),
+        card("lutri", "Lutri, the Spellchaser", "{1}{U/R}{U/R}", 3, "Legendary Creature — Elemental Otter", "Flash", "UR", 1570),
+    ]
+    stats = {"partners": {"ring": {"bauble": 1.0, "U0": 1.0}, "bauble": {"ring": 1.0}}}
+    idx = build_card_index(cube, stats)
+    ring, lutri = idx["ring"], idx["lutri"]
+    assert ring.bomb and not is_narrow(ring, is_universal(ring), ring.staple) and not _is_utility_artifact(ring)
+    assert lutri.hybrid == frozenset("UR") and set(lutri.home) == {"U", "R"}
+    assert not is_narrow(lutri, is_universal(lutri), lutri.staple)

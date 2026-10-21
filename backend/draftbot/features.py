@@ -29,6 +29,17 @@ def _cost_colors(mana_cost: str) -> FrozenSet[str]:
     return frozenset(need)
 
 
+def _hybrid_colors(mana_cost: str) -> FrozenSet[str]:
+    """Colours of two-colour hybrid symbols ({U/R}, {W/B}). A card whose cost is only hybrid (Lutri, Lurrus)
+    needs one of these colours, so it isn't colourless."""
+    out = set()
+    for sym in _SYMBOL.findall(mana_cost or ""):
+        parts = sym.split("/")
+        if len(parts) == 2 and all(x in COLORS for x in parts):
+            out.update(parts)
+    return frozenset(out)
+
+
 def _heavy_colors(mana_cost: str) -> FrozenSet[str]:
     """Colours a card needs at least twice (Sheoldred's {2}{B}{B}): too heavy to splash."""
     syms = [sym for sym in _SYMBOL.findall(mana_cost or "") if sym in COLORS]
@@ -111,6 +122,8 @@ class CardInfo:
     home: Dict[str, float] = field(default_factory=dict)
     home_evidence: float = 0.0
     staple: bool = False                    # on the TAKE_ON_SIGHT list
+    hybrid: FrozenSet[str] = field(default_factory=frozenset)  # colours of {U/R}-style hybrid symbols
+    bomb: bool = False                      # colourless card rated with the cube's top 3% (The One Ring): goes in any deck
     phyrexian: bool = False                 # Phyrexian mana in its cost (Dismember): castable in any deck
     key_of: FrozenSet[str] = field(default_factory=frozenset)   # deck types this card defines (decktypes.py)
     deck: Dict[str, float] = field(default_factory=dict)        # membership 0..1 per deck type
@@ -236,6 +249,11 @@ def _attach_homes(index: Dict[str, CardInfo]) -> None:
     """Colourless non-mana spells go in some decks, not all (Top in blue control, Skullclamp in creature
     decks): give each one a home from the colours of its CubeCobra partners in this cube."""
     for info in index.values():
+        if not info.need and info.hybrid and not info.is_land:
+            # Hybrid-only cost (Lutri {U/R}{U/R}, Lurrus {W/B}{W/B}): at home in decks of either colour.
+            info.home = {c: 1.0 / len(info.hybrid) for c in sorted(info.hybrid)}
+            info.home_evidence = 1.0
+            continue
         if info.need or info.is_land or info.phyrexian or "mana" in info.roles or not info.partners:
             continue
         weights = {c: 0.0 for c in COLORS}
@@ -308,7 +326,14 @@ def build_card_index(cube: Iterable[dict], stats: Optional[dict] = None, meta: O
             heavy=frozenset() if "land" in types else _heavy_colors(c.get("mana_cost", "")),
             staple=staple,
             phyrexian="/P}" in (c.get("mana_cost") or "").upper(),
+            hybrid=frozenset() if "land" in types else _hybrid_colors(c.get("mana_cost", "")),
         )
+    # Colourless cards rated with the cube's top 3% go in any deck: never narrow (unless they are a deck type's
+    # key card, like Time Vault), never a "utility artifact" to cut back on.
+    bomb_floor = sorted(elos)[int(len(elos) * 0.97) - 1] if len(elos) >= 30 else float("inf")
+    for info in index.values():
+        if not info.need and not info.hybrid and not info.is_land and info.elo >= bomb_floor:
+            info.bomb = True
     _attach_homes(index)
     from .decktypes import attach_deck_types
     from .engine import register_colourless

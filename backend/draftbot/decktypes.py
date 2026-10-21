@@ -238,7 +238,9 @@ def is_narrow(card: CardInfo, universal: bool, take_on_sight: bool) -> bool:
         return False
     if card.is_land:
         return bool(card.key_of) or (len(card.produces) == 1 and not universal)
-    if card.need or universal:
+    if card.need or card.hybrid or universal:
+        return False
+    if card.bomb and not card.key_of:
         return False
     return bool(card.key_of) or max(card.deck.values(), default=0.0) >= NARROW_MEMBERSHIP
 
@@ -256,7 +258,7 @@ def deck_strength(pool: Iterable[CardInfo]) -> Dict[str, float]:
     raw = {t: 0.0 for t in DECK_TYPES}
     lean = {t: 0.0 for t in DECK_TYPES}
     for c in pool:
-        open_pick = c.staple or (is_universal(c) and not c.key_of)
+        open_pick = c.staple or c.bomb or (is_universal(c) and not c.key_of)
         for t in DECK_TYPES:
             if t in c.key_of:
                 raw[t] += KEY_WEIGHT

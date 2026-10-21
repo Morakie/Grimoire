@@ -400,7 +400,7 @@ def _colourless_piece(cid: str) -> bool:
 
 def register_colourless(index: Dict[str, CardInfo]) -> None:
     """Remember which card ids are colourless spells (combo pieces that fit any deck)."""
-    _COLOURLESS_IDS.update(cid for cid, c in index.items() if not c.need and not c.is_land)
+    _COLOURLESS_IDS.update(cid for cid, c in index.items() if not c.need and not c.hybrid and not c.is_land)
 
 
 def combo_value(card: CardInfo, owned: set, remaining: set, combos: List[Combo], fit_of,
@@ -850,8 +850,8 @@ def _is_rock(card: CardInfo) -> bool:
 def _is_utility_artifact(card: CardInfo) -> bool:
     """Colourless non-mana artifacts that aren't creatures or key cards (Top, Baubles, Skullclamp, Currency
     Converter): good in general, but a deck without an artifact plan only plays a couple."""
-    return ("artifact" in card.roles and not card.need and not card.is_land and not card.is_creature
-            and "mana" not in card.roles and not card.staple and not card.key_of)
+    return ("artifact" in card.roles and not card.need and not card.hybrid and not card.is_land and not card.is_creature
+            and "mana" not in card.roles and not card.staple and not card.bomb and not card.key_of)
 
 
 def saturation_factor(card: CardInfo, role_counts: Dict[str, int], cut: float) -> float:
