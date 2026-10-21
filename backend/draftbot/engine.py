@@ -58,6 +58,10 @@ TUNING: Dict[str, float] = {
     "combo_max_pieces": 3,      # longer lines are too hard to assemble in a draft to plan around
     "combo_finish_weight": 0.8, # combo weight for the last piece of a line we hold (any time in the draft)
     "partner_weight": 0.45,     # CubeCobra package partners (value when fully "in" a package)
+    "partner_full": 3,          # link strength to the bot's cards (all of them) that gives the full partner value:
+                                # with 3, a card linked to 3 of them scores the same as one linked to 10; raise it
+                                # to reward the most-connected cards (and raise partner_weight with it)
+    "rating_weight": 1.0,       # how much rating (CubeCobra Elo) counts at all; lower it to let synergy lead
     # synergy over rating: once a bot is committed (colours or deck type), what fits its deck counts for more
     # than raw Elo, so a high-rated card that only goes in other decks doesn't win on rating alone
     "commit_rating_cut": 0.25,  # share of the rating weight dropped when fully committed
@@ -446,16 +450,16 @@ def partner_sources(index: Dict[str, CardInfo], owned: Iterable[str]) -> set:
     return {o for o in owned if o in index and not is_universal(index[o])}
 
 
-def partner_value(card: CardInfo, owned: Iterable[str], fit_of, drafted_share: float = 1.0) -> float:
-    """CubeCobra packages: how strongly this card goes with the (on-colour) cards we already own,
-    based on what real drafters put together ("synergistic" partners have strength 1, "often drafted
-    with" ones 0.5, scaled by drafted_share because that list is partly just popular cards).
+def partner_value(card: CardInfo, owned: Iterable[str], fit_of, drafted_share: float = 1.0, full: float = 3.0) -> float:
+    """CubeCobra packages: how strongly this card goes with ALL the (on-colour) cards we already own, based on
+    what real drafters put together ("synergistic" partners have strength 1, "often drafted with" ones 0.5,
+    scaled by drafted_share because that list is partly just popular cards). Full value at `full` link strength.
     `owned` should be partner_sources(): universal staples like Sol Ring are drafted with everything."""
     if not card.partners:
         return 0.0
     total = sum((strength if strength >= 1.0 else strength * drafted_share) * fit_of(o)
                 for o, strength in card.partners.items() if o in owned)
-    return min(1.0, total / 3.0)
+    return min(1.0, total / max(full, 0.5))
 
 
 def _role_counts(pool: Iterable[CardInfo]) -> Dict[str, int]:
@@ -772,6 +776,7 @@ def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[s
     finish_w = ctx.k("rival_combo_finish")
     max_pieces = ctx.k("combo_max_pieces")
     drafted_share = ctx.k("drafted_with_share")
+    partner_full = ctx.k("partner_full")
     for seat, n_picks in window.items():
         picks = [p for p in ctx.picks_by_seat.get(seat, []) if p in ctx.index]
         v = _rival_view(ctx, seat, picks)
@@ -798,7 +803,7 @@ def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[s
             extra = v.extra.get(cid)
             if extra is None:
                 extra = v.extra[cid] = (package_value(card, None, v.strengths),
-                                        0.3 * partner_value(card, v.partners_from, fit_of, drafted_share),
+                                        0.3 * partner_value(card, v.partners_from, fit_of, drafted_share, partner_full),
                                         finish_w if completes_combo(card, v.owned, ctx.combos, max_pieces) else 0.0)
             if versions is None:
                 combo = combo_value(card, v.owned, remaining, ctx.combos, fit_of)
@@ -983,7 +988,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     focus_on = bool(deck_mine) and (k("focus_start") >= 1.0 or max(deck_mine.values()) > k("focus_start"))
     plain = ctx.memo.setdefault("plain", {}) if ctx.memo is not None else None
     commitment = max(progress, max(deck_mine.values(), default=0.0))
-    w_power = (1.0 - k("power_late_drop") * t) * (1.0 - k("commit_rating_cut") * commitment) * p.w("power")
+    w_power = (1.0 - k("power_late_drop") * t) * (1.0 - k("commit_rating_cut") * commitment) * p.w("power") * k("rating_weight")
     # Reanimation spells: targets owned count fully, strong fatties still in the pool count a little each.
     owned_targets = sum(1 for c in mine if "fatty" in c.roles)
     open_targets = sum(1 for c in remaining if "fatty" in ctx.index[c].roles and ctx.index[c].power >= 0.5)
@@ -1053,7 +1058,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
             t_plan += k("contest_weight") * max(
                 (s * (1.0 if dt in card.key_of else min(1.0, card.deck.get(dt, 0.0) / 0.5))
                  for dt, s in shared.items()), default=0.0)
-        t_partner = k("partner_weight") * p.w("combo") * partner_value(card, partners_from, fit_of, k("drafted_with_share"))
+        t_partner = k("partner_weight") * p.w("combo") * partner_value(card, partners_from, fit_of, k("drafted_with_share"), k("partner_full"))
         if card.is_fixing:
             t_partner *= k("fixing_partner_share")
         t_needs = w_needs * needs_value(card, mine, p, counts)

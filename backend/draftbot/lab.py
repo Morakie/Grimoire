@@ -17,12 +17,14 @@ from .personas import Persona
 # The weights the Lab offers, grouped for the page: (group, key, label, help, min, max, step).
 # Labels describe what a person sees the bot do, not the code.
 KNOBS: List[tuple] = [
+    ("Rating and colours", "rating_weight", "Rating (Elo) weight", "How much raw CubeCobra Elo counts at all. Lower it to let synergy and the deck lead.", 0, 2, 0.05),
     ("Rating and colours", "commit_rating_cut", "Rating drop once committed", "How much less raw Elo counts once the bot has a deck (colours or deck type).", 0, 1, 0.05),
     ("Rating and colours", "power_late_drop", "Rating drop late in the draft", "How much less raw Elo counts by the last pick.", 0, 1, 0.05),
     ("Rating and colours", "flex_floor", "Off-colour value while open", "Share of its value an off-colour card keeps before the bot commits.", 0, 1, 0.05),
     ("Rating and colours", "committed_floor", "Off-colour value once committed", "Share of its value an off-colour card keeps after the bot commits.", 0, 1, 0.05),
     ("Rating and colours", "commit_pick", "Coloured spells to commit", "Coloured spells owned before the bot is fully in two colours.", 3, 15, 1),
     ("Synergy", "partner_weight", "Drafted-together weight", "Value for cards CubeCobra drafters put with the bot's cards.", 0, 1.5, 0.05),
+    ("Synergy", "partner_full", "Links for full synergy", "Link strength to the bot's cards (all of them) that gives full synergy value. Raise it so a card linked to 8 of the bot's cards beats one linked to 3.", 1, 12, 0.5),
     ("Synergy", "drafted_with_share", "'Often drafted with' share", "How much the weaker 'often drafted with' links count next to 'synergistic' ones.", 0, 1, 0.05),
     ("Synergy", "combo_base", "Combo weight early", "Value of combo pieces at the start of the draft.", 0, 1.5, 0.05),
     ("Synergy", "combo_growth", "Combo weight growth", "Extra combo value by mid-draft.", 0, 1.5, 0.05),

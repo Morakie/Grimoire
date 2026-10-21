@@ -76,6 +76,14 @@ PowerLSV), so with only a 98th-percentile floor, Orcish Bowmasters, Ragavan and 
 holding Time Walk + Ancestral took Bowmasters over Timetwister. Power is now rated at least at the lower quartile
 of the cube's own Power cards (Timetwister -> 2237).
 
+## Synergy and rating knobs (2026-10-20)
+
+- "Drafted together" (partner_value) already counts each available card's CubeCobra links to ALL of the bot's
+  cards. It reaches full value at `partner_full` link strength (default 3, a slider in Bot Lab / Bot Brain):
+  raise it so a card linked to 8 of the bot's cards beats one linked to 3, and raise `partner_weight` with it.
+- `rating_weight` (default 1) scales how much raw Elo counts at all; lower it to let synergy lead, with Elo and
+  combos as tie-breakers.
+
 ## Findings from reviews of real drafts
 
 - Replays use the bot-inputs export of a draft and the bot report (`GET /api/drafts/{id}/bot-report`), which
