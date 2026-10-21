@@ -751,3 +751,37 @@ def test_big_pools_go_to_spellbook_in_batches_that_cover_every_small_combo():
     sets = [set(b) for b in batches]
     sample = names[::37]
     assert all(any(set(trio) <= s for s in sets) for trio in combinations(sample, 3))
+
+
+def _lab_pool():
+    from draftbot.combos import attach_combos as _attach
+    idx = build_card_index(synthetic_cube())
+    _attach(idx, [])
+    return idx
+
+
+def test_lab_simulate_rewind_keeps_earlier_picks_and_reproduces_the_rest():
+    from draftbot.lab import simulate
+    idx = _lab_pool()
+    full = simulate(idx, [], 4, 12, seed=7)
+    assert len(full["picks"]) == 48 and full["kept"] == 0
+    again = simulate(idx, [], 4, 12, seed=7)
+    assert again["picks"] == full["picks"]                        # same seed and weights: same draft
+    rewound = simulate(idx, [], 4, 12, seed=7, start=full["picks"][:20])
+    assert rewound["kept"] == 20
+    assert rewound["picks"] == full["picks"]                      # unchanged weights: re-draft matches
+    tuned = simulate(idx, [], 4, 12, seed=7, start=full["picks"][:20], tuning={"committed_floor": 1.0, "flex_floor": 1.0})
+    assert tuned["picks"][:20] == full["picks"][:20]              # picks before the rewind never change
+    assert len(tuned["seats"]) == 4 and all("pair" in s for s in tuned["seats"])
+
+
+def test_lab_simulate_tuned_seats_and_stop():
+    from draftbot.lab import simulate
+    idx = _lab_pool()
+    base = simulate(idx, [], 4, 12, seed=3)
+    off = simulate(idx, [], 4, 12, seed=3, tuning={"committed_floor": 1.0, "flex_floor": 1.0}, tuned_seats=[])
+    assert off["picks"] == base["picks"]                          # weights for no seat change nothing
+    part = simulate(idx, [], 4, 12, seed=3, stop=10)
+    assert len(part["picks"]) == 10 and len(part["order"]) == 48
+    bad = simulate(idx, [], 4, 12, seed=3, start=[{"order": 0, "seat_index": 2, "card_id": base["picks"][0]["card_id"]}])
+    assert bad["kept"] == 0                                       # a kept pick in the wrong seat is dropped

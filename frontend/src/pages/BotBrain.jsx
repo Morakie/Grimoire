@@ -3,11 +3,13 @@ import { Link } from "react-router-dom";
 import api from "@/lib/api";
 import { resolveCube, stepError } from "@/lib/cube";
 import BotLab from "@/components/BotLab";
-import { Sparkles, Loader2, Brain, Search, Shuffle, Dices, Play, Network, Library } from "lucide-react";
+import { Sparkles, Loader2, Brain, Search, Shuffle, Dices, Play, Network, Library, RefreshCw, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Undo2, GitCompare } from "lucide-react";
 
 // Bot Brain: how the draft bots think, outside any draft. Load a cube (CubeCobra) or the VRD pool, then
 // look up any card (what the bots know about it and what it links to) or run an all-bot draft and step
-// through its picks in the Bot Lab view. Data from /api/lab/*; nothing is saved.
+// through its picks in the Bot Lab view. A built pool is saved on the server (one document) and listed under
+// "Saved pools", so loading it again skips CubeCobra, Scryfall and the stats lookups. Draft runs are never
+// saved: rewind to any pick, change weights and re-draft from there to see what changes.
 
 const DECK_NAMES = { tolarian: "Tolarian", workshop: "Workshop", artifacts: "Artifacts", storm: "Storm", reanimator: "Reanimator", cheat: "Cheat", lands: "Lands", aggro: "Aggro" };
 const DECK_COL = { tolarian: "#38bdf8", workshop: "#a8a29e", artifacts: "#f59e0b", storm: "#e879f9", reanimator: "#8b5cf6", cheat: "#f43f5e", lands: "#84cc16", aggro: "#fb923c" };
@@ -191,6 +193,89 @@ function Dossier({ d, card, onPick }) {
   );
 }
 
+// ---------------------------------------------------------------- simulated draft: board and seat summaries
+
+const shortName = (n) => (n || "?").split(" // ")[0];
+// Where table pick `slot` sits for a seat: its Nth pick (1-based).
+function slotFocus(order, slot) {
+  const seat = order[slot];
+  let n = 0;
+  for (let i = 0; i <= slot; i += 1) if (order[i] === seat) n += 1;
+  return { seat, pickNo: n };
+}
+
+function DraftBoard({ sim, byId, seats, viewSlot, changed, kept, onPick }) {
+  const n = seats.length;
+  const rounds = Math.ceil(sim.picks.length / n);
+  const bySlot = sim.picks;
+  const cell = (r, s) => r * n + (r % 2 === 0 ? s : n - 1 - s);
+  const viewRef = useRef(null);
+  useEffect(() => { viewRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" }); }, [viewSlot]);
+  return (
+    <div className="overflow-auto max-h-[46vh] rounded-lg border border-slate-800 bg-slate-950" data-testid="brain-board">
+      <table className="text-[11px] border-separate border-spacing-0 w-full">
+        <thead className="sticky top-0 z-10 bg-slate-950">
+          <tr><th className="px-1.5 py-1 text-slate-500 font-normal text-right w-7">#</th>
+            {seats.map((s) => <th key={s.index} className="px-1.5 py-1 text-slate-300 font-semibold text-left min-w-[104px]">{s.player_name}</th>)}</tr>
+        </thead>
+        <tbody>
+          {Array.from({ length: rounds }, (_, r) => (
+            <tr key={r}>
+              <td className="px-1.5 text-right text-slate-600 tabular-nums">{r + 1}</td>
+              {seats.map((s, si) => {
+                const slot = cell(r, si);
+                const p = bySlot[slot];
+                if (!p) return <td key={s.index} />;
+                const c = byId[p.card_id];
+                const here = slot === viewSlot;
+                const ch = changed.has(slot);
+                return (
+                  <td key={s.index} className="p-0.5" ref={here ? viewRef : undefined}>
+                    <button type="button" onClick={() => onPick(slot)} title={`Table pick ${slot + 1}: ${c?.name || "?"}${ch ? " (changed by the re-draft)" : ""}`}
+                      data-testid={`brain-board-${slot}`}
+                      className={`w-full text-left flex items-center gap-1 rounded px-1 py-0.5 border ${here ? "border-amber-400 bg-amber-400/15 text-amber-100" : ch ? "border-sky-400/70 bg-sky-400/10 text-slate-100" : "border-transparent hover:bg-slate-800/70 text-slate-300"} ${slot < kept ? "opacity-60" : ""}`}>
+                      <span className="w-1.5 h-3 rounded-sm shrink-0" style={{ background: c ? colourOf(c) : "#334155" }} />
+                      <span className="truncate max-w-[118px]">{shortName(c?.name)}</span>
+                    </button>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SeatPips({ pair }) {
+  return pair ? <span className="inline-flex gap-0.5">{[...pair].map((c) => <span key={c} className="w-2.5 h-2.5 rounded-full border border-white/20" style={{ background: MANA[c] }} title={COL_NAME[c]} />)}</span>
+    : <span className="text-slate-500">open</span>;
+}
+
+function SeatSummary({ s, before, name, tuned }) {
+  const decks = Object.entries(s.decks || {});
+  const deckText = (d) => Object.keys(d || {}).slice(0, 2).map((t) => DECK_NAMES[t] || t).join(", ") || "no deck type";
+  const moved = before && (before.pair !== s.pair || deckText(before.decks) !== deckText(s.decks));
+  const delta = before ? s.avg_elo - before.avg_elo : 0;
+  return (
+    <div className={`rounded-lg border p-3 space-y-1.5 ${moved ? "border-sky-400/60 bg-sky-400/5" : "border-slate-800 bg-slate-900/40"}`}>
+      <div className="flex items-center justify-between gap-2 text-sm font-semibold">
+        <span className="flex items-center gap-2">{name}{tuned && <span className="text-[10px] font-normal px-1.5 rounded-full border border-amber-400/60 text-amber-300">new weights</span>}</span>
+        <SeatPips pair={s.pair} />
+      </div>
+      <div className="text-xs text-slate-400 flex flex-wrap gap-x-3 gap-y-0.5 tabular-nums">
+        <span>{s.on_colour}% on colour</span>
+        <span>Elo {s.avg_elo}{before && delta !== 0 && <span className={delta > 0 ? "text-emerald-400" : "text-rose-400"}> {delta > 0 ? "+" : ""}{delta}</span>}</span>
+        <span>{s.creatures} creatures</span>
+      </div>
+      <div className="text-xs text-slate-300">{decks.length ? decks.slice(0, 3).map(([t, v]) => `${DECK_NAMES[t] || t} ${Math.round(v * 100)}%`).join(" · ") : <span className="text-slate-500">No deck type</span>}</div>
+      {s.combos.length > 0 && <div className="text-xs text-fuchsia-300">{s.combos.map((cb) => cb.map(shortName).join(" + ")).join("; ")}</div>}
+      {moved && <div className="text-xs text-sky-300">Was {before.pair ? <SeatPips pair={before.pair} /> : "open"} · {deckText(before.decks)}</div>}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- page
 
 export default function BotBrain() {
@@ -206,43 +291,74 @@ export default function BotBrain() {
   const [dossier, setDossier] = useState(null);
   const [dLoading, setDLoading] = useState(false);
   const [sim, setSim] = useState(null);
+  const [prev, setPrev] = useState(null);          // the run before a re-draft, to show what changed
   const [simCfg, setSimCfg] = useState({ seats: 8, picks: 45, seed: Math.floor(Math.random() * 10000) });
   const [simming, setSimming] = useState(false);
   const [runs, setRuns] = useState(0);
+  const [viewSlot, setViewSlot] = useState(0);
+  const [focus, setFocus] = useState(null);
+  const [labTuning, setLabTuning] = useState({});  // weights changed in the Lab panel
+  const [tunedSeats, setTunedSeats] = useState(null); // null = new weights for every bot
+  const [pools, setPools] = useState([]);
   const cubeCards = useRef(null);          // the resolved cube, to send again if the server forgot the pool
 
-  const loadSource = useCallback(async (m = mode, id = cubeId) => {
-    setError(""); setSrc(null); setDossier(null); setSel(null); setSim(null);
-    save(STORE, { mode: m, cubeId: id });
+  const refreshPools = useCallback(() => api.get("/lab/pools").then(({ data }) => setPools(data.pools || [])).catch(() => {}), []);
+
+  // Load a pool: a saved one by key (one read on the server), or build it (CubeCobra cube or VRD).
+  const loadSource = useCallback(async ({ m = mode, id = cubeId, pool = null, refresh = false } = {}) => {
+    setError(""); setSrc(null); setDossier(null); setSel(null); setSim(null); setPrev(null);
     try {
-      let body;
-      if (m === "vrd") { setStep("Loading the VRD pool (every Vintage-legal card)…"); body = { vrd: true }; }
-      else {
-        const res = await resolveCube({ cubeCobra: id, onStep: setStep });
-        cubeCards.current = res.cards;
-        setStep("Reading CubeCobra links and combos for this cube… the first time can take 20 seconds");
-        body = { cards: res.cards };
+      let data = null;
+      const saved = pool || (!refresh && pools.find((p) => (m === "vrd" ? p.vrd : !p.vrd && p.label === id.trim()))?.key);
+      if (saved) {
+        setStep("Loading the saved pool…");
+        try { data = (await api.post("/lab/source", { pool: saved }, { timeout: 60000 })).data; }
+        catch (e) { if (e.response?.status !== 404) throw e; }
       }
-      const { data } = await api.post("/lab/source", body, { timeout: 120000 });
+      if (!data) {
+        let body;
+        if (m === "vrd") { setStep("Building the VRD pool (every Vintage-legal card)…"); body = { vrd: true, refresh }; }
+        else {
+          const res = await resolveCube({ cubeCobra: id, onStep: setStep });
+          cubeCards.current = res.cards;
+          setStep("Reading CubeCobra links and combos for this cube… the first time can take 20 seconds");
+          body = { cards: res.cards, label: id.trim(), refresh };
+        }
+        data = (await api.post("/lab/source", body, { timeout: 120000 })).data;
+        refreshPools();
+      }
+      const isVrd = !!data.vrd;
+      setMode(isVrd ? "vrd" : "cube");
+      if (!isVrd && data.label) setCubeId(data.label);
+      save(STORE, { mode: isVrd ? "vrd" : "cube", cubeId: isVrd ? id : data.label || id, pool: data.source });
       setSrc(data);
       const first = data.summary.connected[0]?.id || data.cards[0]?.id;
       if (first) setSel(first);
     } catch (e) {
       setError(e.message && !e.response ? e.message : stepError(m === "vrd" ? "Couldn't load the VRD pool" : "Couldn't load the cube", e));
     } finally { setStep(""); }
-  }, [mode, cubeId]);
+  }, [mode, cubeId, pools, refreshPools]);
 
-  useEffect(() => { loadSource(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    refreshPools();
+    loadSource(saved.pool ? { pool: saved.pool } : {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Calls that need the pool on the server: if it was forgotten (restart), send it again once.
+  // Calls that need the pool on the server: if it was forgotten (restart), load it again once (the saved
+  // copy first, which is one read, then the cards this page resolved).
   const withSource = useCallback(async (fn) => {
     try { return await fn(src.source); } catch (e) {
       if (e.response?.status !== 410) throw e;
-      const { data } = await api.post("/lab/source", mode === "vrd" ? { vrd: true } : { cards: cubeCards.current || [] }, { timeout: 120000 });
+      let data;
+      try { data = (await api.post("/lab/source", { pool: src.source }, { timeout: 60000 })).data; }
+      catch (e2) {
+        if (e2.response?.status !== 404) throw e2;
+        data = (await api.post("/lab/source", mode === "vrd" ? { vrd: true } : { cards: cubeCards.current || [], label: cubeId }, { timeout: 120000 })).data;
+      }
       setSrc(data);
       return fn(data.source);
     }
-  }, [src, mode]);
+  }, [src, mode, cubeId]);
 
   useEffect(() => {
     if (!src || !sel) return;
@@ -271,17 +387,38 @@ export default function BotBrain() {
     }, 50);
   };
 
-  const runDraft = async () => {
+  // Run the draft, or re-draft from table pick `from` (picks before it are kept) with the Lab's weights.
+  const runDraft = async (from = null) => {
     setSimming(true); setError("");
-    const tuning = load(TUNING_STORE, {});
+    const fork = from != null && sim;
+    const cfg = fork ? { seats: sim.seats.length, picks: sim.per_seat, seed: sim.seed } : simCfg;
+    const body = { ...cfg, tuning: labTuning, tuned_seats: tunedSeats ? [...tunedSeats] : null, start: fork ? sim.picks.slice(0, from) : [] };
     try {
-      const { data } = await withSource((source) => api.post("/lab/simulate", { source, ...simCfg, tuning }, { timeout: 180000 }));
-      setSim(data); setRuns((r) => r + 1);
+      const { data } = await withSource((source) => api.post("/lab/simulate", { source, ...body }, { timeout: 180000 }));
+      const sameDraft = sim && sim.seed === cfg.seed && sim.order.length === data.order.length;
+      setPrev(sameDraft ? sim : null);
+      setSim({ ...data, seed: cfg.seed, tuning: body.tuning, tuned_seats: body.tuned_seats });
+      setRuns((r) => r + 1);
+      const at = fork ? Math.min(from, data.picks.length - 1) : 0;
+      setFocus({ ...slotFocus(data.order, at), at });
     } catch (e) { setError(stepError("Couldn't run the draft", e)); } finally { setSimming(false); }
   };
   const labFetch = useCallback((body) => withSource((source) => api.post("/lab/view", { source, order: sim.order, picks: sim.picks, ...body }, { timeout: 60000 })), [withSource, sim]);
   const simSeats = useMemo(() => Array.from({ length: simCfg.seats }, (_, i) => ({ index: i, player_name: `Bot ${i + 1}` })), [simCfg.seats]);
   const simSeatsUsed = useMemo(() => (sim ? Array.from(new Set(sim.order)).sort((a, b) => a - b).map((i) => ({ index: i, player_name: `Bot ${i + 1}` })) : simSeats), [sim, simSeats]);
+  const changed = useMemo(() => {
+    const out = new Set();
+    if (sim && prev) sim.picks.forEach((p, i) => { if (prev.picks[i]?.card_id !== p.card_id) out.add(i); });
+    return out;
+  }, [sim, prev]);
+  const goSlot = (slot) => { if (!sim) return; const at = Math.max(0, Math.min(slot, sim.picks.length - 1)); setFocus({ ...slotFocus(sim.order, at), at }); };
+  const viewPick = sim?.picks[viewSlot];
+  const changedCount = Object.keys(labTuning).length;
+  const toggleSeat = (i) => setTunedSeats((t) => {
+    const next = new Set(t || []);
+    if (next.has(i)) next.delete(i); else next.add(i);
+    return next.size ? next : null;
+  });
 
   return (
     <div className="min-h-screen bg-[#060a14] text-slate-100">
@@ -298,17 +435,26 @@ export default function BotBrain() {
             <h1 className="font-display text-3xl font-bold flex items-center gap-2"><Brain className="w-7 h-7 text-amber-400" /> Bot Brain</h1>
             <p className="text-sm text-slate-400 mt-1 max-w-2xl">How the draft bots see a card pool: look up any card, or run an all-bot draft and step through what each bot was thinking at every pick.</p>
           </div>
-          <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); loadSource(mode, cubeId); }} data-testid="brain-source">
+          <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); loadSource({ m: mode, id: cubeId }); }} data-testid="brain-source">
+            {pools.length > 0 && <>
+              <label htmlFor="brain-pool" className="sr-only">Saved pools</label>
+              <select id="brain-pool" value={pools.some((p) => p.key === src?.source) ? src.source : ""} data-testid="brain-pool"
+                onChange={(e) => { if (e.target.value) loadSource({ pool: e.target.value }); }}
+                className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-sm max-w-[220px]" title="Pools built before load instantly, with no CubeCobra or Scryfall lookups">
+                <option value="">Saved pools…</option>
+                {pools.map((p) => <option key={p.key} value={p.key}>{PRESETS.find(([, v]) => v === p.label)?.[0] || p.label} · {p.cards} cards{p.partial ? " (partial)" : ""}</option>)}
+              </select>
+            </>}
             <div className="inline-flex rounded-lg border border-slate-700 overflow-hidden text-sm">
               {[["cube", "Cube"], ["vrd", "VRD"]].map(([m, l]) => (
-                <button key={m} type="button" onClick={() => { setMode(m); if (m === "vrd") loadSource("vrd", cubeId); }} aria-pressed={mode === m}
+                <button key={m} type="button" onClick={() => { setMode(m); if (m === "vrd") loadSource({ m: "vrd" }); }} aria-pressed={mode === m}
                   className={`px-3 py-1.5 ${mode === m ? "bg-amber-400 text-stone-900 font-semibold" : "text-slate-300 hover:bg-slate-800"}`} data-testid={`brain-mode-${m}`}>{l}</button>
               ))}
             </div>
             {mode === "cube" && <>
               <label htmlFor="brain-preset" className="sr-only">Cube</label>
               <select id="brain-preset" value={PRESETS.some(([, v]) => v === cubeId) ? cubeId : ""} data-testid="brain-preset"
-                onChange={(e) => { if (e.target.value) { setCubeId(e.target.value); loadSource("cube", e.target.value); } }}
+                onChange={(e) => { if (e.target.value) { setCubeId(e.target.value); loadSource({ m: "cube", id: e.target.value }); } }}
                 className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-sm">
                 {PRESETS.map(([l, v]) => <option key={v} value={v}>{l}</option>)}
                 <option value="">Other CubeCobra cube…</option>
@@ -331,7 +477,11 @@ export default function BotBrain() {
               <span><span className="text-slate-100 font-semibold tabular-nums">{src.summary.cards}</span> cards</span>
               <span><span className="text-slate-100 font-semibold tabular-nums">{src.summary.with_partners}</span> with CubeCobra links</span>
               <span><span className="text-slate-100 font-semibold tabular-nums">{src.summary.combos}</span> combos</span>
-              {src.partial && <span className="text-amber-300">Still collecting CubeCobra data for this pool{src.vrd ? " (1,500 card pages, about 10–20 minutes the first time)" : ""}; load it again later for the full picture.</span>}
+              {src.label && <span title={src.built_at ? `Built ${new Date(src.built_at).toLocaleString()}` : undefined}>Saved as <span className="text-slate-200">{PRESETS.find(([, v]) => v === src.label)?.[0] || src.label}</span>{src.built_at && <> · built {new Date(src.built_at).toLocaleDateString()}</>}</span>}
+              {src.partial && <span className="text-amber-300">Some CubeCobra data was still loading when this pool was built{src.vrd ? " (1,500 card pages, about 10–20 minutes the first time)" : ""}; rebuild it later for the full picture.</span>}
+              <button type="button" onClick={() => loadSource({ m: src.vrd ? "vrd" : "cube", id: cubeId, refresh: true })} data-testid="brain-rebuild"
+                title="Read the cube list, CubeCobra links and combos again, and save the new pool"
+                className="text-xs px-2 py-1 rounded border border-slate-700 text-slate-300 hover:text-amber-300 flex items-center gap-1"><RefreshCw className="w-3 h-3" /> Rebuild</button>
               <div className="ml-auto inline-flex rounded-lg border border-slate-700 overflow-hidden">
                 {[["cards", "Cards", Search], ["sim", "Simulate a draft", Shuffle]].map(([t, l, Icon]) => (
                   <button key={t} type="button" onClick={() => setTab(t)} aria-pressed={tab === t} data-testid={`brain-tab-${t}`}
@@ -371,7 +521,7 @@ export default function BotBrain() {
               </div>
             ) : (
               <div className="space-y-4">
-                <form className="flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); runDraft(); }} data-testid="brain-sim-form">
+                <form className="flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); runDraft(null); }} data-testid="brain-sim-form">
                   <label className="text-sm"><span className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Bots</span>
                     <select id="brain-seats" value={simCfg.seats} onChange={(e) => setSimCfg((c) => ({ ...c, seats: Number(e.target.value) }))} className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5">
                       {Array.from({ length: 11 }, (_, i) => i + 2).map((n) => <option key={n} value={n}>{n}</option>)}
@@ -383,23 +533,57 @@ export default function BotBrain() {
                       <button type="button" onClick={() => setSimCfg((c) => ({ ...c, seed: Math.floor(Math.random() * 10000) }))} className="px-2 rounded-lg border border-slate-700 text-slate-300 hover:text-amber-300" aria-label="New random seed"><Dices className="w-4 h-4" /></button></span></label>
                   <button type="submit" disabled={simming} className="px-4 py-2 rounded-lg bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold text-sm flex items-center gap-2 disabled:opacity-60" data-testid="brain-run">
                     {simming ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />} {sim ? "Run again" : "Run draft"}</button>
-                  <p className="text-xs text-slate-500 basis-full sm:basis-auto sm:flex-1">The bots draft with the weights set in the panel below (changed weights apply to the next run and to the view). Same seed and weights give the same draft. {mode === "vrd" && "VRD drafts take longer: the pool is three times the size of a cube."}</p>
+                  <p className="text-xs text-slate-500 basis-full sm:basis-auto sm:flex-1">The bots draft with the weights set in the panel below. Same seed and weights give the same draft, so you can rewind to any pick, change weights and re-draft from there. {mode === "vrd" && "VRD drafts take longer: the pool is three times the size of a cube."}</p>
                 </form>
-                {simming && <p className="text-sm text-slate-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin text-amber-400" /> The bots are drafting… usually under {mode === "vrd" ? "a minute" : "30 seconds"}.</p>}
+                {simming && <p className="text-sm text-slate-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin text-amber-400" /> The bots are drafting… usually a few seconds.</p>}
                 {sim ? (
                   <>
-                    <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3" data-testid="brain-sim-seats">
-                      {simSeatsUsed.map((s) => {
-                        const own = sim.picks.filter((p) => p.seat_index === s.index);
-                        return (
-                          <div key={s.index} className="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
-                            <div className="text-sm font-semibold mb-1">{s.player_name}</div>
-                            <div className="text-xs text-slate-400 leading-relaxed">{own.slice(0, 8).map((p, k) => <React.Fragment key={p.card_id}>{k > 0 && ", "}<button type="button" onClick={() => pick(p.card_id)} className="hover:text-amber-300">{(byId[p.card_id]?.name || "?").split(" // ")[0]}</button></React.Fragment>)}{own.length > 8 && ` +${own.length - 8} more`}</div>
-                          </div>
-                        );
-                      })}
+                    {/* Step through the table, rewind and re-draft */}
+                    <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-3 space-y-3" data-testid="brain-replay">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex items-center gap-1">
+                          {[[ChevronsLeft, "First pick", () => goSlot(0)], [ChevronLeft, "Previous table pick", () => goSlot(viewSlot - 1)],
+                            [ChevronRight, "Next table pick", () => goSlot(viewSlot + 1)], [ChevronsRight, "Last pick", () => goSlot(sim.picks.length - 1)]].map(([Icon, label, fn]) => (
+                            <button key={label} type="button" onClick={fn} aria-label={label} title={label} className="p-1.5 rounded border border-slate-700 text-slate-300 hover:text-amber-300"><Icon className="w-4 h-4" /></button>
+                          ))}
+                        </div>
+                        <span className="text-sm text-slate-300 tabular-nums">Table pick <span className="text-slate-100 font-semibold">{viewSlot + 1}</span> of {sim.picks.length}
+                          {viewPick && <> · Bot {viewPick.seat_index + 1} took <span className="text-slate-100">{shortName(byId[viewPick.card_id]?.name)}</span></>}</span>
+                        <span className="text-xs text-slate-500 ml-auto tabular-nums">{sim.seconds != null && `${sim.seconds}s`}{sim.kept > 0 && ` · first ${sim.kept} picks kept`}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button type="button" disabled={simming} onClick={() => runDraft(viewSlot)} data-testid="brain-redraft"
+                          className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold text-sm flex items-center gap-1.5 disabled:opacity-60">
+                          <Undo2 className="w-4 h-4" /> Re-draft from pick {viewSlot + 1}</button>
+                        <button type="button" disabled={simming} onClick={() => runDraft(0)} className="px-3 py-1.5 rounded-lg border border-slate-700 text-sm text-slate-200 hover:text-amber-300 disabled:opacity-60">Re-draft all (same seed)</button>
+                        <span className="text-xs text-slate-400">{changedCount ? `${changedCount} weight${changedCount === 1 ? "" : "s"} changed in the panel below` : "Using the current weights: change some below first"}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                        <span className="text-slate-500 mr-1">New weights for:</span>
+                        <button type="button" onClick={() => setTunedSeats(null)} aria-pressed={!tunedSeats} className={`px-2 py-0.5 rounded-full border ${!tunedSeats ? "border-amber-400 text-amber-300" : "border-slate-700 text-slate-400"}`}>Every bot</button>
+                        {simSeatsUsed.map((s) => (
+                          <button key={s.index} type="button" onClick={() => toggleSeat(s.index)} aria-pressed={!!tunedSeats?.has(s.index)} data-testid={`brain-tuned-${s.index}`}
+                            className={`px-2 py-0.5 rounded-full border tabular-nums ${tunedSeats?.has(s.index) ? "border-amber-400 text-amber-300" : "border-slate-700 text-slate-400"}`}>{s.index + 1}</button>
+                        ))}
+                        <span className="text-slate-500 ml-1">Pick a few seats to pit new weights against the current ones in the same draft.</span>
+                      </div>
+                      {prev && (
+                        <p className="text-sm flex items-center gap-2 text-sky-300" data-testid="brain-diff"><GitCompare className="w-4 h-4" />
+                          {changed.size ? `${changed.size} of ${sim.picks.length - sim.kept} re-drafted picks changed (outlined in blue).` : "Same picks as before: these weights change nothing from here."}
+                          <button type="button" onClick={() => setPrev(null)} className="text-xs text-slate-400 hover:text-white underline">clear</button></p>
+                      )}
                     </div>
-                    <BotLab inline fetchView={labFetch} cubeById={byId} seats={simSeatsUsed} startSeat={0} reloadKey={runs} onClose={() => {}} />
+
+                    <DraftBoard sim={sim} byId={byId} seats={simSeatsUsed} viewSlot={viewSlot} changed={changed} kept={sim.kept} onPick={goSlot} />
+
+                    <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3" data-testid="brain-sim-seats">
+                      {sim.seats.map((s) => (
+                        <SeatSummary key={s.seat} s={s} before={prev?.seats.find((x) => x.seat === s.seat)} name={`Bot ${s.seat + 1}`}
+                          tuned={Object.keys(sim.tuning || {}).length > 0 && (!sim.tuned_seats || sim.tuned_seats.includes(s.seat))} />
+                      ))}
+                    </div>
+                    <BotLab inline fetchView={labFetch} cubeById={byId} seats={simSeatsUsed} startSeat={0} reloadKey={runs} onClose={() => {}}
+                      focus={focus} onSlot={setViewSlot} onTuning={setLabTuning} />
                   </>
                 ) : !simming && <p className="text-sm text-slate-500">Run a draft to step through the bots' picks.</p>}
               </div>

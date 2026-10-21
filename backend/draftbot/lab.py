@@ -212,27 +212,82 @@ def snake_order(seats: int, per_seat: int) -> List[int]:
     return out
 
 
-def simulate(index: Dict[str, CardInfo], combos: List[Combo], seats: int, per_seat: int, seed: int = 0,
-             tuning: Optional[Dict[str, float]] = None) -> dict:
-    """An all-bot rotisserie draft (snake order) with the given weights. Returns the order and picks in
-    the same shape as a real draft, so lab_view can look at any of its picks."""
+def _pick_rng(seed: int, slot: int):
+    """Each pick gets its own random stream, so a draft re-run from any pick reproduces every earlier pick
+    exactly, and the same weights give the same later picks."""
     import random
+    return random.Random(seed * 1_000_003 + slot)
+
+
+def simulate(index: Dict[str, CardInfo], combos: List[Combo], seats: int, per_seat: int, seed: int = 0,
+             tuning: Optional[Dict[str, float]] = None, start: Sequence[dict] = (),
+             tuned_seats: Optional[Iterable[int]] = None, stop: Optional[int] = None) -> dict:
+    """An all-bot rotisserie draft (snake order) with the given weights. Returns the order and picks in
+    the same shape as a real draft, so lab_view can look at any of its picks.
+
+    `start` keeps the first picks of an earlier run (a rewind): the bots re-draft only from there on.
+    `tuned_seats` limits the weights to some seats (the others use the current ones), to compare the two
+    side by side in one draft. `stop` ends the draft at that table pick."""
     from .engine import choose_pick
-    rng = random.Random(seed)
     order = snake_order(seats, min(per_seat, max(1, len(index) // max(seats, 1))))
+    per = len(order) // seats
+    only = frozenset(tuned_seats) if tuned_seats is not None else None
     remaining = list(index)
     taken_names = set()
     by_seat: Dict[int, List[str]] = {s: [] for s in range(seats)}
-    picks = []
-    for slot, seat in enumerate(order):
-        if not remaining:
-            break
-        ctx = BotContext(index, combos, remaining, by_seat, seat, order, slot, len(order) // seats,
-                         Persona("steady", temperature=0.03), tuning or None, people=frozenset())
-        cid = choose_pick(ctx, rng)
+    picks: List[dict] = []
+
+    def take(slot, seat, cid):
+        nonlocal remaining
         by_seat[seat].append(cid)
         picks.append({"order": slot, "seat_index": seat, "card_id": cid})
         name = index[cid].name.lower()
         taken_names.add(name)
         remaining = [c for c in remaining if c != cid and index[c].name.lower() != name]
-    return {"order": order[:len(picks)], "picks": picks, "per_seat": len(order) // seats}
+
+    # Replay the kept picks; stop at the first one that no longer fits (other seats, a card gone).
+    for slot, p in enumerate(sorted(start, key=lambda p: p.get("order", 0))):
+        cid = p.get("card_id")
+        if slot >= len(order) or p.get("order") != slot or p.get("seat_index") != order[slot] or cid not in remaining:
+            break
+        take(slot, order[slot], cid)
+    kept = len(picks)
+    end = len(order) if stop is None else max(kept, min(int(stop), len(order)))
+    for slot in range(kept, end):
+        if not remaining:
+            break
+        seat = order[slot]
+        t = tuning if (only is None or seat in only) else None
+        ctx = BotContext(index, combos, remaining, by_seat, seat, order, slot, per,
+                         Persona("steady", temperature=0.03), t or None, people=frozenset())
+        take(slot, seat, choose_pick(ctx, _pick_rng(seed, slot)))
+    return {"order": order, "picks": picks, "per_seat": per, "kept": kept,
+            "seats": seat_summaries(index, combos, by_seat)}
+
+
+def seat_summaries(index: Dict[str, CardInfo], combos: List[Combo], by_seat: Dict[int, List[str]]) -> List[dict]:
+    """What each seat ended up with: colours, deck types, finished combos and how many spells are on colour."""
+    from .engine import best_pair, coloured_spells
+    from .features import castable
+    out = []
+    for seat in sorted(by_seat):
+        ids = by_seat[seat]
+        pool = [index[c] for c in ids if c in index]
+        pair = best_pair(pool) if coloured_spells(pool) >= 2 else frozenset()
+        spells = [c for c in pool if not c.is_land]
+        on = [c for c in spells if not pair or castable(c, pair)]
+        owned = set(ids)
+        done = [[index[p].name for p in cb.pieces] for cb in combos
+                if len(cb.pieces) <= TUNING["combo_max_pieces"] and set(cb.pieces) <= owned]
+        top = sorted(on, key=lambda c: -c.elo)[:23]
+        decks = deck_strength(pool)
+        out.append({
+            "seat": seat, "picks": len(ids),
+            "pair": "".join(c for c in "WUBRG" if c in pair),
+            "decks": {t: round(v, 2) for t, v in sorted(decks.items(), key=lambda kv: -kv[1]) if v >= 0.25},
+            "on_colour": round(100 * len(on) / max(len(spells), 1)),
+            "avg_elo": round(sum(c.elo for c in top) / max(len(top), 1)),
+            "creatures": sum(1 for c in top if c.is_creature),
+            "combos": done[:6],
+        })
+    return out

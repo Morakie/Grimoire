@@ -127,7 +127,9 @@ function Knob({ k, value, onChange }) {
 
 // `fetchView(body)` returns the POST response for {seat, pick_no, tuning} (a real table's /bot-lab, or a simulated
 // draft's /lab/view). `inline` renders the panel in the page instead of as a pop-up; `reloadKey` forces a reload.
-export default function BotLab({ fetchView, cubeById, seats, startSeat, onClose, inline = false, reloadKey = 0 }) {
+// `focus` ({seat, pickNo}) jumps to a pick from outside; `onSlot` hears which table pick is shown and
+// `onTuning` the weights changed from the current ones (Bot Brain uses them to re-draft).
+export default function BotLab({ fetchView, cubeById, seats, startSeat, onClose, inline = false, reloadKey = 0, focus = null, onSlot, onTuning }) {
   const [seat, setSeat] = useState(startSeat ?? seats[0]?.index ?? 0);
   const [pickNo, setPickNo] = useState(null);           // null = the seat's latest pick
   const [tuning, setTuning] = useState(loadTuning);
@@ -162,6 +164,9 @@ export default function BotLab({ fetchView, cubeById, seats, startSeat, onClose,
     return () => clearTimeout(t);
   }, [seat, pickNo, tuning, load, reloadKey]);
   useEffect(() => { if (startSeat != null) { setSeat(startSeat); setPickNo(null); } }, [startSeat, reloadKey]);
+  useEffect(() => { if (focus) { setSeat(focus.seat); setPickNo(focus.pickNo); } }, [focus]);
+  useEffect(() => { if (data && onSlot) onSlot(data.slot); }, [data, onSlot]);
+  useEffect(() => { if (onTuning) onTuning(effective); }, [effective, onTuning]);
   useEffect(() => { saveTuning(tuning); }, [tuning]);
   useEffect(() => { setOpen(null); }, [seat, pickNo]);
   useEffect(() => {

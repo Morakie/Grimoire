@@ -136,5 +136,14 @@ The page keeps tried weights in the browser and "Copy" gives them as JSON to bak
 card pool (a cube resolved from CubeCobra like a draft's, or `{vrd: true}` for the VRD pool) and returns its key, cards
 and an overview (deck types' key cards and members, most connected cards). `POST /api/lab/card` gives one card's
 dossier (roles, deck types, narrow/universal, home colours, partners, combos, a small link graph). `POST /api/lab/simulate`
-runs an all-bot snake draft with given weights and `POST /api/lab/view` is the Bot Lab view of any of its picks. Pools
-are kept in memory (`_LAB_SOURCES`); the page sends the pool again if the server answers 410.
+runs an all-bot snake draft with given weights and `POST /api/lab/view` is the Bot Lab view of any of its picks. A built
+pool is saved whole as one gzip'd document in `lab_pools` (`GET /api/lab/pools` lists them), so loading it again
+(`POST /api/lab/source {pool: key}`) is a single Mongo read with no CubeCobra, Scryfall or `card_stats` lookups. It is
+only rebuilt when asked (`refresh: true`, the page's **Rebuild** button). Pools are also kept in memory
+(`_LAB_SOURCES`); the page reloads the saved copy if the server answers 410.
+
+Simulated drafts are deterministic (each pick has its own random stream from the seed), so `/lab/simulate` can take
+`start` (the first picks of an earlier run, kept as they were) and re-draft only from there: the page's draft board
+lets you step to any pick, change weights and **Re-draft from pick N**, then outlines every pick that changed and
+shows each seat's colours / deck types before and after. `tuned_seats` gives the new weights to some seats only,
+to pit them against the current weights in the same draft.

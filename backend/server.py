@@ -2408,16 +2408,22 @@ async def bot_lab(share_id: str, body: BotLabInput):
 
 # ---------------------------------------------------------------- Bot Brain: how the bots think, no draft needed
 # A "source" is a card pool the bots know: a cube (sent by the page, resolved from CubeCobra as for a draft)
-# or the shared VRD pool. Its card index is built once and kept in memory; the page asks for it again
-# (POST /lab/source) if the server restarted.
+# or the shared VRD pool. Building one reads CubeCobra stats for every card and asks Commander Spellbook for
+# combos, so a built pool is saved whole as ONE compressed document (`lab_pools`). Loading a saved pool is a
+# single Mongo read with no CubeCobra, Scryfall or stats lookups; it's rebuilt only when asked (`refresh`).
+# The card index is also kept in memory (`_LAB_SOURCES`) while the server runs.
 _LAB_SOURCES: Dict[str, dict] = {}
 _LAB_FIELDS = ("id", "name", "mana_cost", "cmc", "type_line", "oracle_text", "color_identity", "colors", "elo",
                "image", "art_crop", "set")
+_LAB_POOLS_KEPT = 30          # saved pools beyond this (oldest first) are dropped
 
 
 class LabSourceInput(BaseModel):
     vrd: bool = False
     cards: List[dict] = Field(default_factory=list, max_length=3000)
+    pool: Optional[str] = Field(None, max_length=80)     # a saved pool's key: load it as saved
+    label: str = Field("", max_length=120)               # name to save the pool under (e.g. the CubeCobra id)
+    refresh: bool = False                                # rebuild from CubeCobra / Spellbook even if saved
 
 
 class LabCardInput(BaseModel):
@@ -2431,6 +2437,9 @@ class LabSimInput(BaseModel):
     picks: int = Field(45, ge=5, le=60)
     seed: int = 0
     tuning: Dict[str, float] = Field(default_factory=dict)
+    start: List[dict] = Field(default_factory=list, max_length=800)   # keep these picks, re-draft the rest
+    tuned_seats: Optional[List[int]] = Field(None, max_length=12)      # weights only for these seats
+    stop: Optional[int] = Field(None, ge=0, le=800)                    # end at this table pick
 
 
 class LabViewInput(BaseModel):
@@ -2439,6 +2448,7 @@ class LabViewInput(BaseModel):
     picks: List[dict] = Field(max_length=800)
     seat: Optional[int] = None
     pick_no: Optional[int] = None
+    slot: Optional[int] = None
     tuning: Dict[str, float] = Field(default_factory=dict)
     n: int = 15
 
@@ -2450,18 +2460,79 @@ def _lab_source(key: str) -> dict:
     return src
 
 
+def _lab_remember(key: str, src: dict) -> dict:
+    _LAB_SOURCES[key] = src
+    if len(_LAB_SOURCES) > 8:
+        for old in sorted(_LAB_SOURCES, key=lambda k: _LAB_SOURCES[k]["at"])[:-8]:
+            _LAB_SOURCES.pop(old, None)
+    return src
+
+
+def _lab_build(cards: List[dict], stats: Optional[dict], combo_dicts: List[dict]) -> tuple:
+    index = build_card_index(cards, stats)
+    return index, with_cube_combos(index, combos_from_dicts(combo_dicts or []))
+
+
+async def _lab_pool_save(key: str, src: dict) -> None:
+    """Save a built pool as one gzip'd document. A failed save only means the next load builds it again."""
+    import gzip
+    try:
+        blob = await run_in_threadpool(lambda: gzip.compress(json.dumps(
+            {"cards": src["cards"], "stats": src["stats"], "combos": src["combo_dicts"]},
+            separators=(",", ":")).encode(), 6))
+        if len(blob) > 12_000_000:
+            return
+        await db.lab_pools.update_one({"key": key}, {"$set": {
+            "key": key, "label": src["label"], "vrd": src["vrd"], "cards": len(src["cards"]),
+            "partial": src["partial"], "built_at": src["built_at"], "size": len(blob), "blob": blob}}, upsert=True)
+        extra = await db.lab_pools.find({}, {"_id": 0, "key": 1}).sort("built_at", -1).skip(_LAB_POOLS_KEPT).to_list(50)
+        if extra:
+            await db.lab_pools.delete_many({"key": {"$in": [e["key"] for e in extra]}})
+    except Exception as exc:
+        logger.warning("Couldn't save Bot Brain pool %s: %s", key, exc)
+
+
+async def _lab_pool_load(key: str) -> Optional[dict]:
+    import gzip
+    doc = await db.lab_pools.find_one({"key": key}, {"_id": 0})
+    if not doc or not doc.get("blob"):
+        return None
+
+    def unpack():
+        data = json.loads(gzip.decompress(doc["blob"]))
+        index, combos = _lab_build(data["cards"], data.get("stats"), data.get("combos"))
+        return data, index, combos
+    data, index, combos = await run_in_threadpool(unpack)
+    return {"index": index, "combos": combos, "cards": data["cards"], "stats": data.get("stats"),
+            "combo_dicts": data.get("combos") or [], "partial": bool(doc.get("partial")), "vrd": bool(doc.get("vrd")),
+            "label": doc.get("label") or "", "built_at": doc.get("built_at") or "", "at": time.time()}
+
+
+@api_router.get("/lab/pools")
+async def lab_pools():
+    """Card pools already built for Bot Brain, newest first (no card data: that's loaded per pool)."""
+    rows = await db.lab_pools.find({}, {"_id": 0, "blob": 0}).sort("built_at", -1).to_list(_LAB_POOLS_KEPT)
+    return fast_json({"pools": rows})
+
+
 @api_router.post("/lab/source")
 async def lab_source(body: LabSourceInput):
-    """Load a card pool for the Bot Brain page: the VRD pool, or a cube's cards (as resolved for a draft).
-    Returns its key, the cards (light fields) and an overview of how the bots see it."""
-    if body.vrd:
+    """Load a card pool for the Bot Brain page: a saved pool (`pool`), the VRD pool, or a cube's cards (as
+    resolved for a draft). Returns its key, the cards (light fields) and an overview of how the bots see it."""
+    if body.pool:
+        key = body.pool
+        src = _LAB_SOURCES.get(key) or await _lab_pool_load(key)
+        if not src:
+            raise HTTPException(status_code=404, detail="That saved pool is gone; load the cube again")
+        _lab_remember(key, src)
+    elif body.vrd:
         pool = vrd.peek()
         if not pool:
             _warm_vrd_pool()
             raise HTTPException(status_code=503, detail="The VRD card pool is loading. Try again in a minute.")
         key = f"vrd:{int(pool.get('built_at', 0))}:{len(pool.get('combos') or [])}"
-        hit = _LAB_SOURCES.get(key)
-        if not hit or (hit["partial"] and time.time() - hit["at"] > 60):
+        src = None if body.refresh else (_LAB_SOURCES.get(key) or await _lab_pool_load(key))
+        if not src:
             # The VRD pool itself carries no CubeCobra links (VRD bots don't use them). Bot Brain reads whatever
             # is cached and keeps fetching the rest in the background, as for a cube.
             cards = pool["cards"]
@@ -2470,20 +2541,24 @@ async def lab_source(body: LabSourceInput):
             except Exception as exc:
                 logger.warning("CubeCobra card stats unavailable: %s", exc)
                 st = None
-            index = await run_in_threadpool(build_card_index, cards, st)
-            combos = with_cube_combos(index, combos_from_dicts(pool.get("combos", [])))
+            combo_dicts = pool.get("combos") or []
+            index, combos = await run_in_threadpool(_lab_build, cards, st, combo_dicts)
             with_partners = sum(1 for i in index.values() if i.partners)
-            partial = with_partners < 0.5 * len(index) or not pool.get("combos")
+            partial = with_partners < 0.5 * len(index) or not combo_dicts
             if with_partners < 0.5 * len(index):       # cards already being fetched are skipped
                 _warm_card_stats(cards)
-            _LAB_SOURCES[key] = {"index": index, "combos": combos, "cards": cards, "partial": partial, "at": time.time()}
+            src = {"index": index, "combos": combos, "cards": cards, "stats": st, "combo_dicts": combo_dicts,
+                   "partial": partial, "vrd": True, "label": "VRD", "at": time.time(),
+                   "built_at": datetime.now(timezone.utc).isoformat()}
+            await _lab_pool_save(key, src)
+        _lab_remember(key, src)
     else:
         cube = [{k: c[k] for k in _LAB_FIELDS if k in c} for c in body.cards if not c.get("is_custom") and c.get("id")]
         if len(cube) < 10:
             raise HTTPException(status_code=400, detail="Load a cube of at least 10 cards")
         key = "cube:" + hashlib.sha1("\n".join(sorted(c["id"] for c in cube)).encode()).hexdigest()[:16]
-        hit = _LAB_SOURCES.get(key)
-        if not hit or (hit["partial"] and time.time() - hit["at"] > 60):
+        src = None if body.refresh else (_LAB_SOURCES.get(key) or await _lab_pool_load(key))
+        if not src:
             names = _cube_names(cube)
 
             async def stats():
@@ -2494,17 +2569,19 @@ async def lab_source(body: LabSourceInput):
                     logger.warning("CubeCobra card stats unavailable: %s", exc)
                     return None
             combo_dicts, st = await asyncio.gather(_cube_combos("lab:" + key, cube, budget_s=15.0), stats())
-            index = await run_in_threadpool(build_card_index, cube, st)
-            combos = with_cube_combos(index, combos_from_dicts(combo_dicts or []))
+            index, combos = await run_in_threadpool(_lab_build, cube, st, combo_dicts)
             with_partners = sum(1 for i in index.values() if i.partners)
             partial = with_partners < 0.8 * len(index) or combo_dicts is None
-            if partial:      # keep fetching CubeCobra pages in the background; a later reload picks them up
+            if partial:      # keep fetching CubeCobra pages in the background; "Rebuild" picks them up later
                 _warm_card_stats(cube)
-            _LAB_SOURCES[key] = {"index": index, "combos": combos, "cards": cube, "partial": partial, "at": time.time()}
-        if len(_LAB_SOURCES) > 8:
-            for old in sorted(_LAB_SOURCES, key=lambda k: _LAB_SOURCES[k]["at"])[:-8]:
-                _LAB_SOURCES.pop(old, None)
-    src = _LAB_SOURCES[key]
+            src = {"index": index, "combos": combos, "cards": cube, "stats": st, "combo_dicts": combo_dicts or [],
+                   "partial": partial, "vrd": False, "label": body.label.strip() or f"{len(cube)}-card cube",
+                   "at": time.time(), "built_at": datetime.now(timezone.utc).isoformat()}
+            await _lab_pool_save(key, src)
+        elif body.label.strip() and body.label.strip() != src.get("label"):
+            src["label"] = body.label.strip()
+            await db.lab_pools.update_one({"key": key}, {"$set": {"label": src["label"]}})
+        _lab_remember(key, src)
     attach_combos(src["index"], src["combos"])
     summary = await run_in_threadpool(source_summary, src["index"], src["combos"])
     ix = src["index"]
@@ -2512,8 +2589,8 @@ async def lab_source(body: LabSourceInput):
               "elo": round(ix[c["id"]].elo), "colors": "".join(x for x in "WUBRG" if x in ix[c["id"]].need),
               "land": ix[c["id"]].is_land}
              for c in src["cards"] if c["id"] in ix]
-    return fast_json({"source": key, "vrd": body.vrd, "partial": src["partial"], "summary": summary, "cards": cards,
-                      "knobs": knob_list()})
+    return fast_json({"source": key, "vrd": src["vrd"], "partial": src["partial"], "label": src.get("label", ""),
+                      "built_at": src.get("built_at", ""), "summary": summary, "cards": cards, "knobs": knob_list()})
 
 
 @api_router.post("/lab/card")
@@ -2527,11 +2604,15 @@ async def lab_card(body: LabCardInput):
 
 @api_router.post("/lab/simulate")
 async def lab_simulate(body: LabSimInput):
-    """An all-bot rotisserie draft of the pool with the given weights (nothing is saved)."""
+    """An all-bot rotisserie draft of the pool with the given weights (nothing is saved). With `start`, the
+    first picks are kept and the bots re-draft from there (a rewind)."""
     src = _lab_source(body.source)
     attach_combos(src["index"], src["combos"])
-    return fast_json(await run_in_threadpool(simulate, src["index"], src["combos"], body.seats, body.picks,
-                                             body.seed, clean_tuning(body.tuning)))
+    started = time.time()
+    out = await run_in_threadpool(simulate, src["index"], src["combos"], body.seats, body.picks, body.seed,
+                                  clean_tuning(body.tuning), body.start, body.tuned_seats, body.stop)
+    out["seconds"] = round(time.time() - started, 2)
+    return fast_json(out)
 
 
 @api_router.post("/lab/view")
@@ -2542,7 +2623,8 @@ async def lab_view_any(body: LabViewInput):
         raise HTTPException(status_code=400, detail="Run a draft first")
     picks = [p for p in body.picks if p.get("card_id") in src["index"]]
     per_seat = max(1, len(body.order) // max(1, len(set(body.order))))
-    slot = pick_slot(body.order, len(picks), body.seat, body.pick_no, None)
+    seat = None if body.slot is not None else body.seat
+    slot = pick_slot(body.order, len(picks), seat, body.pick_no, body.slot)
     attach_combos(src["index"], src["combos"])
     out = await run_in_threadpool(lab_view, src["index"], src["combos"], body.order, picks, per_seat, slot,
                                   clean_tuning(body.tuning), frozenset(), (), True, max(5, min(body.n, 40)))
@@ -2739,6 +2821,7 @@ async def startup():
     await db.card_names.create_index("key", unique=True)
     await db.cubes.create_index("id", unique=True)
     await db.cubes.create_index("user_id")
+    await db.lab_pools.create_index("key", unique=True)
     # Optional seed account (handy for local dev and tests). Only created when both values
     # are set explicitly; there is deliberately no built-in default password.
     admin_email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
