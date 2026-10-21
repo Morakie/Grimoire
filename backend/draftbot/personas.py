@@ -34,16 +34,19 @@ class Persona:
     weights: Dict[str, float] = field(default_factory=dict)
     temperature: float = 0.05      # pick noise; lower = more decisive
     seed: int = 0
+    lean: str = ""                 # a deck type this bot leans towards early (no two bots at a table share one)
 
     def w(self, key: str) -> float:
         return self.weights.get(key, 1.0)
 
     def to_dict(self) -> dict:
-        return {"archetype": self.archetype, "weights": self.weights, "temperature": self.temperature, "seed": self.seed}
+        return {"archetype": self.archetype, "weights": self.weights, "temperature": self.temperature, "seed": self.seed,
+                "lean": self.lean}
 
     @staticmethod
     def from_dict(d: dict) -> "Persona":
-        return Persona(d.get("archetype", "steady"), dict(d.get("weights", {})), float(d.get("temperature", 0.05)), int(d.get("seed", 0)))
+        return Persona(d.get("archetype", "steady"), dict(d.get("weights", {})), float(d.get("temperature", 0.05)),
+                       int(d.get("seed", 0)), str(d.get("lean") or ""))
 
 
 def random_persona(rng: random.Random) -> Persona:
@@ -60,3 +63,19 @@ def bot_names(rng: random.Random, count: int, taken: List[str] = ()) -> List[str
     pool = [n for n in _NAMES if n.lower() not in used]
     rng.shuffle(pool)
     return pool[:count]          # pages mark bots with an icon, so no "(bot)" in the name
+
+
+def lean_choices(names) -> List[str]:
+    """Deck types a cube can actually support: at least three of their key cards are in it (by card name)."""
+    from .decktypes import DECK_TYPES, KEYS
+    have = {str(n).lower() for n in names} | {str(n).split(" // ")[0].lower() for n in names}
+    return [t for t in DECK_TYPES if sum(1 for k in KEYS[t] if k.lower() in have) >= 3]
+
+
+def assign_leans(rng: random.Random, personas: List[Persona], choices: List[str], taken: List[str] = ()) -> None:
+    """Give each persona a different deck type to lean towards (and skip ones already taken). With more bots
+    than deck types, the rest lean nowhere."""
+    pool = [t for t in choices if t not in set(taken)]
+    rng.shuffle(pool)
+    for p, t in zip(personas, pool + [""] * len(personas)):
+        p.lean = t

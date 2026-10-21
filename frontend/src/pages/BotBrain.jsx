@@ -254,6 +254,12 @@ function SeatPips({ pair }) {
     : <span className="text-slate-500">open</span>;
 }
 
+function Persona({ p }) {
+  if (!p) return null;
+  return <div className="text-[11px] text-slate-500" title="This bot's personality: its style, and the deck type it leans towards early (a nudge, dropped if the lane is taken)">
+    {p.archetype}{p.lean ? <> · leans <span style={{ color: deckCol(p.lean) }}>{deckName(p.lean)}</span></> : " · no lean"}</div>;
+}
+
 function SeatSummary({ s, before, name, tuned }) {
   const decks = Object.entries(s.decks || {});
   const deckText = (d) => Object.keys(d || {}).slice(0, 2).map((t) => deckName(t)).join(", ") || "no deck type";
@@ -271,6 +277,7 @@ function SeatSummary({ s, before, name, tuned }) {
         <span>{s.creatures} creatures</span>
       </div>
       <div className="text-xs text-slate-300">{decks.length ? decks.slice(0, 3).map(([t, v]) => `${deckName(t)} ${Math.round(v * 100)}%`).join(" · ") : <span className="text-slate-500">No deck type</span>}</div>
+      <Persona p={s.persona} />
       {s.combos.length > 0 && <div className="text-xs text-fuchsia-300">{s.combos.map((cb) => cb.map(shortName).join(" + ")).join("; ")}</div>}
       {moved && <div className="text-xs text-sky-300">Was {before.pair ? <SeatPips pair={before.pair} /> : "open"} · {deckText(before.decks)}</div>}
     </div>
@@ -280,7 +287,7 @@ function SeatSummary({ s, before, name, tuned }) {
 
 // ---------------------------------------------------------------- lanes at a pick: who is in which deck type
 
-function LanesStrip({ lanes, focusSeat, onSeat }) {
+function LanesStrip({ lanes, focusSeat, onSeat, personas }) {
   if (!lanes) return null;
   const types = Object.keys(DECK_NAMES).filter((t) => lanes.seats.some((s) => (s.decks[t] || 0) >= 0.25));
   const inLane = (t) => lanes.seats.filter((s) => (s.decks[t] || 0) >= 0.5).length;
@@ -299,7 +306,8 @@ function LanesStrip({ lanes, focusSeat, onSeat }) {
             <tbody>
               {lanes.seats.map((s) => (
                 <tr key={s.seat} className={s.seat === focusSeat ? "bg-amber-400/10" : ""}>
-                  <td className="pr-2 whitespace-nowrap"><button type="button" onClick={() => onSeat?.(s.seat)} className={`flex items-center gap-1.5 ${s.seat === focusSeat ? "text-amber-200" : "text-slate-300 hover:text-amber-300"}`}>Bot {s.seat + 1} <SeatPips pair={s.pair} /></button></td>
+                  <td className="pr-2 whitespace-nowrap"><button type="button" onClick={() => onSeat?.(s.seat)} className={`flex items-center gap-1.5 ${s.seat === focusSeat ? "text-amber-200" : "text-slate-300 hover:text-amber-300"}`}>Bot {s.seat + 1} <SeatPips pair={s.pair} />
+                    {personas?.[s.seat]?.lean && <span className="text-[10px]" style={{ color: deckCol(personas[s.seat].lean) }} title="The deck type this bot leans towards early">leans {deckName(personas[s.seat].lean)}</span>}</button></td>
                   {types.map((t) => {
                     const v = s.decks[t] || 0;
                     return <td key={t} title={`${deckName(t)} ${Math.round(v * 100)}%`}><span className="relative block h-3.5 rounded bg-slate-800 overflow-hidden">
@@ -392,7 +400,7 @@ function SeatWeb({ web, seatName, scores, took, onPick }) {
 
 // ---------------------------------------------------------------- page
 
-const sameCfg = (a, b) => a && b && a.seats === b.seats && a.picks === b.picks && a.seed === b.seed && a.pool === b.pool;
+const sameCfg = (a, b) => a && b && a.seats === b.seats && a.picks === b.picks && a.seed === b.seed && a.pool === b.pool && !!a.personas === !!b.personas;
 
 export default function BotBrain() {
   const saved = load(STORE, {});
@@ -411,7 +419,7 @@ export default function BotBrain() {
   // Drafts: `base` is the draft with the current (default) weights; `sim` is what the board shows: the base
   // draft, or the same draft with the Lab's weights from table pick `from` on. Same seed, so every difference
   // between the two comes from the weights.
-  const [simCfg, setSimCfg] = useState({ seats: 8, picks: 45, seed: Math.floor(Math.random() * 10000) });
+  const [simCfg, setSimCfg] = useState({ seats: 8, picks: 45, seed: Math.floor(Math.random() * 10000), personas: saved.personas ?? true });
   const [base, setBase] = useState(null);
   const [sim, setSim] = useState(null);
   const [running, setRunning] = useState("");
@@ -432,7 +440,7 @@ export default function BotBrain() {
   simRef.current = sim;
   const local = !!src?.local;
 
-  useEffect(() => { save(STORE, { ...load(STORE, {}), tab, live }); }, [tab, live]);
+  useEffect(() => { save(STORE, { ...load(STORE, {}), tab, live, personas: simCfg.personas }); }, [tab, live, simCfg.personas]);
 
   // The in-browser engine: started once per visit. If it can't start, the server runs the bots.
   useEffect(() => {
@@ -563,7 +571,7 @@ export default function BotBrain() {
       let run = null;
       await engine.current.run(cfg, (chunk) => {
         if (id !== runId.current) return;
-        if (chunk.type === "start") run = { order: chunk.order, per_seat: chunk.per_seat, kept: chunk.kept, picks: chunk.picks, seats: null };
+        if (chunk.type === "start") run = { order: chunk.order, per_seat: chunk.per_seat, kept: chunk.kept, picks: chunk.picks, seats: null, personas: chunk.personas || null };
         else run = { ...run, picks: run.picks.concat(chunk.picks), seats: chunk.done ? chunk.seats : null };
         show(run);
       }, 4);
@@ -585,7 +593,7 @@ export default function BotBrain() {
     if (!src) return;
     const id = ++runId.current;
     lastKey.current = tuningKeyRef.current;     // a live re-draft still waiting would only repeat this one
-    const cfg = { ...(cfgIn || (base ? { seats: base.seats_n, picks: base.picks_n, seed: base.seed } : simCfg)), pool: src.source };
+    const cfg = { ...(cfgIn || (base ? { seats: base.seats_n, picks: base.picks_n, seed: base.seed, personas: base.cfg.personas } : simCfg)), pool: src.source };
     setError("");
     const started = performance.now();
     try {
@@ -593,7 +601,7 @@ export default function BotBrain() {
       if (!sameCfg(b?.cfg, cfg)) {
         setRunning("Drafting with the current weights…");
         setSim(null);
-        const r = await draft({ seats: cfg.seats, picks: cfg.picks, seed: cfg.seed }, id, (run) => setSim({ ...run, tuning: {}, from: 0 }));
+        const r = await draft({ seats: cfg.seats, picks: cfg.picks, seed: cfg.seed, personas: !!cfg.personas }, id, (run) => setSim({ ...run, tuning: {}, from: 0 }));
         if (id !== runId.current || !r) return;
         b = { ...r, cfg, seed: cfg.seed, seats_n: cfg.seats, picks_n: cfg.picks, seconds: (performance.now() - started) / 1000 };
         setBase(b);
@@ -607,7 +615,7 @@ export default function BotBrain() {
       const at = Math.min(from, b.picks.length);
       setRunning(`Re-drafting from pick ${at + 1} with your weights…`);
       const t0 = performance.now();
-      const body = { seats: cfg.seats, picks: cfg.picks, seed: cfg.seed, tuning: labTuning, tuned_seats: tunedSeats ? [...tunedSeats] : null, start: b.picks.slice(0, at) };
+      const body = { seats: cfg.seats, picks: cfg.picks, seed: cfg.seed, personas: !!cfg.personas, tuning: labTuning, tuned_seats: tunedSeats ? [...tunedSeats] : null, start: b.picks.slice(0, at) };
       const r = await draft(body, id, (run) => setSim({ ...run, tuning: labTuning, tuned_seats: body.tuned_seats, from: at }));
       if (id !== runId.current || !r) return;
       setSim({ ...r, tuning: labTuning, tuned_seats: body.tuned_seats, from: at, seconds: (performance.now() - t0) / 1000 });
@@ -667,6 +675,23 @@ export default function BotBrain() {
     if (labView?.took) out[labView.took.card] = labView.took.score;
     return out;
   }, [labView]);
+
+  // A pool built while Spellbook or CubeCobra was still answering is saved again when the rest arrives (a newer
+  // build of the same pool): offer it.
+  const [poolUpdate, setPoolUpdate] = useState(null);
+  useEffect(() => {
+    setPoolUpdate(null);
+    if (!src?.partial || !src.built_at) return undefined;
+    let n = 0;
+    const t = setInterval(async () => {
+      n += 1;
+      const list = await refreshPools();
+      const newer = list.find((p) => p.key === src.source && p.built_at > src.built_at);
+      if (newer || n >= 20) clearInterval(t);
+      if (newer) setPoolUpdate(newer);
+    }, 20000);
+    return () => clearInterval(t);
+  }, [src?.source, src?.built_at, src?.partial, refreshPools]);
 
   const where = local ? (src.cached ? "This browser · pool kept here" : "This browser") : engineState === "starting" ? "Server (the in-browser engine is starting)" : "Server";
 
@@ -730,7 +755,9 @@ export default function BotBrain() {
               {src.label && <span title={src.built_at ? `Built ${new Date(src.built_at).toLocaleString()}` : undefined}>Saved as <span className="text-slate-200">{PRESETS.find(([, v]) => v === src.label)?.[0] || src.label}</span>{src.built_at && <> · built {new Date(src.built_at).toLocaleDateString()}</>}</span>}
               <span className={`flex items-center gap-1 ${local ? "text-emerald-400" : "text-slate-400"}`} title={local ? "The bots run in this browser: turning knobs and re-drafting don't call the server" : "The bots run on the server"} data-testid="brain-where">
                 {local ? <Cpu className="w-3.5 h-3.5" /> : <Server className="w-3.5 h-3.5" />} {where}</span>
-              {src.partial && <span className="text-amber-300">Some CubeCobra data was still loading when this pool was built{src.vrd ? " (1,500 card pages, about 10–20 minutes the first time)" : ""}; rebuild it later for the full picture.</span>}
+              {poolUpdate && <button type="button" onClick={() => loadSource({ pool: poolUpdate.key })} data-testid="brain-pool-update"
+                className="text-xs px-2 py-1 rounded bg-emerald-500/15 border border-emerald-400/60 text-emerald-300 hover:bg-emerald-500/25">The rest of the combos arrived: load the updated pool</button>}
+              {src.partial && !poolUpdate && <span className="text-amber-300">Some combos or CubeCobra links were still loading when this pool was built{src.vrd ? " (1,500 card pages, about 10–20 minutes the first time)" : ""}. Late combos are saved by themselves (this page offers the update when they land); missing links need a Rebuild later.</span>}
               <button type="button" onClick={() => loadSource({ m: src.vrd ? "vrd" : "cube", id: cubeId, refresh: true })} data-testid="brain-rebuild"
                 title="Read the cube list, CubeCobra links and combos again, and save the new pool"
                 className="text-xs px-2 py-1 rounded border border-slate-700 text-slate-300 hover:text-amber-300 flex items-center gap-1"><RefreshCw className="w-3 h-3" /> Rebuild</button>
@@ -783,6 +810,9 @@ export default function BotBrain() {
                   <label className="text-sm"><span className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Seed</span>
                     <span className="flex gap-1"><input id="brain-seed" type="number" value={simCfg.seed} onChange={(e) => setSimCfg((c) => ({ ...c, seed: Number(e.target.value) || 0 }))} className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 w-24" />
                       <button type="button" onClick={() => setSimCfg((c) => ({ ...c, seed: Math.floor(Math.random() * 10000) }))} className="px-2 rounded-lg border border-slate-700 text-slate-300 hover:text-amber-300" aria-label="New random seed"><Dices className="w-4 h-4" /></button></span></label>
+                  <label className="text-sm flex items-center gap-2 pb-2 cursor-pointer" title="Each bot gets a random style and a different deck type to lean towards early, as at a real table. Off: every bot drafts the same way.">
+                    <input type="checkbox" checked={!!simCfg.personas} onChange={(e) => setSimCfg((c) => ({ ...c, personas: e.target.checked }))} className="accent-amber-400" data-testid="brain-personas" />
+                    Bot personalities</label>
                   <button type="submit" className="px-4 py-2 rounded-lg bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold text-sm flex items-center gap-2" data-testid="brain-run">
                     <Play className="w-4 h-4" /> {base ? "New draft" : "Run draft"}</button>
                   {running && <button type="button" onClick={stop} className="px-3 py-2 rounded-lg border border-slate-700 text-sm text-slate-200 hover:text-rose-300 flex items-center gap-1.5" data-testid="brain-stop"><Square className="w-3.5 h-3.5" /> Stop</button>}
@@ -832,7 +862,7 @@ export default function BotBrain() {
 
                     <DraftBoard sim={sim} base={tunedRun ? base : null} byId={byId} seats={simSeatsUsed} viewSlot={viewSlot} changed={changed} kept={sim.from || 0} onPick={goSlot} />
 
-                    {local && <LanesStrip lanes={lanes} focusSeat={sim.order[viewSlot]} onSeat={(s) => {
+                    {local && <LanesStrip lanes={lanes} personas={sim.personas} focusSeat={sim.order[viewSlot]} onSeat={(s) => {
                       const slot = sim.order.findIndex((x, i) => i >= viewSlot && x === s);
                       goSlot(slot >= 0 ? slot : viewSlot);
                     }} />}

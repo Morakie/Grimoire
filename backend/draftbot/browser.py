@@ -47,9 +47,10 @@ class Session:
         cfg = json.loads(raw)
         self.run = DraftRun(self.index, self.combos, int(cfg.get("seats", 8)), int(cfg.get("picks", 45)),
                             int(cfg.get("seed", 0)), clean_tuning(cfg.get("tuning")) or None, cfg.get("start") or [],
-                            cfg.get("tuned_seats"), cfg.get("stop"))
+                            cfg.get("tuned_seats"), cfg.get("stop"), bool(cfg.get("personas")))
         return json.dumps({"order": self.run.order, "per_seat": self.run.per, "kept": self.run.kept,
-                           "picks": self.run.picks, "end": self.run.end})
+                           "picks": self.run.picks, "end": self.run.end,
+                           "personas": [{"archetype": p.archetype, "lean": p.lean} for p in self.run.personas]})
 
     def run_step(self, n: int) -> str:
         """Make up to n more picks of the current draft. When it's finished, also returns the seat summaries."""

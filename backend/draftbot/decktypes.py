@@ -58,11 +58,10 @@ KEYS: Dict[str, tuple] = {
         "Painter's Servant", "Grindstone",
     ),
     # ---------------------------------------------------------------- combo and cheating things into play
-    "storm": (
+    "storm": (       # storm finishers and engines only: rituals and Yawgmoth's Will are core (any black deck plays them)
         "Tendrils of Agony", "Brain Freeze", "Grapeshot", "Mind's Desire", "Underworld Breach",
-        "Lion's Eye Diamond", "Doomsday", "Yawgmoth's Will", "Dark Ritual", "Cabal Ritual", "Bolas's Citadel",
-        "Thassa's Oracle", "Tainted Pact", "Empty the Warrens", "Past in Flames", "Ad Nauseam", "High Tide",
-        "Time Spiral", "Peer into the Abyss", "Rite of Flame",
+        "Lion's Eye Diamond", "Doomsday", "Empty the Warrens", "Past in Flames", "Ad Nauseam", "High Tide",
+        "Peer into the Abyss", "Aetherflux Reservoir",
     ),
     "reanimator": (
         "Entomb", "Reanimate", "Animate Dead", "Exhume", "Buried Alive", "Necromancy", "Unburial Rites",
@@ -137,6 +136,8 @@ KEYS: Dict[str, tuple] = {
 # Will in control). They count as members (CORE_MEMBERSHIP) so a bot in that deck type wants them more, but they
 # are not keys: bots outside the deck type value them as usual.
 CORE: Dict[str, tuple] = {
+    "storm": ("Dark Ritual", "Cabal Ritual", "Rite of Flame", "Yawgmoth's Will", "Bolas's Citadel", "Time Spiral",
+              "Thassa's Oracle", "Tainted Pact", "Necropotence", "Demonic Consultation"),
     "red_aggro": ("Lightning Bolt", "Chain Lightning", "Lava Dart", "Price of Progress"),
     "tempo": ("Lightning Bolt", "Force of Will", "Counterspell", "Brainstorm", "Ponder", "Preordain", "Daze",
               "Force of Negation", "Fire // Ice"),

@@ -28,6 +28,8 @@ KNOBS: List[tuple] = [
     ("Synergy", "drafted_with_share", "'Often drafted with' share", "How much the weaker 'often drafted with' links count next to 'synergistic' ones.", 0, 1, 0.05),
     ("Synergy", "combo_base", "Combo weight early", "Value of combo pieces at the start of the draft.", 0, 1.5, 0.05),
     ("Synergy", "combo_growth", "Combo weight growth", "Extra combo value by mid-draft.", 0, 1.5, 0.05),
+    ("Deck types", "lean_weight", "Personality lean", "Early bonus for the deck type each bot leans towards (different for every bot). Fades as the draft goes on and when others are in that lane.", 0, 0.6, 0.05),
+    ("Deck types", "crowd_margin", "Third seat backs off by", "How far behind the second seat in a deck type a third seat must be to back off fully (lower = backs off sooner).", 0.05, 1, 0.05),
     ("Synergy", "contest_weight", "Fight for a shared lane", "Bonus for a deck type's cards when a rival is in it too.", 0, 0.6, 0.05),
     ("Deck types", "narrow_floor", "Narrow cards outside their deck", "Share of value Top, Baubles, Karakas keep for a bot not in a deck that uses them.", 0, 1, 0.05),
     ("Deck types", "key_floor", "Key cards outside their deck", "Share of value Urza, Reanimate, Ajani keep for a bot not in their deck type.", 0, 1, 0.05),
@@ -236,8 +238,20 @@ class DraftRun:
 
     def __init__(self, index: Dict[str, CardInfo], combos: List[Combo], seats: int, per_seat: int, seed: int = 0,
                  tuning: Optional[Dict[str, float]] = None, start: Sequence[dict] = (),
-                 tuned_seats: Optional[Iterable[int]] = None, stop: Optional[int] = None):
+                 tuned_seats: Optional[Iterable[int]] = None, stop: Optional[int] = None, personas: bool = False):
         self.index, self.combos, self.seed, self.tuning = index, combos, seed, tuning
+        # Personalities as at a real table (from the seed, so a re-draft gets the same ones): a random archetype
+        # each and a different deck type to lean towards. Without them every bot drafts as "steady".
+        if personas:
+            import random as _random
+            from .personas import assign_leans, lean_choices, random_persona
+            rng = _random.Random(seed * 7919 + 17)
+            self.personas = [random_persona(rng) for _ in range(seats)]
+            assign_leans(rng, self.personas, lean_choices(c.name for c in index.values()))
+            for p in self.personas:
+                p.temperature = 0.03
+        else:
+            self.personas = [Persona("steady", temperature=0.03) for _ in range(seats)]
         self.order = snake_order(seats, min(per_seat, max(1, len(index) // max(seats, 1))))
         self.per = len(self.order) // seats
         self.only = frozenset(tuned_seats) if tuned_seats is not None else None
@@ -274,27 +288,30 @@ class DraftRun:
             seat = self.order[slot]
             t = self.tuning if (self.only is None or seat in self.only) else None
             ctx = BotContext(self.index, self.combos, self.remaining, self.by_seat, seat, self.order, slot, self.per,
-                             Persona("steady", temperature=0.03), t or None, people=frozenset(), memo=self.memo)
+                             self.personas[seat], t or None, people=frozenset(), memo=self.memo)
             self._take(slot, seat, choose_pick(ctx, _pick_rng(self.seed, slot)))
             made.append(self.picks[-1])
             n -= 1
         return made
 
     def result(self) -> dict:
-        return {"order": self.order, "picks": self.picks, "per_seat": self.per, "kept": self.kept,
-                "seats": seat_summaries(self.index, self.combos, self.by_seat)}
+        seats = seat_summaries(self.index, self.combos, self.by_seat)
+        for s in seats:
+            p = self.personas[s["seat"]]
+            s["persona"] = {"archetype": p.archetype, "lean": p.lean}
+        return {"order": self.order, "picks": self.picks, "per_seat": self.per, "kept": self.kept, "seats": seats}
 
 
 def simulate(index: Dict[str, CardInfo], combos: List[Combo], seats: int, per_seat: int, seed: int = 0,
              tuning: Optional[Dict[str, float]] = None, start: Sequence[dict] = (),
-             tuned_seats: Optional[Iterable[int]] = None, stop: Optional[int] = None) -> dict:
+             tuned_seats: Optional[Iterable[int]] = None, stop: Optional[int] = None, personas: bool = False) -> dict:
     """An all-bot rotisserie draft (snake order) with the given weights. Returns the order and picks in
     the same shape as a real draft, so lab_view can look at any of its picks.
 
     `start` keeps the first picks of an earlier run (a rewind): the bots re-draft only from there on.
     `tuned_seats` limits the weights to some seats (the others use the current ones), to compare the two
     side by side in one draft. `stop` ends the draft at that table pick."""
-    run = DraftRun(index, combos, seats, per_seat, seed, tuning, start, tuned_seats, stop)
+    run = DraftRun(index, combos, seats, per_seat, seed, tuning, start, tuned_seats, stop, personas)
     run.step(len(run.order))
     return run.result()
 

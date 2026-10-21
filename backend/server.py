@@ -32,7 +32,7 @@ from draftbot.combos import with_cube_combos
 from draftbot.combos import attach_combos
 from draftbot.cardstats import draft_stats, ensure_stats
 from draftbot.report import build_report
-from draftbot.personas import Persona
+from draftbot.personas import Persona, assign_leans, lean_choices
 from draftbot.engine import score_pool, suggest_picks
 from draftbot.lab import card_dossier, clean_tuning, knob_list, lab_view, pick_slot, simulate, source_payload
 from draftbot.deckbuild import suggest_deck
@@ -1552,6 +1552,13 @@ async def start_draft(share_id: str):
     # Card knowledge for bots and pick suggestions: Spellbook combos plus CubeCobra ratings and
     # package partners (usually cached while the lobby filled up; bot tables wait a little for them).
     has_bots = any(p.get("is_bot") for p in d["players"])
+    if has_bots and d.get("pool") != "vintage" and d.get("mode") != "packs":
+        # Each bot leans towards a different deck type the cube supports (a nudge early on, never forced).
+        bots = [p for p in d["players"] if p.get("is_bot")]
+        personas = [Persona.from_dict(p.get("persona", {})) for p in bots]
+        assign_leans(random.Random(share_id), personas, lean_choices(c.get("name", "") for c in d["cube"]))
+        for p, persona in zip(bots, personas):
+            p["persona"] = persona.to_dict()
 
     async def _stats():
         try:
@@ -1613,10 +1620,11 @@ async def build_from_pool(share_id: str, seat: int, size: int = 40, x_player_tok
 _COMBOS_CACHE: Dict[str, list] = {}   # cube signature -> combo dicts (Commander Spellbook)
 
 
-async def _cube_combos(share_id: str, cube: List[dict], budget_s: float) -> Optional[list]:
+async def _cube_combos(share_id: str, cube: List[dict], budget_s: float, on_late=None) -> Optional[list]:
     """Spellbook combos for a cube, remembered per cube so restarting the same cube is instant. If the
     lookup takes longer than `budget_s`, the draft starts without them and they're added when they
-    arrive (bots and suggestions work fine meanwhile, just without combo awareness)."""
+    arrive (bots and suggestions work fine meanwhile, just without combo awareness). `on_late(combos)` is
+    called instead of updating a draft when they arrive late (Bot Brain pools)."""
     sig = hashlib.sha1("\n".join(sorted(c.get("name", "") for c in cube if not c.get("is_custom"))).encode()).hexdigest()
     if sig in _COMBOS_CACHE:
         return _COMBOS_CACHE[sig]
@@ -1637,6 +1645,9 @@ async def _cube_combos(share_id: str, cube: List[dict], budget_s: float) -> Opti
             try:
                 combos = await task
             except Exception:
+                return
+            if on_late is not None:
+                await on_late(combos)
                 return
             await db.drafts.update_one({"share_id": share_id}, {"$set": {"bot_combos": combos}})
             _CARDS_CACHE.pop(share_id, None)
@@ -2440,6 +2451,7 @@ class LabSimInput(BaseModel):
     start: List[dict] = Field(default_factory=list, max_length=800)   # keep these picks, re-draft the rest
     tuned_seats: Optional[List[int]] = Field(None, max_length=12)      # weights only for these seats
     stop: Optional[int] = Field(None, ge=0, le=800)                    # end at this table pick
+    personas: bool = False                                             # bot personalities as at a real table
 
 
 class LabViewInput(BaseModel):
@@ -2568,14 +2580,30 @@ async def lab_source(body: LabSourceInput):
                 except Exception as exc:
                     logger.warning("CubeCobra card stats unavailable: %s", exc)
                     return None
-            combo_dicts, st = await asyncio.gather(_cube_combos("lab:" + key, cube, budget_s=15.0), stats())
+            label = body.label.strip() or f"{len(cube)}-card cube"
+
+            async def combos_arrived(late: list) -> None:
+                """Spellbook answered after the budget: save the pool again with its combos (a new built_at, so
+                pages that keep a copy download the new one)."""
+                old = _LAB_SOURCES.get(key) or await _lab_pool_load(key)
+                if not old:
+                    return
+                index2, combos2 = await run_in_threadpool(_lab_build, old["cards"], old["stats"], late)
+                with_p = sum(1 for i in index2.values() if i.partners)
+                fresh = dict(old, index=index2, combos=combos2, combo_dicts=late, at=time.time(),
+                             partial=with_p < 0.8 * len(index2), built_at=datetime.now(timezone.utc).isoformat())
+                _lab_remember(key, fresh)
+                await _lab_pool_save(key, fresh)
+                logger.info("Bot Brain pool %s: %d late combos saved", key, len(late))
+
+            combo_dicts, st = await asyncio.gather(_cube_combos("lab:" + key, cube, budget_s=15.0, on_late=combos_arrived), stats())
             index, combos = await run_in_threadpool(_lab_build, cube, st, combo_dicts)
             with_partners = sum(1 for i in index.values() if i.partners)
             partial = with_partners < 0.8 * len(index) or combo_dicts is None
             if partial:      # keep fetching CubeCobra pages in the background; "Rebuild" picks them up later
                 _warm_card_stats(cube)
             src = {"index": index, "combos": combos, "cards": cube, "stats": st, "combo_dicts": combo_dicts or [],
-                   "partial": partial, "vrd": False, "label": body.label.strip() or f"{len(cube)}-card cube",
+                   "partial": partial, "vrd": False, "label": label,
                    "at": time.time(), "built_at": datetime.now(timezone.utc).isoformat()}
             await _lab_pool_save(key, src)
         elif body.label.strip() and body.label.strip() != src.get("label"):
@@ -2641,7 +2669,7 @@ async def lab_simulate(body: LabSimInput):
     attach_combos(src["index"], src["combos"])
     started = time.time()
     out = await run_in_threadpool(simulate, src["index"], src["combos"], body.seats, body.picks, body.seed,
-                                  clean_tuning(body.tuning), body.start, body.tuned_seats, body.stop)
+                                  clean_tuning(body.tuning), body.start, body.tuned_seats, body.stop, body.personas)
     out["seconds"] = round(time.time() - started, 2)
     return fast_json(out)
 

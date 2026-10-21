@@ -864,3 +864,41 @@ def test_power_ranks_with_the_rest_of_the_power():
         card("bow", "Orcish Bowmasters", "{1}{B}", 2, "Creature — Orc Archer", "Flash", "B", 1853)]
     idx = build_card_index(cube)
     assert idx["twister"].elo >= 2237 and idx["twister"].power > idx["bow"].power
+
+
+def test_third_seat_backs_off_a_deck_type_two_rivals_are_in():
+    """Two seats in a deck type is fine; a bot that would be the third (not deeper than the second rival)
+    backs off, even when it's nearly as deep. One deeper than the second rival keeps fighting."""
+    from draftbot.engine import deck_outlook
+    from draftbot.decktypes import DECK_TYPES
+    ctx = _two_seat_ctx(synthetic_cube(), [], [], [])
+    zero = {t: 0.0 for t in DECK_TYPES}
+    rivals = [dict(zero, storm=1.0), dict(zero, storm=0.8)]
+    third, _ = deck_outlook(ctx, dict(zero, storm=0.75), rivals)
+    level, _ = deck_outlook(ctx, dict(zero, storm=0.8), rivals)
+    deeper, _ = deck_outlook(ctx, dict(zero, storm=0.9), rivals)
+    assert third["storm"] < 0.5 and level["storm"] < 0.8 and deeper["storm"] == 0.9
+    pair, _ = deck_outlook(ctx, dict(zero, storm=0.75), [dict(zero, storm=1.0)])
+    assert pair["storm"] == 0.75                                      # only one rival: no crowding
+
+
+def test_bots_get_different_leans_that_fade_when_a_lane_is_taken():
+    import random as _r
+    from draftbot.personas import Persona, assign_leans, lean_choices, random_persona
+    names = ["Goblin Guide", "Monastery Swiftspear", "Eidolon of the Great Revel", "Thalia, Guardian of Thraben",
+             "Mother of Runes", "Giver of Runes", "Splinter Twin", "Pestermite"]
+    choices = lean_choices(names)
+    assert "red_aggro" in choices and "white_aggro" in choices and "twin" not in choices   # twin has only 2 keys
+    ps = [random_persona(_r.Random(i)) for i in range(5)]
+    assign_leans(_r.Random(1), ps, choices)
+    leans = [p.lean for p in ps if p.lean]
+    assert len(leans) == len(set(leans)) == 2                         # distinct; the rest lean nowhere
+    cube = _aggro_cube()
+    idx = build_card_index(cube)
+
+    def plan_part(rival, lean):
+        ctx = _two_seat_ctx(cube, [], ["U0"], rival, persona=Persona("steady", temperature=0.001, lean=lean), explain=True)
+        ctx.index = idx
+        return {c: i for _, c, i in score_pool(ctx)}["thalia"]["plan"]
+    assert plan_part(["U1"], "white_aggro") > plan_part(["U1"], "") + 0.05
+    assert plan_part(["ocelot", "mom", "ajani"], "white_aggro") < plan_part(["U1"], "white_aggro")

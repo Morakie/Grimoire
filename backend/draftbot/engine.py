@@ -78,7 +78,9 @@ TUNING: Dict[str, float] = {
     "contest_weight": 0.15,     # a deck type the bot shares with a rival: its key/member cards are worth this
                                 # much more (if you fight for a lane, take the contested cards, not filler)
     "crowd_seats": 2,           # seats already in a deck type before it counts as crowded...
-    "crowd_cut": 0.6,           # ...then a bot behind the deepest seat values its cards up to this much less
+    "crowd_cut": 0.6,           # ...then a bot that would be the third seat values its cards up to this much less,
+    "crowd_margin": 0.25,       # ...fully once it is this far (share of depth) behind the second-deepest rival
+    "crowd_tie": 0.25,          # ...and that far even when level with it: the third seat gives way
     "deck_focus": 0.3,          # a bot fully in a deck type: cards outside it lose up to this share...
     "focus_start": 0.5,         # ...starting from this deck-type strength
     "home_weight": 0.7,         # colourless non-mana cards (Top, Skullclamp): how much their home colours matter
@@ -123,6 +125,10 @@ TUNING: Dict[str, float] = {
     "hate_full": 33,            # ... growing slowly to full by its 34th pick
     "hate_weight": 0.3,         # value of a hate card against a fully built target deck
     "hate_max": 4,              # hate cards a bot wants in all (sideboard space)
+    # personality: each bot leans towards one deck type at the start (bots at a table lean different ways). The
+    # lean is a small bonus on that deck type's key and member cards; it fades over the entry window, as soon as
+    # a rival is in that deck type (gone with two), and once the bot is clearly building something else.
+    "lean_weight": 0.15,
     "support_after": 6,         # picks before that cut fully applies (early picks keep options open)
 }
 
@@ -613,15 +619,21 @@ def deck_outlook(ctx: BotContext, mine: Dict[str, float], others: List[Dict[str,
     leading it, so four seats don't chase one artifact drafter's cards."""
     k = ctx.k
     eff, open_ = {}, {}
+    crowd = int(k("crowd_seats"))
     for t in DECK_TYPES:
-        theirs = [o[t] for o in others]
+        theirs = sorted((o[t] for o in others), reverse=True)
         seats_in = sum(1 for v in theirs if v >= k("deck_seat"))
-        leader = max(theirs, default=0.0)
-        if seats_in >= k("crowd_seats") and leader > 0:
-            # Fight or pivot: a bot about as deep as the deepest rival keeps fighting for the deck type's
-            # cards; a shallow one backs off (and so moves to something more open).
-            behind = max(0.0, 1.0 - mine[t] / leader)
-            eff[t] = mine[t] * (1.0 - k("crowd_cut") * behind)
+        leader = theirs[0] if theirs else 0.0
+        if seats_in >= crowd and leader > 0:
+            # Two seats fighting over a deck type is fine; a third is too many. With crowd_seats rivals already
+            # in it, a bot that isn't deeper than the last of them (the second-deepest rival) is the extra seat:
+            # it backs off, fully once it's crowd_margin behind (so it moves to something more open). A bot
+            # deeper than that rival keeps fighting, and the shallowest of the rivals backs off instead.
+            ref = theirs[crowd - 1]
+            behind = max(0.0, 1.0 - mine[t] / ref) if ref > 0 else 0.0
+            if mine[t] <= ref:
+                behind = max(behind, k("crowd_tie"))           # level with them: still the third seat
+            eff[t] = mine[t] * (1.0 - k("crowd_cut") * min(1.0, behind / max(k("crowd_margin"), 1e-6)))
         else:
             eff[t] = mine[t]
         # One seat in it: less open the deeper that seat already is (0.5 at the threshold, 0.25 when full).
@@ -982,10 +994,18 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     deck_mine = deck_strength(mine)
     others = deck_table(ctx, rivals)
     deck_eff, deck_open = deck_outlook(ctx, deck_mine, others)
-    shared = shared_types(ctx, deck_mine, others)
+    # Focus and fighting follow the crowd-adjusted depth: a bot that would be a deck type's third seat neither
+    # focuses on it nor fights for its contested cards.
+    shared = shared_types(ctx, deck_eff, others)
     entry = max(0.0, 1.0 - t / k("entry_window"))
+    lean = p.lean if p.lean in deck_mine else ""
+    if lean:
+        elsewhere = max((v for dt, v in deck_mine.items() if dt != lean), default=0.0)
+        lean_w = k("lean_weight") * entry * deck_open[lean] * max(0.0, 1.0 - 2.0 * max(0.0, elsewhere - deck_mine[lean]))
+        if lean_w <= 0:
+            lean = ""
     # focus_factor is 1 for every card until the bot is past focus_start in some deck type
-    focus_on = bool(deck_mine) and (k("focus_start") >= 1.0 or max(deck_mine.values()) > k("focus_start"))
+    focus_on = bool(deck_eff) and (k("focus_start") >= 1.0 or max(deck_eff.values()) > k("focus_start"))
     plain = ctx.memo.setdefault("plain", {}) if ctx.memo is not None else None
     commitment = max(progress, max(deck_mine.values(), default=0.0))
     w_power = (1.0 - k("power_late_drop") * t) * (1.0 - k("commit_rating_cut") * commitment) * p.w("power") * k("rating_weight")
@@ -1042,7 +1062,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         else:
             d_mult = deck_factor(ctx, card, deck_eff, deck_open, progress * (_lane_fit(card, pair) if pair else 0.0), entry)
         if focus_on:
-            d_mult *= focus_factor(ctx, card, deck_mine)
+            d_mult *= focus_factor(ctx, card, deck_eff)
         power *= d_mult
         if card.is_land and card.is_fixing:
             damp = k("early_fixing_damp")
@@ -1058,6 +1078,8 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
             t_plan += k("contest_weight") * max(
                 (s * (1.0 if dt in card.key_of else min(1.0, card.deck.get(dt, 0.0) / 0.5))
                  for dt, s in shared.items()), default=0.0)
+        if lean:
+            t_plan += lean_w * (1.0 if lean in card.key_of else min(1.0, card.deck.get(lean, 0.0) / 0.5))
         t_partner = k("partner_weight") * p.w("combo") * partner_value(card, partners_from, fit_of, k("drafted_with_share"), k("partner_full"))
         if card.is_fixing:
             t_partner *= k("fixing_partner_share")
