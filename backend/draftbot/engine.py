@@ -35,11 +35,15 @@ TUNING: Dict[str, float] = {
     # colours
     # Commitment counts coloured spells owned, not picks: in a powered cube the first picks are often
     # Moxen, rocks and lands, which say nothing about colours.
-    "commit_start": 2,          # coloured spells owned before colour preference starts to matter
-    "commit_pick": 7,           # with this many coloured spells the bot is committed to two colours
+    "commit_start": 1,          # coloured spells owned before colour preference starts to matter
+    "commit_pick": 5,           # with this many coloured spells the bot is committed to two colours
+                                # (was 2 / 7: a bot holding Tutor, Bowmasters and Frog still took White Plume
+                                # Adventurer and Minsc & Boo on rating; 1 / 5 cut early off-colour picks 0.52 -> 0.31
+                                # per bot and moved green from 1.0 to 1.5 seats per table, deck Elo +3)
     "flex_floor": 0.9,          # off-colour cards keep this share of their value while flexible...
     "committed_floor": 0.1,     # ...and this share once committed
-    "openness_weight": 2.5,     # colour signals from the table (early picks only); tuned in simulations
+    "openness_weight": 5.0,     # colour signals from the table (early picks only): what's left in each colour and
+                                # how many rivals are in it, so an under-drafted colour (green) gets picked up
     "rival_committed_floor": 0.3,  # how much a committed rival still wants an off-colour card (float risk);
                                 # rivals who aren't committed yet want every colour (flex_floor), like the bot
     "rival_combo_finish": 1.0,  # a rival holding all but one piece of a combo very likely takes the last piece
@@ -922,8 +926,11 @@ def colour_state(ctx: BotContext, mine: List[CardInfo], n: int, rivals: List[int
     k = ctx.k
     col = coloured_spells(mine)
     t_open = 1 - min(1.0, n / max(ctx.picks_per_seat, 1)) * 1.6
+    # Table signals matter while the bot is open and fade as it commits: six blue and six red cards stay
+    # blue-red however open black looks.
+    settled = min(1.0, max(0.0, (col - k("commit_start")) / max(1.0, k("commit_pick") - k("commit_start"))))
     open_by_colour = openness(ctx, rivals)
-    prior = {lane: k("openness_weight") * max(t_open, 0.0) * ctx.persona.w("openness")
+    prior = {lane: k("openness_weight") * max(t_open, 0.0) * (1.0 - settled) * ctx.persona.w("openness")
              * sum(open_by_colour[c] for c in lane) / len(lane) for lane in LANES}
     dist = lane_distribution(mine, col, prior)
     pair = best_pair(mine, prior) if col >= k("commit_start") else None
