@@ -27,7 +27,7 @@ from itertools import combinations
 from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 
 from .combos import PACKAGES, Combo
-from .decktypes import DECK_TYPES, deck_strength, is_narrow, is_universal
+from .decktypes import ARTIFACT_TYPES, DECK_TYPES, deck_strength, is_narrow, is_universal
 from .features import COLORS, CardInfo
 from .personas import Persona
 
@@ -993,7 +993,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     open_enablers = sum(1 for c in remaining if ctx.index[c].roles & _TARGET_ENABLERS and ctx.index[c].power >= 0.3)
     enabler_fill = min(1.0, (owned_enablers + k("open_support_share") * open_enablers) / k("fatty_enablers"))
     # Utility artifacts: past a couple, only a deck with an artifact plan wants more.
-    art_plan = max(deck_mine.get(t, 0.0) for t in ("tolarian", "workshop", "artifacts"))
+    art_plan = max(deck_mine.get(t, 0.0) for t in ARTIFACT_TYPES)
     utility_glut = art_plan < 0.5 and sum(1 for c in mine if _is_utility_artifact(c)) >= k("utility_limit")
     splash_fixing = sum(1 for c in mine if c.is_land and splash and splash in c.produces and pair and c.produces & pair) \
         if splash else 0

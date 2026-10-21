@@ -54,6 +54,21 @@ cube (CubeCobra `43fd5f2a-942e-40c3-a563-bf3a7ce0cc22`) or both combined with du
 - PR #18 (2026-10-20): role-tag fixes (reminder text ignored, `ROLE_OVERRIDES` for hand-checked cards), role
   saturation (`ROLE_SATURATION`), utility-artifact limit, Bot Lab in the draft room.
 
+## Deck types (2026-10-20 expansion)
+
+22 deck types in `backend/draftbot/decktypes.py`: tolarian, workshop (stax), artifacts, welder (red artifacts),
+wildfire, painter, storm, reanimator, cheat (Sneak/Show/Breach/Flash/Channel), twin, nadu, recursion (Nightmare/
+Pod/Survival), blink, control, tempo (UR), white_aggro (white weenie / D&T), red_aggro (red aggro / burn), gruul
+(RG beats), pox, domain, ramp (green), lands. Boros is both aggro types.
+
+- KEYS are signature cards only. A key card is worth less (55%) to a bot outside its deck type, so generically
+  strong cards must never be keys.
+- CORE lists strong coloured cards that belong to a deck type without defining it (Lightning Bolt in red aggro,
+  Force of Will in control): membership 0.6, no penalty for anyone else. No colourless spells in CORE (they
+  would turn narrow).
+- Everything else gets its membership from CubeCobra partners (the "web"), so the lists stay short.
+- Check a card's deck types in Bot Brain's Cards tab.
+
 ## Findings from reviews of real drafts
 
 - Replays use the bot-inputs export of a draft and the bot report (`GET /api/drafts/{id}/bot-report`), which

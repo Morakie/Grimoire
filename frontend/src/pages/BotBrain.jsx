@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import api from "@/lib/api";
 import { resolveCube, stepError } from "@/lib/cube";
 import BotLab from "@/components/BotLab";
+import { DECK_NAMES, deckName, deckCol } from "@/lib/deckTypes";
 import { startEngine, poolBytes } from "@/lib/labEngine";
 import { Sparkles, Loader2, Brain, Search, Shuffle, Dices, Play, Network, Library, RefreshCw, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, GitCompare, Zap, Cpu, Server, Square } from "lucide-react";
 
@@ -12,8 +13,6 @@ import { Sparkles, Loader2, Brain, Search, Shuffle, Dices, Play, Network, Librar
 // it once, keeps it in this browser and runs the same bot code here (lib/labEngine.js), so turning knobs and
 // re-drafting never call the server. If the in-browser engine can't start, the server runs the bots instead.
 
-const DECK_NAMES = { tolarian: "Tolarian", workshop: "Workshop", artifacts: "Artifacts", storm: "Storm", reanimator: "Reanimator", cheat: "Cheat", lands: "Lands", aggro: "Aggro" };
-const DECK_COL = { tolarian: "#38bdf8", workshop: "#a8a29e", artifacts: "#f59e0b", storm: "#e879f9", reanimator: "#8b5cf6", cheat: "#f43f5e", lands: "#84cc16", aggro: "#fb923c" };
 const MANA = { W: "#f2e8c9", U: "#3b82f6", B: "#a855f7", R: "#ef4444", G: "#22c55e" };
 const COL_NAME = { W: "white", U: "blue", B: "black", R: "red", G: "green" };
 const STORE = "grim_brain";
@@ -35,7 +34,7 @@ function save(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } ca
 
 function botRead(d) {
   if (d.staple) return "Taken on sight: the bots rate it with the pool's very top picks, whatever its Elo.";
-  if (d.key_of.length) return `A key card: owning it puts a bot into ${d.key_of.map((t) => DECK_NAMES[t]).join(" and ")}. Bots not in that deck type count it at 55%, unless the deck type is still open early in the draft.`;
+  if (d.key_of.length) return `A key card: owning it puts a bot into ${d.key_of.map((t) => deckName(t)).join(" and ")}. Bots not in that deck type count it at 55%, unless the deck type is still open early in the draft.`;
   if (d.universal) return "Universal: goes in nearly every deck, so owning it tells the bots nothing about which deck they're building.";
   if (d.narrow) return "Narrow: it only pays off in some decks, so a bot values it at 40% until it's in a deck that uses it.";
   if (d.home) return "Colourless, with a home: it counts most in the colours its partners are drafted in.";
@@ -144,8 +143,8 @@ function Dossier({ d, card, onPick }) {
           <h3 className="text-[11px] uppercase tracking-wider text-slate-500">Deck-type membership</h3>
           {Object.keys(d.deck).length ? Object.entries(d.deck).map(([t, v]) => (
             <div key={t} className="grid grid-cols-[90px_1fr_40px] items-center gap-2 text-sm">
-              <span className="text-slate-300">{DECK_NAMES[t] || t}</span>
-              <span className="relative h-2 rounded bg-slate-800 overflow-hidden"><span className="absolute inset-y-0 left-0 rounded" style={{ width: `${v * 100}%`, background: DECK_COL[t] }} /><span className="absolute -inset-y-0.5 left-1/2 w-px bg-slate-500" title="A bot counts a card as in from 50%" /></span>
+              <span className="text-slate-300">{deckName(t)}</span>
+              <span className="relative h-2 rounded bg-slate-800 overflow-hidden"><span className="absolute inset-y-0 left-0 rounded" style={{ width: `${v * 100}%`, background: deckCol(t) }} /><span className="absolute -inset-y-0.5 left-1/2 w-px bg-slate-500" title="A bot counts a card as in from 50%" /></span>
               <span className="text-xs tabular-nums text-slate-400 text-right">{Math.round(v * 100)}%</span>
             </div>
           )) : <p className="text-sm text-slate-500">In no deck type: none of its partners are key cards.</p>}
@@ -257,7 +256,7 @@ function SeatPips({ pair }) {
 
 function SeatSummary({ s, before, name, tuned }) {
   const decks = Object.entries(s.decks || {});
-  const deckText = (d) => Object.keys(d || {}).slice(0, 2).map((t) => DECK_NAMES[t] || t).join(", ") || "no deck type";
+  const deckText = (d) => Object.keys(d || {}).slice(0, 2).map((t) => deckName(t)).join(", ") || "no deck type";
   const moved = before && (before.pair !== s.pair || deckText(before.decks) !== deckText(s.decks));
   const delta = before ? s.avg_elo - before.avg_elo : 0;
   return (
@@ -271,7 +270,7 @@ function SeatSummary({ s, before, name, tuned }) {
         <span>Elo {s.avg_elo}{before && delta !== 0 && <span className={delta > 0 ? "text-emerald-400" : "text-rose-400"}> {delta > 0 ? "+" : ""}{delta}</span>}</span>
         <span>{s.creatures} creatures</span>
       </div>
-      <div className="text-xs text-slate-300">{decks.length ? decks.slice(0, 3).map(([t, v]) => `${DECK_NAMES[t] || t} ${Math.round(v * 100)}%`).join(" · ") : <span className="text-slate-500">No deck type</span>}</div>
+      <div className="text-xs text-slate-300">{decks.length ? decks.slice(0, 3).map(([t, v]) => `${deckName(t)} ${Math.round(v * 100)}%`).join(" · ") : <span className="text-slate-500">No deck type</span>}</div>
       {s.combos.length > 0 && <div className="text-xs text-fuchsia-300">{s.combos.map((cb) => cb.map(shortName).join(" + ")).join("; ")}</div>}
       {moved && <div className="text-xs text-sky-300">Was {before.pair ? <SeatPips pair={before.pair} /> : "open"} · {deckText(before.decks)}</div>}
     </div>
@@ -294,7 +293,7 @@ function LanesStrip({ lanes, focusSeat, onSeat }) {
             <thead><tr><th />
               {types.map((t) => {
                 const n = inLane(t);
-                return <th key={t} className="px-1 text-left font-normal min-w-[78px]"><span className="flex items-center gap-1 text-slate-300"><span className="w-2 h-2 rounded-full" style={{ background: DECK_COL[t] }} />{DECK_NAMES[t]}</span>
+                return <th key={t} className="px-1 text-left font-normal min-w-[78px]"><span className="flex items-center gap-1 text-slate-300"><span className="w-2 h-2 rounded-full" style={{ background: deckCol(t) }} />{deckName(t)}</span>
                   <span className={`tabular-nums ${n >= 3 ? "text-rose-400 font-semibold" : n === 2 ? "text-amber-300" : "text-slate-500"}`}>{n} seat{n === 1 ? "" : "s"}{n >= 3 ? " · crowded" : ""}</span></th>;
               })}</tr></thead>
             <tbody>
@@ -303,8 +302,8 @@ function LanesStrip({ lanes, focusSeat, onSeat }) {
                   <td className="pr-2 whitespace-nowrap"><button type="button" onClick={() => onSeat?.(s.seat)} className={`flex items-center gap-1.5 ${s.seat === focusSeat ? "text-amber-200" : "text-slate-300 hover:text-amber-300"}`}>Bot {s.seat + 1} <SeatPips pair={s.pair} /></button></td>
                   {types.map((t) => {
                     const v = s.decks[t] || 0;
-                    return <td key={t} title={`${DECK_NAMES[t]} ${Math.round(v * 100)}%`}><span className="relative block h-3.5 rounded bg-slate-800 overflow-hidden">
-                      <span className="absolute inset-y-0 left-0" style={{ width: `${v * 100}%`, background: DECK_COL[t], opacity: v >= 0.5 ? 0.95 : 0.45 }} /></span></td>;
+                    return <td key={t} title={`${deckName(t)} ${Math.round(v * 100)}%`}><span className="relative block h-3.5 rounded bg-slate-800 overflow-hidden">
+                      <span className="absolute inset-y-0 left-0" style={{ width: `${v * 100}%`, background: deckCol(t), opacity: v >= 0.5 ? 0.95 : 0.45 }} /></span></td>;
                   })}
                 </tr>
               ))}
@@ -364,7 +363,7 @@ function SeatWeb({ web, seatName, scores, took, onPick }) {
             const linked = (links[lit] || []).some(([y]) => y === n.id);
             return (
               <g key={n.id} transform={`translate(${p.x},${p.y})`} className="cursor-pointer" onClick={() => onPick(n.id)}>
-                <circle r={6} fill={colourOf(n)} stroke={n.deck ? DECK_COL[n.deck] : "#020617"} strokeWidth={n.deck ? 2.5 : 1} />
+                <circle r={6} fill={colourOf(n)} stroke={n.deck ? deckCol(n.deck) : "#020617"} strokeWidth={n.deck ? 2.5 : 1} />
                 <text x={p.left ? -10 : 10} y={4} textAnchor={p.left ? "end" : "start"} fontSize={10.5} fill={linked ? "#fde68a" : "#cbd5e1"}
                   style={{ paintOrder: "stroke", stroke: "#020617", strokeWidth: 3 }}>{shortName(n.name).slice(0, 18)}</text>
               </g>
@@ -760,7 +759,7 @@ export default function BotBrain() {
                       <section className="space-y-3"><h3 className="text-[11px] uppercase tracking-wider text-slate-500 px-2">Deck types</h3>
                         {src.summary.decks.filter((d) => d.key_count).map((d) => (
                           <div key={d.type} className="px-2 space-y-1">
-                            <div className="text-sm font-semibold flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full" style={{ background: DECK_COL[d.type] }} />{DECK_NAMES[d.type]}<span className="text-xs font-normal text-slate-500 tabular-nums">{d.key_count} key · {d.member_count} members</span></div>
+                            <div className="text-sm font-semibold flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full" style={{ background: deckCol(d.type) }} />{deckName(d.type)}<span className="text-xs font-normal text-slate-500 tabular-nums">{d.key_count} key · {d.member_count} members</span></div>
                             <div className="text-xs text-slate-400 leading-relaxed">{d.keys.slice(0, 6).map((c, k) => <React.Fragment key={c.id}>{k > 0 && ", "}<button type="button" onClick={() => pick(c.id)} className="hover:text-amber-300">{c.name.split(" // ")[0]}</button></React.Fragment>)}{d.key_count > 6 && "…"}</div>
                           </div>
                         ))}</section>

@@ -506,7 +506,7 @@ def test_transforming_sagas_are_not_blink_payoffs():
     idx = build_card_index(cube)
     assert "flicker" not in idx["fable"].roles and "flicker" not in idx["ajani"].roles
     assert "flicker" in idx["ephem"].roles
-    assert "aggro" in idx["ajani"].key_of
+    assert "white_aggro" in idx["ajani"].key_of
 
 
 def _aggro_cube():
@@ -832,3 +832,23 @@ def test_browser_session_streams_the_same_draft_as_simulate():
     assert len(r["seats"]) == 4
     view = json.loads(s.view(json.dumps({"order": [p["seat_index"] for p in picks], "picks": picks, "slot": 10})))
     assert view["slot"] == 10 and view["rows"]
+
+
+def test_core_cards_belong_to_a_deck_type_without_being_keys():
+    """Lightning Bolt counts towards red aggro for a bot in it, but isn't a key card: bots outside red aggro
+    still value it fully. Signature cards (Goblin Guide) are keys."""
+    from draftbot.engine import deck_factor
+    cube = synthetic_cube() + [
+        card("bolt", "Lightning Bolt", "{R}", 1, "Instant", "Lightning Bolt deals 3 damage to any target.", "R", 1750),
+        card("guide", "Goblin Guide", "{R}", 1, "Creature — Goblin Scout", "Haste", "R", 1600),
+        card("ragavan", "Ragavan, Nimble Pilferer", "{R}", 1, "Legendary Creature — Monkey Pirate", "", "R", 1800),
+    ]
+    idx = build_card_index(cube)
+    assert idx["bolt"].key_of == frozenset() and idx["bolt"].deck.get("red_aggro", 0) >= 0.5
+    assert "red_aggro" in idx["guide"].key_of
+    assert {"red_aggro", "tempo"} <= idx["ragavan"].key_of
+    ctx = _two_seat_ctx(cube, [], ["U0"], [])
+    from draftbot.decktypes import DECK_TYPES
+    eff = {t: 0.0 for t in DECK_TYPES}
+    assert deck_factor(ctx, idx["bolt"], eff, {t: 0.0 for t in DECK_TYPES}, 0.0) == 1.0
+    assert deck_factor(ctx, idx["guide"], eff, {t: 0.0 for t in DECK_TYPES}, 0.0) < 1.0

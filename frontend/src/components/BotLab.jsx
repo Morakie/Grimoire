@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { deckName } from "@/lib/deckTypes";
 import { Loader2, X, FlaskConical, ChevronLeft, ChevronRight, RotateCcw, Copy, ArrowUp, ArrowDown, User, SlidersHorizontal } from "lucide-react";
 
 // Bot Lab: one pick of a rotisserie table as the bots' engine sees it, with every card's score split into
@@ -21,7 +22,6 @@ const MULTS = [
   ["deck", "Deck type", "Narrow or key card outside the bot's deck type (inside Rating)"],
   ["saturated", "Saturated", "The bot already has enough cards doing this job (inside Rating)"],
 ];
-const DECK_NAMES = { tolarian: "Tolarian", workshop: "Workshop", artifacts: "Artifacts", storm: "Storm", reanimator: "Reanimator", cheat: "Cheat", lands: "Lands", aggro: "Aggro" };
 const PIP = { W: "bg-amber-50", U: "bg-blue-500", B: "bg-purple-500", R: "bg-red-500", G: "bg-green-500" };
 const STORE = "grim_botlab_tuning";
 
@@ -241,7 +241,7 @@ export default function BotLab({ fetchView, cubeById, seats, startSeat, onClose,
                       <span className="text-slate-500 text-xs">{info.coloured_spells} coloured spells · {Math.round(info.commit * 100)}% committed</span></div></div>
                   <div className="min-w-0"><div className="text-[11px] uppercase tracking-wider text-slate-500">Deck types</div>
                     <div className="flex flex-wrap gap-1.5 mt-0.5">{Object.keys(info.decks).length ? Object.entries(info.decks).slice(0, 4).map(([t, v]) => (
-                      <span key={t} className={`text-xs px-2 py-0.5 rounded-full border ${v >= 0.5 ? "border-amber-400/60 text-amber-200" : "border-slate-700 text-slate-400"}`}>{DECK_NAMES[t] || t} {Math.round(v * 100)}%</span>
+                      <span key={t} className={`text-xs px-2 py-0.5 rounded-full border ${v >= 0.5 ? "border-amber-400/60 text-amber-200" : "border-slate-700 text-slate-400"}`}>{deckName(t)} {Math.round(v * 100)}%</span>
                     )) : <span className="text-slate-400">None yet</span>}</div></div>
                   <div className="min-w-0 basis-full sm:basis-auto sm:flex-1"><div className="text-[11px] uppercase tracking-wider text-slate-500">{seatName(data.seat)} owns ({info.owned.length})</div>
                     <div className="flex gap-1 mt-1 overflow-x-auto pb-1">{info.owned.map((cid) => { const c = cubeById[cid]; const img = c && (c.art_crop || c.image); return (
