@@ -175,7 +175,7 @@ export default function DraftSetup() {
       <header className="border-b border-slate-800">
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2"><Sparkles className="w-5 h-5 text-amber-400" /><span className="font-display text-lg font-bold">Grimoire</span></Link>
-          <Link to="/dashboard" className="text-sm text-slate-400 hover:text-white">My Decks</Link>
+          <div className="flex items-center gap-4"><Link to="/bots" className="text-sm text-slate-400 hover:text-white" data-testid="nav-bot-brain">Bot Brain</Link><Link to="/dashboard" className="text-sm text-slate-400 hover:text-white">My Decks</Link></div>
         </div>
       </header>
 

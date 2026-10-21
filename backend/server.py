@@ -34,7 +34,7 @@ from draftbot.cardstats import draft_stats, ensure_stats
 from draftbot.report import build_report
 from draftbot.personas import Persona
 from draftbot.engine import score_pool, suggest_picks
-from draftbot.lab import clean_tuning, knob_list, lab_view, pick_slot
+from draftbot.lab import card_dossier, clean_tuning, knob_list, lab_view, pick_slot, simulate, source_summary
 from draftbot.deckbuild import suggest_deck
 from draftbot.packbot import choose_from_pack, rank_pack
 import packdraft as pd
@@ -2400,6 +2400,138 @@ async def bot_lab(share_id: str, body: BotLabInput):
         lab_view, cards["index"], cards["combos"], d["order"], d.get("picks", []), d["pick_cap"], slot,
         clean_tuning(body.tuning), _people_seats(d), d.get("bot_ignore", []), bool(d.get("mirror")),
         max(5, min(body.n, 40)))
+    out["knobs"] = knob_list()
+    return fast_json(out)
+
+
+# ---------------------------------------------------------------- Bot Brain: how the bots think, no draft needed
+# A "source" is a card pool the bots know: a cube (sent by the page, resolved from CubeCobra as for a draft)
+# or the shared VRD pool. Its card index is built once and kept in memory; the page asks for it again
+# (POST /lab/source) if the server restarted.
+_LAB_SOURCES: Dict[str, dict] = {}
+_LAB_FIELDS = ("id", "name", "mana_cost", "cmc", "type_line", "oracle_text", "color_identity", "colors", "elo",
+               "image", "art_crop", "set")
+
+
+class LabSourceInput(BaseModel):
+    vrd: bool = False
+    cards: List[dict] = Field(default_factory=list, max_length=3000)
+
+
+class LabCardInput(BaseModel):
+    source: str
+    card: str
+
+
+class LabSimInput(BaseModel):
+    source: str
+    seats: int = Field(8, ge=2, le=12)
+    picks: int = Field(45, ge=5, le=60)
+    seed: int = 0
+    tuning: Dict[str, float] = Field(default_factory=dict)
+
+
+class LabViewInput(BaseModel):
+    source: str
+    order: List[int] = Field(max_length=800)
+    picks: List[dict] = Field(max_length=800)
+    seat: Optional[int] = None
+    pick_no: Optional[int] = None
+    tuning: Dict[str, float] = Field(default_factory=dict)
+    n: int = 15
+
+
+def _lab_source(key: str) -> dict:
+    src = _LAB_SOURCES.get(key)
+    if not src:
+        raise HTTPException(status_code=410, detail="The card pool expired on the server; reload it")
+    return src
+
+
+@api_router.post("/lab/source")
+async def lab_source(body: LabSourceInput):
+    """Load a card pool for the Bot Brain page: the VRD pool, or a cube's cards (as resolved for a draft).
+    Returns its key, the cards (light fields) and an overview of how the bots see it."""
+    if body.vrd:
+        pool = vrd.peek()
+        if not pool:
+            _warm_vrd_pool()
+            raise HTTPException(status_code=503, detail="The VRD card pool is loading. Try again in a minute.")
+        key = f"vrd:{int(pool.get('built_at', 0))}"
+        if key not in _LAB_SOURCES:
+            cards = pool["cards"]
+            index = await run_in_threadpool(build_card_index, cards, pool.get("stats"))
+            combos = with_cube_combos(index, combos_from_dicts(pool.get("combos", [])))
+            _LAB_SOURCES[key] = {"index": index, "combos": combos, "cards": cards, "partial": False, "at": time.time()}
+    else:
+        cube = [{k: c[k] for k in _LAB_FIELDS if k in c} for c in body.cards if not c.get("is_custom") and c.get("id")]
+        if len(cube) < 10:
+            raise HTTPException(status_code=400, detail="Load a cube of at least 10 cards")
+        key = "cube:" + hashlib.sha1("\n".join(sorted(c["id"] for c in cube)).encode()).hexdigest()[:16]
+        hit = _LAB_SOURCES.get(key)
+        if not hit or (hit["partial"] and time.time() - hit["at"] > 60):
+            names = _cube_names(cube)
+
+            async def stats():
+                try:
+                    await ensure_stats(db, names, budget_s=15.0)
+                    return await draft_stats(db, cube)
+                except Exception as exc:
+                    logger.warning("CubeCobra card stats unavailable: %s", exc)
+                    return None
+            combo_dicts, st = await asyncio.gather(_cube_combos("lab:" + key, cube, budget_s=15.0), stats())
+            index = await run_in_threadpool(build_card_index, cube, st)
+            combos = with_cube_combos(index, combos_from_dicts(combo_dicts or []))
+            with_partners = sum(1 for i in index.values() if i.partners)
+            partial = with_partners < 0.8 * len(index) or combo_dicts is None
+            if partial:      # keep fetching CubeCobra pages in the background; a later reload picks them up
+                _warm_card_stats(cube)
+            _LAB_SOURCES[key] = {"index": index, "combos": combos, "cards": cube, "partial": partial, "at": time.time()}
+        if len(_LAB_SOURCES) > 8:
+            for old in sorted(_LAB_SOURCES, key=lambda k: _LAB_SOURCES[k]["at"])[:-8]:
+                _LAB_SOURCES.pop(old, None)
+    src = _LAB_SOURCES[key]
+    attach_combos(src["index"], src["combos"])
+    summary = await run_in_threadpool(source_summary, src["index"], src["combos"])
+    ix = src["index"]
+    cards = [{"id": c["id"], "name": c["name"], "image": c.get("image"), "art_crop": c.get("art_crop"),
+              "elo": round(ix[c["id"]].elo), "colors": "".join(x for x in "WUBRG" if x in ix[c["id"]].need),
+              "land": ix[c["id"]].is_land}
+             for c in src["cards"] if c["id"] in ix]
+    return fast_json({"source": key, "vrd": body.vrd, "partial": src["partial"], "summary": summary, "cards": cards,
+                      "knobs": knob_list()})
+
+
+@api_router.post("/lab/card")
+async def lab_card(body: LabCardInput):
+    src = _lab_source(body.source)
+    if body.card not in src["index"]:
+        raise HTTPException(status_code=404, detail="Card not found in this pool")
+    attach_combos(src["index"], src["combos"])
+    return fast_json(card_dossier(src["index"], src["combos"], body.card))
+
+
+@api_router.post("/lab/simulate")
+async def lab_simulate(body: LabSimInput):
+    """An all-bot rotisserie draft of the pool with the given weights (nothing is saved)."""
+    src = _lab_source(body.source)
+    attach_combos(src["index"], src["combos"])
+    return fast_json(await run_in_threadpool(simulate, src["index"], src["combos"], body.seats, body.picks,
+                                             body.seed, clean_tuning(body.tuning)))
+
+
+@api_router.post("/lab/view")
+async def lab_view_any(body: LabViewInput):
+    """The Bot Lab view of one pick of a simulated draft (see /drafts/{id}/bot-lab)."""
+    src = _lab_source(body.source)
+    if not body.order:
+        raise HTTPException(status_code=400, detail="Run a draft first")
+    picks = [p for p in body.picks if p.get("card_id") in src["index"]]
+    per_seat = max(1, len(body.order) // max(1, len(set(body.order))))
+    slot = pick_slot(body.order, len(picks), body.seat, body.pick_no, None)
+    attach_combos(src["index"], src["combos"])
+    out = await run_in_threadpool(lab_view, src["index"], src["combos"], body.order, picks, per_seat, slot,
+                                  clean_tuning(body.tuning), frozenset(), (), True, max(5, min(body.n, 40)))
     out["knobs"] = knob_list()
     return fast_json(out)
 

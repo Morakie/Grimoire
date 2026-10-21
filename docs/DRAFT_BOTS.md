@@ -131,3 +131,10 @@ rebuilds the table just before a pick and returns the engine's top cards with ev
 taken and its rank, and the seat's colours and deck types. `tuning` overrides any weight listed in `draftbot/lab.py`
 `KNOBS` for that view only (each card also gets its rank under the current weights); the live bots never see it.
 The page keeps tried weights in the browser and "Copy" gives them as JSON to bake into `TUNING`.
+
+**Bot Brain** (`/bots`, linked from the Cube Draft page): the same engine with no draft. `POST /api/lab/source` loads a
+card pool (a cube resolved from CubeCobra like a draft's, or `{vrd: true}` for the VRD pool) and returns its key, cards
+and an overview (deck types' key cards and members, most connected cards). `POST /api/lab/card` gives one card's
+dossier (roles, deck types, narrow/universal, home colours, partners, combos, a small link graph). `POST /api/lab/simulate`
+runs an all-bot snake draft with given weights and `POST /api/lab/view` is the Bot Lab view of any of its picks. Pools
+are kept in memory (`_LAB_SOURCES`); the page sends the pool again if the server answers 410.

@@ -142,3 +142,97 @@ def lab_view(index: Dict[str, CardInfo], combos: List[Combo], order: Sequence[in
         },
         "tuning": tuning or {},
     }
+
+
+# ---------------------------------------------------------------- Bot Brain: any cube or the VRD pool, no draft
+
+def _brief(c: CardInfo) -> dict:
+    return {"id": c.id, "name": c.name, "elo": round(c.elo), "colors": "".join(x for x in "WUBRG" if x in c.need),
+            "land": c.is_land}
+
+
+def card_dossier(index: Dict[str, CardInfo], combos: List[Combo], cid: str, max_partners: int = 60,
+                 graph_size: int = 24) -> dict:
+    """Everything the bots know about one card: rating, roles, deck types, narrow/universal, home colours,
+    partners (strongest first) and combos, plus a small link graph of the card and its closest partners."""
+    from .decktypes import is_narrow, is_universal
+    c = index[cid]
+    uni = is_universal(c)
+    partners = sorted(((index[p], s) for p, s in c.partners.items() if p in index),
+                      key=lambda ps: (-ps[1], -ps[0].elo))
+    lines = []
+    for ci in c.combos:
+        cb = combos[ci]
+        lines.append({"pieces": [_brief(index[p]) for p in cb.pieces if p in index], "weight": round(cb.weight, 2),
+                      "counted": len(cb.pieces) <= TUNING["combo_max_pieces"]})
+    lines.sort(key=lambda x: (not x["counted"], len(x["pieces"]), -x["weight"]))
+    # Link graph: the card, its strongest partners, and the links among them.
+    near = [p for p, _ in partners[:graph_size]]
+    ids = {cid} | {p.id for p in near}
+    edges = []
+    for a in [c] + near:
+        for b, s in a.partners.items():
+            if b in ids and a.id < b:
+                edges.append([a.id, b, s])
+    return {
+        **_brief(c), "power": round(c.power, 3), "cmc": c.cmc, "types": sorted(c.types),
+        "roles": sorted(c.roles - {"cheap_threat"}), "key_of": sorted(c.key_of),
+        "deck": {t: v for t, v in sorted(c.deck.items(), key=lambda kv: -kv[1])},
+        "narrow": is_narrow(c, uni, c.staple), "universal": uni, "staple": c.staple,
+        "home": {k: round(v, 2) for k, v in c.home.items()} if c.home else None,
+        "partners": [{**_brief(p), "s": s} for p, s in partners[:max_partners]],
+        "partner_count": {"synergy": sum(1 for _, s in partners if s >= 1), "all": len(partners)},
+        "combos": lines[:20], "combo_count": len(lines),
+        "graph": {"nodes": [_brief(x) for x in [c] + near], "edges": edges},
+    }
+
+
+def source_summary(index: Dict[str, CardInfo], combos: List[Combo]) -> dict:
+    """An overview of how the bots see a card pool: each deck type's key cards and strongest members,
+    the most connected cards, and how many cards have CubeCobra data."""
+    from .decktypes import DECK_TYPES
+    cards = list(index.values())
+    syn = {c.id: sum(1 for p, s in c.partners.items() if s >= 1 and p in index) for c in cards}
+    decks = []
+    for t in DECK_TYPES:
+        keys = sorted((c for c in cards if t in c.key_of), key=lambda c: -c.elo)
+        members = sorted((c for c in cards if t not in c.key_of and c.deck.get(t, 0) >= 0.5),
+                         key=lambda c: (-c.deck[t], -c.elo))
+        decks.append({"type": t, "keys": [_brief(c) for c in keys[:12]], "key_count": len(keys),
+                      "members": [_brief(c) for c in members[:12]], "member_count": len(members)})
+    top = sorted(cards, key=lambda c: -syn[c.id])[:25]
+    return {"cards": len(cards), "with_partners": sum(1 for c in cards if c.partners), "combos": len(combos),
+            "decks": decks, "connected": [{**_brief(c), "links": syn[c.id]} for c in top if syn[c.id]]}
+
+
+def snake_order(seats: int, per_seat: int) -> List[int]:
+    out: List[int] = []
+    for r in range(per_seat):
+        out.extend(range(seats) if r % 2 == 0 else range(seats - 1, -1, -1))
+    return out
+
+
+def simulate(index: Dict[str, CardInfo], combos: List[Combo], seats: int, per_seat: int, seed: int = 0,
+             tuning: Optional[Dict[str, float]] = None) -> dict:
+    """An all-bot rotisserie draft (snake order) with the given weights. Returns the order and picks in
+    the same shape as a real draft, so lab_view can look at any of its picks."""
+    import random
+    from .engine import choose_pick
+    rng = random.Random(seed)
+    order = snake_order(seats, min(per_seat, max(1, len(index) // max(seats, 1))))
+    remaining = list(index)
+    taken_names = set()
+    by_seat: Dict[int, List[str]] = {s: [] for s in range(seats)}
+    picks = []
+    for slot, seat in enumerate(order):
+        if not remaining:
+            break
+        ctx = BotContext(index, combos, remaining, by_seat, seat, order, slot, len(order) // seats,
+                         Persona("steady", temperature=0.03), tuning or None, people=frozenset())
+        cid = choose_pick(ctx, rng)
+        by_seat[seat].append(cid)
+        picks.append({"order": slot, "seat_index": seat, "card_id": cid})
+        name = index[cid].name.lower()
+        taken_names.add(name)
+        remaining = [c for c in remaining if c != cid and index[c].name.lower() != name]
+    return {"order": order[:len(picks)], "picks": picks, "per_seat": len(order) // seats}

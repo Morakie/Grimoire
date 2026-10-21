@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import api from "@/lib/api";
 import { Loader2, X, FlaskConical, ChevronLeft, ChevronRight, RotateCcw, Copy, ArrowUp, ArrowDown, User, SlidersHorizontal } from "lucide-react";
 
 // Bot Lab: one pick of a rotisserie table as the bots' engine sees it, with every card's score split into
@@ -126,7 +125,9 @@ function Knob({ k, value, onChange }) {
   );
 }
 
-export default function BotLab({ shareId, cubeById, seats, startSeat, onClose }) {
+// `fetchView(body)` returns the POST response for {seat, pick_no, tuning} (a real table's /bot-lab, or a simulated
+// draft's /lab/view). `inline` renders the panel in the page instead of as a pop-up; `reloadKey` forces a reload.
+export default function BotLab({ fetchView, cubeById, seats, startSeat, onClose, inline = false, reloadKey = 0 }) {
   const [seat, setSeat] = useState(startSeat ?? seats[0]?.index ?? 0);
   const [pickNo, setPickNo] = useState(null);           // null = the seat's latest pick
   const [tuning, setTuning] = useState(loadTuning);
@@ -149,24 +150,26 @@ export default function BotLab({ shareId, cubeById, seats, startSeat, onClose })
   const load = useCallback((body) => {
     const id = ++req.current;
     setLoading(true); setError(null);
-    api.post(`/drafts/${shareId}/bot-lab`, body, { timeout: 60000 })
+    fetchView(body)
       .then(({ data }) => { if (id !== req.current) return; setData(data); setKnobs(data.knobs || []); })
       .catch((e) => { if (id === req.current) setError(e.response?.data?.detail || "Couldn't load this pick. Try again in a moment."); })
       .finally(() => { if (id === req.current) setLoading(false); });
-  }, [shareId]);
+  }, [fetchView]);
 
   // Reload when the seat, pick or weights change (weights debounced while a slider is dragged).
   useEffect(() => {
     const t = setTimeout(() => load({ seat, pick_no: pickNo, tuning }), 220);
     return () => clearTimeout(t);
-  }, [seat, pickNo, tuning, load]);
+  }, [seat, pickNo, tuning, load, reloadKey]);
+  useEffect(() => { if (startSeat != null) { setSeat(startSeat); setPickNo(null); } }, [startSeat, reloadKey]);
   useEffect(() => { saveTuning(tuning); }, [tuning]);
   useEffect(() => { setOpen(null); }, [seat, pickNo]);
   useEffect(() => {
+    if (inline) return undefined;
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, inline]);
 
   const slots = data?.seat_slots || [];
   const curNo = data?.pick_no ?? 1;
@@ -190,12 +193,12 @@ export default function BotLab({ shareId, cubeById, seats, startSeat, onClose })
   const groups = useMemo(() => knobs.reduce((m, k) => { (m[k.group] = m[k.group] || []).push(k); return m; }, {}), [knobs]);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center p-2 sm:p-4 sm:pt-10" data-testid="bot-lab" onClick={onClose}>
-      <div className="w-[min(99vw,1240px)] max-h-[94vh] bg-[#0b111e] border border-slate-700 rounded-xl shadow-2xl overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+    <div className={inline ? "" : "fixed inset-0 z-50 bg-black/70 flex items-start justify-center p-2 sm:p-4 sm:pt-10"} data-testid="bot-lab" onClick={inline ? undefined : onClose}>
+      <div className={`${inline ? "w-full lg:h-[80vh]" : "w-[min(99vw,1240px)] max-h-[94vh] shadow-2xl"} bg-[#0b111e] border border-slate-700 rounded-xl overflow-hidden flex flex-col`} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-800 shrink-0">
           <span className="font-display font-semibold flex items-center gap-2"><FlaskConical className="w-4 h-4 text-amber-400" /> Bot Lab</span>
-          <span className="text-xs text-slate-500 hidden md:block">How the bots score each card at one pick. Weights you change here only affect this view.</span>
-          <button type="button" data-testid="bot-lab-close" onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close"><X className="w-4 h-4" /></button>
+          <span className="text-xs text-slate-500 hidden md:flex items-center gap-3">How the bots score each card at one pick. Weights you change here only affect this view.{!inline && <a href="/bots" className="text-amber-300 hover:underline whitespace-nowrap">Bot Brain</a>}</span>
+          {inline ? <span /> : <button type="button" data-testid="bot-lab-close" onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close"><X className="w-4 h-4" /></button>}
         </div>
 
         {/* Seat and pick */}

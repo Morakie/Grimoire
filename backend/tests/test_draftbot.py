@@ -719,3 +719,23 @@ def test_bot_lab_rebuilds_a_pick_and_tries_other_weights():
     assert ids[0] not in {r["card"] for r in v["rows"]}   # taken before this pick
     nxt = lab_view(idx, [], order, picks, 12, 9)
     assert nxt["next_pick"] and nxt["took"] is None
+
+
+def test_bot_brain_dossier_summary_and_simulation():
+    from draftbot.lab import card_dossier, lab_view, simulate, source_summary
+    cube = synthetic_cube() + [card("acad", "Tolarian Academy", "", 0, "Legendary Land",
+                                    "{T}: Add {U} for each artifact you control.", "U", 1800)]
+    stats = {"partners": {"acad": {"U1": 1.0, "U2": 0.5}, "U1": {"acad": 1.0}, "U2": {"acad": 0.5}}}
+    idx = build_card_index(cube, stats)
+    d = card_dossier(idx, [], "acad")
+    assert d["key_of"] == ["tolarian"] and d["narrow"]
+    assert [p["id"] for p in d["partners"]] == ["U1", "U2"] and d["partner_count"] == {"synergy": 1, "all": 2}
+    assert d["graph"]["nodes"][0]["id"] == "acad" and len(d["graph"]["edges"]) == 2
+    s = source_summary(idx, [])
+    assert s["cards"] == len(idx) and any(x["type"] == "tolarian" and x["key_count"] == 1 for x in s["decks"])
+    sim = simulate(idx, [], 4, 10, seed=2)
+    ids = [p["card_id"] for p in sim["picks"]]
+    assert len(ids) == 40 == len(set(ids)) and sim["order"][:8] == [0, 1, 2, 3, 3, 2, 1, 0]
+    assert simulate(idx, [], 4, 10, seed=2)["picks"] == sim["picks"]      # same seed, same draft
+    v = lab_view(idx, [], sim["order"], sim["picks"], sim["per_seat"], 9, people=frozenset())
+    assert v["took"]["card"] == sim["picks"][9]["card_id"]
