@@ -2458,11 +2458,23 @@ async def lab_source(body: LabSourceInput):
             _warm_vrd_pool()
             raise HTTPException(status_code=503, detail="The VRD card pool is loading. Try again in a minute.")
         key = f"vrd:{int(pool.get('built_at', 0))}"
-        if key not in _LAB_SOURCES:
+        hit = _LAB_SOURCES.get(key)
+        if not hit or (hit["partial"] and time.time() - hit["at"] > 60):
+            # The VRD pool itself carries no CubeCobra links (VRD bots don't use them). Bot Brain reads whatever
+            # is cached and keeps fetching the rest in the background, as for a cube.
             cards = pool["cards"]
-            index = await run_in_threadpool(build_card_index, cards, pool.get("stats"))
+            try:
+                st = await draft_stats(db, cards)
+            except Exception as exc:
+                logger.warning("CubeCobra card stats unavailable: %s", exc)
+                st = None
+            index = await run_in_threadpool(build_card_index, cards, st)
             combos = with_cube_combos(index, combos_from_dicts(pool.get("combos", [])))
-            _LAB_SOURCES[key] = {"index": index, "combos": combos, "cards": cards, "partial": False, "at": time.time()}
+            with_partners = sum(1 for i in index.values() if i.partners)
+            partial = with_partners < 0.5 * len(index) or not pool.get("combos")
+            if with_partners < 0.5 * len(index):       # cards already being fetched are skipped
+                _warm_card_stats(cards)
+            _LAB_SOURCES[key] = {"index": index, "combos": combos, "cards": cards, "partial": partial, "at": time.time()}
     else:
         cube = [{k: c[k] for k in _LAB_FIELDS if k in c} for c in body.cards if not c.get("is_custom") and c.get("id")]
         if len(cube) < 10:

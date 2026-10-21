@@ -317,7 +317,7 @@ export default function BotBrain() {
               <span><span className="text-slate-100 font-semibold tabular-nums">{src.summary.cards}</span> cards</span>
               <span><span className="text-slate-100 font-semibold tabular-nums">{src.summary.with_partners}</span> with CubeCobra links</span>
               <span><span className="text-slate-100 font-semibold tabular-nums">{src.summary.combos}</span> combos</span>
-              {src.partial && <span className="text-amber-300">Still collecting CubeCobra data for this pool; load it again in a few minutes for the full picture.</span>}
+              {src.partial && <span className="text-amber-300">Still collecting CubeCobra data for this pool{src.vrd ? " (1,500 card pages, about 10–20 minutes the first time)" : ""}; load it again later for the full picture.</span>}
               <div className="ml-auto inline-flex rounded-lg border border-slate-700 overflow-hidden">
                 {[["cards", "Cards", Search], ["sim", "Simulate a draft", Shuffle]].map(([t, l, Icon]) => (
                   <button key={t} type="button" onClick={() => setTab(t)} aria-pressed={tab === t} data-testid={`brain-tab-${t}`}
@@ -371,7 +371,7 @@ export default function BotBrain() {
                     {simming ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />} {sim ? "Run again" : "Run draft"}</button>
                   <p className="text-xs text-slate-500 basis-full sm:basis-auto sm:flex-1">The bots draft with the weights set in the panel below (changed weights apply to the next run and to the view). Same seed and weights give the same draft. {mode === "vrd" && "VRD drafts take longer: the pool is three times the size of a cube."}</p>
                 </form>
-                {simming && <p className="text-sm text-slate-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin text-amber-400" /> The bots are drafting… about {mode === "vrd" ? "20–40" : "5–15"} seconds.</p>}
+                {simming && <p className="text-sm text-slate-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin text-amber-400" /> The bots are drafting… usually under {mode === "vrd" ? "a minute" : "30 seconds"}.</p>}
                 {sim ? (
                   <>
                     <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3" data-testid="brain-sim-seats">
