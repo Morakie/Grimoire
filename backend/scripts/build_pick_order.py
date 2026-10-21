@@ -1,6 +1,7 @@
 """Rebuild draftbot/pick_order.py from rotisserie draft sheets.
 
-Usage: python scripts/build_pick_order.py sheet1.csv sheet2.csv ...
+Usage: python scripts/build_pick_order.py [--var NAME] sheet1.csv sheet2.csv ...  (NAME defaults to PICK_ORDER;
+the owner's group drafts are written as GROUP_ORDER)
 Each CSV is a draft sheet's "draft" tab exported as CSV (Google Sheets: File > Download > CSV, or
 /gviz/tq?tqx=out:csv&sheet=draft): first row player names from the third column, then one row per round
 (round number in the first column, picks from the third column), snake order (odd rounds left to right).
@@ -26,7 +27,7 @@ def picks(path):
     return seats, out
 
 
-def main(paths):
+def main(paths, var="PICK_ORDER"):
     drafts = []
     for p in paths:
         seats, ps = picks(p)
@@ -43,8 +44,12 @@ def main(paths):
         if cnt >= 2 or a <= 30:
             avg[n] = (a, cnt)
     body = "\n".join(f"    {json.dumps(n)}: {v}," for n, v in sorted(avg.items(), key=lambda kv: (kv[1][0], kv[0])))
-    print("PICK_ORDER = {\n" + body + "\n}")
+    print(var + " = {\n" + body + "\n}")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    args = sys.argv[1:]
+    var = "PICK_ORDER"
+    if args[:1] == ["--var"]:
+        var, args = args[1], args[2:]
+    main(args, var)

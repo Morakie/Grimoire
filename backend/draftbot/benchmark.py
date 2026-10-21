@@ -52,13 +52,17 @@ def check_orders() -> List[str]:
 
 
 def replay(index, combos, engine: str = "engine2", drafts=None, tuning: Optional[dict] = None,
-           max_picks: Optional[int] = None) -> dict:
-    """Ranks of the real picks under `engine`. Returns per-draft and overall summaries plus every pick row."""
+           max_picks: Optional[int] = None, holdout: bool = True) -> dict:
+    """Ranks of the real picks under `engine`. Returns per-draft and overall summaries plus every pick row.
+    With `holdout`, engine 2 scores each draft with a pick order built without that draft (its picks feed the
+    people's pick order otherwise)."""
     eng = engines.get(engine)
     names = name_index(index)
     rows = []
     per_draft = []
     for d in drafts or DRAFTS:
+        if holdout and hasattr(eng, "use_order"):
+            eng.use_order(exclude=d["video"])
         seats = d["seats"]
         order = snake_order(seats, 60)
         by_seat = {s: [] for s in range(seats)}
@@ -90,6 +94,8 @@ def replay(index, combos, engine: str = "engine2", drafts=None, tuning: Optional
                 remaining.discard(cid)
                 by_seat[seat].append(cid)
         per_draft.append({"video": d["video"], **summarise(mine)})
+    if holdout and hasattr(eng, "use_order"):
+        eng.use_order()
     return {"engine": engine, "overall": summarise(rows), "lsv": summarise([r for r in rows if r["lsv"]]),
             "early": summarise([r for r in rows if r["round"] <= 6]),
             "drafts": per_draft, "verdicts": [r for r in rows if "verdict" in r], "rows": rows}

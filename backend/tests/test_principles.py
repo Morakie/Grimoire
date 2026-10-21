@@ -332,3 +332,28 @@ def test_P20_fetchlands_fit_most_decks():
 def test_P21_lsv_drafts_follow_the_table_order():
     from draftbot.benchmark import check_orders
     assert check_orders() == []
+
+
+# ---------------------------------------------------------------- P22
+def test_P22_expert_pick_values_only_count_in_a_deck_that_plays_the_card():
+    idx, cmb = build()
+    # Early, Balance (an early pick at LSV's tables) beats a filler blue card for an open seat...
+    early = ctx_for(idx, cmb, {0: ["U0"], 1: ["G0"], 2: ["R0"], 3: ["B0"]})
+    s = scored(early)
+    assert s["balance"][0] > s["U4"][0]
+    # ...but a seat committed to blue-black takes its own cards: Counterspell and Thoughtseize over Balance.
+    ub = ["U0", "U1", "B0", "B1", "U2", "B2", "U3", "B3", "usea"]
+    late = ctx_for(idx, cmb, {0: ub, 1: ["G0"], 2: ["W0"], 3: ["R0"]})
+    s = scored(late)
+    assert s["counterspell"][0] > s["balance"][0]
+    assert s["thoughtseize"][0] > s["balance"][0]
+
+
+def test_P22_lsv_tables_lead_the_pick_order():
+    from draftbot.pick_order import PICK_ORDER, GROUP_ORDER
+    order = engine2._ORDER
+    # LSV's tables take Flash and Underworld Breach far earlier than the VRD sheets or the owner's group...
+    for name in ("flash", "underworld breach"):
+        assert order[name][0] < min(PICK_ORDER[name.title()][0], GROUP_ORDER[name.title()][0]) - 5
+    # ...and Griselbrand, which only one LSV draft took (round 18), stays a late pick.
+    assert order["griselbrand"][0] > 25

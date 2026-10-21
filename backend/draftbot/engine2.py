@@ -26,7 +26,8 @@ import random
 from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 from . import knowledge as K
-from .pick_order import PICK_ORDER
+from .lsv_drafts import DRAFTS as LSV_DRAFTS
+from .pick_order import combined_order
 from .decktypes import ARTIFACT_TYPES, DECK_TYPES, deck_strength, is_narrow, is_universal
 from .engine import (BotContext, _is_rock, _is_utility_artifact, _lane_fit, best_pair, colour_state, coloured_spells,
                      combo_value, commit_progress, completes_combo, deck_targets, fitter, hate_value, lane_distribution,
@@ -75,6 +76,9 @@ TUNING2: Dict[str, float] = {
     # suggest, and Timetwister or Chrome Mox later.
     "mox_lean": 0.9,            # a one-colour Mox counts as this much of a card of its colour when choosing colours
     "fetch_fit": 0.75,          # colour fit a fetchland always has
+    # Whose pick order counts most (owner, 2026-10-21): LSV's tables, then the VRD sheets, then the owner's group.
+    # Weight per draft that took the card (pick_order.combined_order).
+    "lsv_source": 6.0, "vrd_source": 1.0, "group_source": 0.5,
     "human_weight": 0.7,        # share of a card's quality that comes from how early people take it
     "human_top": 1.45, "human_floor": 0.2, "human_scale": 12.0,   # round 1 -> 1.45, round 10 -> ~0.8, never -> 0.2
 }
@@ -117,7 +121,16 @@ _TIER = {}
 for _round, _names in sorted(K.PICK_TIERS.items(), reverse=True):
     for _n in _names:
         _TIER[_norm(_n)] = _round          # a card listed twice keeps its earliest round
-_ORDER = {_norm(n): v for n, v in PICK_ORDER.items()}
+_ORDER: Dict[str, Tuple[float, int]] = {}
+
+
+def use_order(exclude: Optional[str] = None) -> None:
+    """(Re)build people's pick order from all sources; `exclude` leaves one LSV draft out (the benchmark scores
+    each draft with an order built without it)."""
+    _ORDER.clear()
+    _ORDER.update(combined_order(LSV_DRAFTS, TUNING2["lsv_source"], TUNING2["vrd_source"],
+                                 TUNING2["group_source"], exclude))
+    _STATIC.clear()
 
 
 def human_quality(avg_round: float) -> float:
@@ -215,6 +228,7 @@ class Static:
 
 
 _STATIC: List[Static] = []
+use_order()
 
 
 def static_for(index: Dict[str, CardInfo]) -> Static:
