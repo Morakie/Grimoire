@@ -82,6 +82,18 @@ async def _load_or_build(db, lookup, map_card, fetch_combos, build_index, oldest
         doc = await db.vrd_pool.find_one({"key": POOL_KEY}, {"_id": 0})
         if doc and doc.get("cards") and time.time() - doc.get("built_at", 0) < POOL_TTL:
             _MEM["pool"] = doc
+            if len(doc.get("combos") or []) < 100:
+                # Pools built before big decklists were sent to Commander Spellbook in batches got almost no
+                # combos (it rejects lists over 600 cards): fetch them again.
+                try:
+                    combos = await fetch_combos(build_index(doc["cards"]))
+                    if len(combos) > len(doc.get("combos") or []):
+                        doc = {**doc, "combos": [c.to_dict() for c in combos]}
+                        _MEM["pool"] = doc
+                        await db.vrd_pool.update_one({"key": POOL_KEY}, {"$set": {"combos": doc["combos"]}})
+                        log.info("VRD pool: %d combos (refetched)", len(combos))
+                except Exception as exc:
+                    log.warning("VRD pool: combos unavailable: %s", exc)
             return
         # Phase 1: the cards (enough for bots to draft).
         names = ranked_names(int(POOL_SIZE * 1.25))

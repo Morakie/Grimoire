@@ -19,11 +19,19 @@ export function parseList(text) {
   }).filter((s) => s && !/^(name|quantity|count)$/i.test(s));
 }
 
-/** The cube id from a CubeCobra link or a bare id. */
+/** The cube id from a CubeCobra link or a bare id. Several cubes joined with "+" give their ids joined the same way. */
 export function cubeCobraId(input) {
-  let id = (input || "").trim();
-  if (id.includes("/cube/")) id = id.split("/").filter(Boolean).pop();
-  return id.split("?")[0];
+  const ids = cubeCobraIds(input);
+  return ids.length > 1 ? ids.join(" + ") : (ids[0] || "");
+}
+
+/** Every cube id in the input: "A + B" (or "A, B") combines cubes. */
+export function cubeCobraIds(input) {
+  return (input || "").split(/[+,]/).map((part) => {
+    let id = part.trim();
+    if (id.includes("/cube/")) id = id.split("/").filter(Boolean).pop();
+    return id.split("?")[0].trim();
+  }).filter(Boolean);
 }
 
 /**
@@ -55,11 +63,20 @@ export function stepError(step, e) {
 export async function resolveCube({ cubeCobra = "", text = "", keep = [], onStep }) {
   let names;
   if (cubeCobra.trim()) {
-    onStep?.("Loading the CubeCobra cube…");
-    try {
-      const { data } = await withRetry(() => api.get("/cube/cubecobra", { params: { id: cubeCobra.trim() } }));
-      names = data.names || [];
-    } catch (e) { throw new Error(stepError("Couldn't load the CubeCobra cube", e)); }
+    // Several cubes ("A + B"): their lists combined, each card once (matched by name, front face for split cards).
+    const ids = cubeCobraIds(cubeCobra);
+    names = [];
+    const seen = new Set();
+    for (const id of ids) {
+      onStep?.(ids.length > 1 ? `Loading CubeCobra cube ${id}…` : "Loading the CubeCobra cube…");
+      try {
+        const { data } = await withRetry(() => api.get("/cube/cubecobra", { params: { id } }));
+        (data.names || []).forEach((n) => {
+          const k = n.toLowerCase().split("//")[0].trim();
+          if (!seen.has(k)) { seen.add(k); names.push(n); }
+        });
+      } catch (e) { throw new Error(stepError(ids.length > 1 ? `Couldn't load CubeCobra cube ${id}` : "Couldn't load the CubeCobra cube", e)); }
+    }
   } else {
     names = parseList(text);
   }
@@ -81,9 +98,15 @@ export async function resolveCube({ cubeCobra = "", text = "", keep = [], onStep
   if (lookup.length) {
     onStep?.("Loading cube… This may take a moment");
     try {
-      const { data } = await withRetry(() => api.post("/cards/collection", { names: lookup }));
-      found = data.cards || [];
-      notFound = data.not_found || [];
+      // The server resolves up to 800 names per request: send big (combined) cubes in parts.
+      for (let i = 0; i < lookup.length; i += 600) {
+        const part = lookup.slice(i, i + 600);
+        const { data } = await withRetry(() => api.post("/cards/collection", { names: part }));
+        found = found.concat(data.cards || []);
+        notFound = notFound.concat(data.not_found || []);
+      }
+      const ids = new Set();
+      found = found.filter((c) => !ids.has(c.id) && ids.add(c.id));
     } catch (e) { throw new Error(stepError("Couldn't look up the cards", e)); }
   }
   return { cards: [...reuse, ...found], notFound, total: uniq.length, cubecobraId: cubeCobra.trim() ? cubeCobraId(cubeCobra) : null };

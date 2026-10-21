@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import api from "@/lib/api";
 import BotReport from "@/components/BotReport";
@@ -154,6 +154,7 @@ export default function DraftRoom() {
   const [showMiniTable, setShowMiniTable] = useState(false);
   const [showReport, setShowReport] = useState(false);     // the bot report pop-up
   const [showLab, setShowLab] = useState(false);           // the Bot Lab pop-up
+  const labFetch = useCallback((body) => api.post(`/drafts/${shareId}/bot-lab`, body, { timeout: 60000 }), [shareId]);
   const [sheet, setSheet] = useState(null);            // mobile bottom sheet: "queue" | "feed" | "chat"
   const [previewCard, setPreviewCard] = useState(null); // mobile tap-to-preview
   const seatStripRef = useRef(null);
@@ -1423,7 +1424,7 @@ export default function DraftRoom() {
       )}
 
       {showLab && (
-        <BotLab shareId={shareId} cubeById={cubeById} seats={state.seats} startSeat={(isMirror ? state.my_seat : me?.seats?.[0]) ?? state.current_seat_index ?? undefined} onClose={() => setShowLab(false)} />
+        <BotLab fetchView={labFetch} cubeById={cubeById} seats={state.seats} startSeat={(isMirror ? state.my_seat : me?.seats?.[0]) ?? state.current_seat_index ?? undefined} onClose={() => setShowLab(false)} />
       )}
       {showReport && (
         <BotReport shareId={shareId} cubeById={cubeById} seats={state.seats} pickCount={state.pick_index} onClose={() => setShowReport(false)} />

@@ -51,6 +51,7 @@ def build_report(index: Dict[str, CardInfo], combos: List[Combo], order: Sequenc
     taken_names: set = set()
     by_seat: Dict[int, List[str]] = {s["index"]: [] for s in seats}
     rows: List[dict] = []
+    memo: dict = {}          # each seat's pool, worked out once per pool across the report (same ranks)
     for p in sorted(picks, key=lambda x: x["order"]):
         seat, cid = p["seat_index"], p["card_id"]
         owned = len(by_seat.get(seat, []))
@@ -60,7 +61,7 @@ def build_report(index: Dict[str, CardInfo], combos: List[Combo], order: Sequenc
             if cid not in remaining:
                 remaining.append(cid)
             ctx = BotContext(index, combos, remaining, by_seat, seat, order, p["order"], picks_per_seat,
-                             Persona("steady"), explain=True, people=people)
+                             Persona("steady"), explain=True, people=people, memo=memo)
             scored = score_pool(ctx)
             rank = next((i + 1 for i, (_, c, _) in enumerate(scored) if c == cid), len(scored))
             best_score = scored[0][0] if scored else 0.0

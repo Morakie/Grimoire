@@ -61,6 +61,8 @@ def rank_pack(index: Dict[str, CardInfo], owned_ids: List[str], pack_ids: List[s
             score += 0.5 * combo_value(card, owned_set, pack_set | owned_set, combos, fit_of)
         if card.partners:
             score += TUNING["partner_weight"] * partner_value(card, partners_from, fit_of, TUNING["drafted_with_share"])
+        if card.conspiracy:
+            score *= TUNING["conspiracy_value"]      # only for Conspiracy drafts (see engine.TUNING)
         out.append((score, cid))
     out.sort(reverse=True)
     return out

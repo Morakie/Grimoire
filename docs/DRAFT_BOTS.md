@@ -131,3 +131,41 @@ rebuilds the table just before a pick and returns the engine's top cards with ev
 taken and its rank, and the seat's colours and deck types. `tuning` overrides any weight listed in `draftbot/lab.py`
 `KNOBS` for that view only (each card also gets its rank under the current weights); the live bots never see it.
 The page keeps tried weights in the browser and "Copy" gives them as JSON to bake into `TUNING`.
+
+**Bot Brain** (`/bots`, linked from the Cube Draft page): the same engine with no draft. `POST /api/lab/source` loads a
+card pool (a cube resolved from CubeCobra like a draft's, or `{vrd: true}` for the VRD pool) and returns its key, cards
+and an overview (deck types' key cards and members, most connected cards). `POST /api/lab/card` gives one card's
+dossier (roles, deck types, narrow/universal, home colours, partners, combos, a small link graph). `POST /api/lab/simulate`
+runs an all-bot snake draft with given weights and `POST /api/lab/view` is the Bot Lab view of any of its picks. A built
+pool is saved whole as one gzip'd document in `lab_pools` (`GET /api/lab/pools` lists them), so loading it again
+(`POST /api/lab/source {pool: key}`) is a single Mongo read with no CubeCobra, Scryfall or `card_stats` lookups. It is
+only rebuilt when asked (`refresh: true`, the page's **Rebuild** button). Pools are also kept in memory
+(`_LAB_SOURCES`); the page reloads the saved copy if the server answers 410.
+
+Simulated drafts are deterministic (each pick has its own random stream from the seed), so `/lab/simulate` can take
+`start` (the first picks of an earlier run, kept as they were) and re-draft only from there: the page's draft board
+lets you step to any pick, change weights and **Re-draft from pick N**, then outlines every pick that changed and
+shows each seat's colours / deck types before and after. `tuned_seats` gives the new weights to some seats only,
+to pit them against the current weights in the same draft.
+
+Simulations and the bot report pass one `memo` dict through `BotContext` for the whole run: each seat's deck types
+and, for float risk, what each rival's pool wants are worked out once per pool (and per set of weights) instead of on
+every pick, and a rival's cached combo value is reused until a card sharing a combo leaves the pool. Picks and report
+ranks are identical with or without it (`test_shared_memo_never_changes_a_pick`); a full 8 x 45 all-bot draft runs
+about 1.6x faster. Live drafts don't pass a memo (their picks can be undone or changed by the host).
+
+### Bot Brain in the browser
+
+The Bot Brain page runs the bots in the browser: `frontend/src/lib/labEngine.js` starts a Web Worker with Pyodide
+(Python in WebAssembly, from jsDelivr) and loads the server's own `draftbot/*.py` files from `GET /api/lab/engine`,
+so the browser and the live bots run the same code. A saved pool is downloaded once from
+`GET /api/lab/pool-export?key=...` (the gzip'd `lab_pools` document) and kept in IndexedDB until the pool is
+rebuilt. `draftbot/browser.py` is the worker's entry point (load, card, view, lanes, web, and drafts run a few picks
+at a time with `lab.DraftRun` so picks stream onto the board). If the worker can't start, the page falls back to
+the server endpoints.
+
+On the page, a draft is first run with the current weights (`base`); moving a weight re-runs the same seed with
+the new weights from a chosen table pick (live, after the slider settles), outlines every pick that differs and
+compares each seat with the base draft. The lanes table shows every seat's deck types at the pick shown, and the
+synergy web shows the picking seat's cards, the cards it is weighing and the CubeCobra links between them.
+

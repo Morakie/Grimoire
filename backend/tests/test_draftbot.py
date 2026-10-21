@@ -506,7 +506,7 @@ def test_transforming_sagas_are_not_blink_payoffs():
     idx = build_card_index(cube)
     assert "flicker" not in idx["fable"].roles and "flicker" not in idx["ajani"].roles
     assert "flicker" in idx["ephem"].roles
-    assert "aggro" in idx["ajani"].key_of
+    assert "white_aggro" in idx["ajani"].key_of
 
 
 def _aggro_cube():
@@ -719,3 +719,232 @@ def test_bot_lab_rebuilds_a_pick_and_tries_other_weights():
     assert ids[0] not in {r["card"] for r in v["rows"]}   # taken before this pick
     nxt = lab_view(idx, [], order, picks, 12, 9)
     assert nxt["next_pick"] and nxt["took"] is None
+
+
+def test_bot_brain_dossier_summary_and_simulation():
+    from draftbot.lab import card_dossier, lab_view, simulate, source_summary
+    cube = synthetic_cube() + [card("acad", "Tolarian Academy", "", 0, "Legendary Land",
+                                    "{T}: Add {U} for each artifact you control.", "U", 1800)]
+    stats = {"partners": {"acad": {"U1": 1.0, "U2": 0.5}, "U1": {"acad": 1.0}, "U2": {"acad": 0.5}}}
+    idx = build_card_index(cube, stats)
+    d = card_dossier(idx, [], "acad")
+    assert d["key_of"] == ["tolarian"] and d["narrow"]
+    assert [p["id"] for p in d["partners"]] == ["U1", "U2"] and d["partner_count"] == {"synergy": 1, "all": 2}
+    assert d["graph"]["nodes"][0]["id"] == "acad" and len(d["graph"]["edges"]) == 2
+    s = source_summary(idx, [])
+    assert s["cards"] == len(idx) and any(x["type"] == "tolarian" and x["key_count"] == 1 for x in s["decks"])
+    sim = simulate(idx, [], 4, 10, seed=2)
+    ids = [p["card_id"] for p in sim["picks"]]
+    assert len(ids) == 40 == len(set(ids)) and sim["order"][:8] == [0, 1, 2, 3, 3, 2, 1, 0]
+    assert simulate(idx, [], 4, 10, seed=2)["picks"] == sim["picks"]      # same seed, same draft
+    v = lab_view(idx, [], sim["order"], sim["picks"], sim["per_seat"], 9, people=frozenset())
+    assert v["took"]["card"] == sim["picks"][9]["card_id"]
+
+
+def test_big_pools_go_to_spellbook_in_batches_that_cover_every_small_combo():
+    from itertools import combinations
+    from draftbot.combos import spellbook_batches
+    assert spellbook_batches([f"c{i}" for i in range(500)]) == [[f"c{i}" for i in range(500)]]
+    names = [f"c{i}" for i in range(903)]
+    batches = spellbook_batches(names)
+    assert len(batches) == 10 and all(len(b) <= 600 for b in batches)
+    sets = [set(b) for b in batches]
+    sample = names[::37]
+    assert all(any(set(trio) <= s for s in sets) for trio in combinations(sample, 3))
+
+
+def _lab_pool():
+    from draftbot.combos import attach_combos as _attach
+    idx = build_card_index(synthetic_cube())
+    _attach(idx, [])
+    return idx
+
+
+def test_lab_simulate_rewind_keeps_earlier_picks_and_reproduces_the_rest():
+    from draftbot.lab import simulate
+    idx = _lab_pool()
+    full = simulate(idx, [], 4, 12, seed=7)
+    assert len(full["picks"]) == 48 and full["kept"] == 0
+    again = simulate(idx, [], 4, 12, seed=7)
+    assert again["picks"] == full["picks"]                        # same seed and weights: same draft
+    rewound = simulate(idx, [], 4, 12, seed=7, start=full["picks"][:20])
+    assert rewound["kept"] == 20
+    assert rewound["picks"] == full["picks"]                      # unchanged weights: re-draft matches
+    tuned = simulate(idx, [], 4, 12, seed=7, start=full["picks"][:20], tuning={"committed_floor": 1.0, "flex_floor": 1.0})
+    assert tuned["picks"][:20] == full["picks"][:20]              # picks before the rewind never change
+    assert len(tuned["seats"]) == 4 and all("pair" in s for s in tuned["seats"])
+
+
+def test_lab_simulate_tuned_seats_and_stop():
+    from draftbot.lab import simulate
+    idx = _lab_pool()
+    base = simulate(idx, [], 4, 12, seed=3)
+    off = simulate(idx, [], 4, 12, seed=3, tuning={"committed_floor": 1.0, "flex_floor": 1.0}, tuned_seats=[])
+    assert off["picks"] == base["picks"]                          # weights for no seat change nothing
+    part = simulate(idx, [], 4, 12, seed=3, stop=10)
+    assert len(part["picks"]) == 10 and len(part["order"]) == 48
+    bad = simulate(idx, [], 4, 12, seed=3, start=[{"order": 0, "seat_index": 2, "card_id": base["picks"][0]["card_id"]}])
+    assert bad["kept"] == 0                                       # a kept pick in the wrong seat is dropped
+
+
+def test_shared_memo_never_changes_a_pick():
+    """lab.simulate shares one memo across the draft's picks; re-scoring every pick without it must agree."""
+    from draftbot.lab import _pick_rng, simulate
+    from draftbot.combos import Combo, attach_combos as _attach
+    idx = build_card_index(synthetic_cube())
+    ids = sorted(idx)
+    rng = random.Random(4)
+    combos = [Combo(tuple(rng.sample(ids, rng.choice([2, 3]))), 0.8) for _ in range(30)]
+    _attach(idx, combos)
+    tuning = {"partner_weight": 0.8, "focus_start": 0.3}
+    run = simulate(idx, combos, 4, 12, seed=11, tuning=tuning, tuned_seats=[1, 2])
+    by_seat = {s: [] for s in range(4)}
+    remaining = list(idx)
+    for p in run["picks"]:
+        seat, slot = p["seat_index"], p["order"]
+        t = tuning if seat in (1, 2) else None
+        ctx = BotContext(idx, combos, remaining, by_seat, seat, run["order"], slot, run["per_seat"],
+                         Persona("steady", temperature=0.03), t, people=frozenset())
+        assert choose_pick(ctx, _pick_rng(11, slot)) == p["card_id"]
+        by_seat[seat].append(p["card_id"])
+        name = idx[p["card_id"]].name.lower()
+        remaining = [c for c in remaining if c != p["card_id"] and idx[c].name.lower() != name]
+
+
+def test_browser_session_streams_the_same_draft_as_simulate():
+    """The Bot Brain page runs drafts a few picks at a time in the browser; they must match lab.simulate."""
+    import json
+    from draftbot.browser import Session
+    from draftbot.lab import simulate
+    cube = synthetic_cube()
+    s = Session()
+    src = json.loads(s.load(json.dumps({"cards": cube, "stats": None, "combos": []})))
+    assert src["summary"]["cards"] == len(cube) and src["knobs"]
+    tuning = {"partner_weight": 0.9}
+    json.loads(s.run_start(json.dumps({"seats": 4, "picks": 12, "seed": 5, "tuning": tuning})))
+    picks = []
+    while True:
+        r = json.loads(s.run_step(5))
+        picks += r["picks"]
+        if r["done"]:
+            break
+    assert picks == simulate(s.index, s.combos, 4, 12, seed=5, tuning=tuning)["picks"]
+    assert len(r["seats"]) == 4
+    view = json.loads(s.view(json.dumps({"order": [p["seat_index"] for p in picks], "picks": picks, "slot": 10})))
+    assert view["slot"] == 10 and view["rows"]
+
+
+def test_core_cards_belong_to_a_deck_type_without_being_keys():
+    """Lightning Bolt counts towards red aggro for a bot in it, but isn't a key card: bots outside red aggro
+    still value it fully. Signature cards (Goblin Guide) are keys."""
+    from draftbot.engine import deck_factor
+    cube = synthetic_cube() + [
+        card("bolt", "Lightning Bolt", "{R}", 1, "Instant", "Lightning Bolt deals 3 damage to any target.", "R", 1750),
+        card("guide", "Goblin Guide", "{R}", 1, "Creature — Goblin Scout", "Haste", "R", 1600),
+        card("ragavan", "Ragavan, Nimble Pilferer", "{R}", 1, "Legendary Creature — Monkey Pirate", "", "R", 1800),
+    ]
+    idx = build_card_index(cube)
+    assert idx["bolt"].key_of == frozenset() and idx["bolt"].deck.get("red_aggro", 0) >= 0.5
+    assert "red_aggro" in idx["guide"].key_of
+    assert {"red_aggro", "tempo"} <= idx["ragavan"].key_of
+    ctx = _two_seat_ctx(cube, [], ["U0"], [])
+    from draftbot.decktypes import DECK_TYPES
+    eff = {t: 0.0 for t in DECK_TYPES}
+    assert deck_factor(ctx, idx["bolt"], eff, {t: 0.0 for t in DECK_TYPES}, 0.0) == 1.0
+    assert deck_factor(ctx, idx["guide"], eff, {t: 0.0 for t in DECK_TYPES}, 0.0) < 1.0
+
+
+def test_power_ranks_with_the_rest_of_the_power():
+    """An underrated Power card (Timetwister, rated far below the other Power Nine on CubeCobra) still ranks
+    above the best non-Power cards, so a bot takes it over Orcish Bowmasters."""
+    power = [("lotus", "Black Lotus", 2480), ("walk", "Time Walk", 2320), ("anc", "Ancestral Recall", 2300),
+             ("saph", "Mox Sapphire", 2300), ("jet", "Mox Jet", 2270), ("ruby", "Mox Ruby", 2270),
+             ("pearl", "Mox Pearl", 2240), ("emer", "Mox Emerald", 2225), ("twister", "Timetwister", 1810)]
+    cube = synthetic_cube() + [card(cid, name, "{U}", 1, "Sorcery", "", "U", elo) for cid, name, elo in power] + [
+        card("bow", "Orcish Bowmasters", "{1}{B}", 2, "Creature — Orc Archer", "Flash", "B", 1853)]
+    idx = build_card_index(cube)
+    assert idx["twister"].elo >= 2237 and idx["twister"].power > idx["bow"].power
+
+
+def test_third_seat_backs_off_a_deck_type_two_rivals_are_in():
+    """Two seats in a deck type is fine; a bot that would be the third (not deeper than the second rival)
+    backs off, even when it's nearly as deep. One deeper than the second rival keeps fighting."""
+    from draftbot.engine import deck_outlook
+    from draftbot.decktypes import DECK_TYPES
+    ctx = _two_seat_ctx(synthetic_cube(), [], [], [])
+    zero = {t: 0.0 for t in DECK_TYPES}
+    rivals = [dict(zero, storm=1.0), dict(zero, storm=0.8)]
+    third, _ = deck_outlook(ctx, dict(zero, storm=0.75), rivals)
+    level, _ = deck_outlook(ctx, dict(zero, storm=0.8), rivals)
+    deeper, _ = deck_outlook(ctx, dict(zero, storm=0.9), rivals)
+    assert third["storm"] < 0.5 and level["storm"] < 0.8 and deeper["storm"] == 0.9
+    pair, _ = deck_outlook(ctx, dict(zero, storm=0.75), [dict(zero, storm=1.0)])
+    assert pair["storm"] == 0.75                                      # only one rival: no crowding
+
+
+def test_bots_get_different_leans_that_fade_when_a_lane_is_taken():
+    import random as _r
+    from draftbot.personas import Persona, assign_leans, lean_choices, random_persona
+    names = ["Goblin Guide", "Monastery Swiftspear", "Eidolon of the Great Revel", "Thalia, Guardian of Thraben",
+             "Mother of Runes", "Giver of Runes", "Splinter Twin", "Pestermite"]
+    choices = lean_choices(names)
+    assert "red_aggro" in choices and "white_aggro" in choices and "twin" not in choices   # twin has only 2 keys
+    ps = [random_persona(_r.Random(i)) for i in range(5)]
+    assign_leans(_r.Random(1), ps, choices)
+    leans = [p.lean for p in ps if p.lean]
+    assert len(leans) == len(set(leans)) == 2                         # distinct; the rest lean nowhere
+    cube = _aggro_cube()
+    idx = build_card_index(cube)
+
+    def plan_part(rival, lean):
+        ctx = _two_seat_ctx(cube, [], ["U0"], rival, persona=Persona("steady", temperature=0.001, lean=lean), explain=True)
+        ctx.index = idx
+        return {c: i for _, c, i in score_pool(ctx)}["thalia"]["plan"]
+    assert plan_part(["U1"], "white_aggro") > plan_part(["U1"], "") + 0.05
+    assert plan_part(["ocelot", "mom", "ajani"], "white_aggro") < plan_part(["U1"], "white_aggro")
+
+
+def test_colourless_bombs_and_hybrid_cards_are_not_narrow():
+    """The One Ring (top-3% colourless) goes in any deck even though artifact drafters take it most; a
+    hybrid-only card (Lutri) needs one of its colours instead of looking colourless."""
+    from draftbot.decktypes import is_narrow, is_universal
+    from draftbot.engine import _is_utility_artifact
+    cube = synthetic_cube() + [
+        card("ring", "The One Ring", "{4}", 4, "Legendary Artifact", "Indestructible. Draw a card.", "", 2016),
+        card("bauble", "Urza's Bauble", "{0}", 0, "Artifact", "Draw a card at the beginning of the next upkeep.", "", 1540),
+        card("lutri", "Lutri, the Spellchaser", "{1}{U/R}{U/R}", 3, "Legendary Creature — Elemental Otter", "Flash", "UR", 1570),
+    ]
+    stats = {"partners": {"ring": {"bauble": 1.0, "U0": 1.0}, "bauble": {"ring": 1.0}}}
+    idx = build_card_index(cube, stats)
+    ring, lutri = idx["ring"], idx["lutri"]
+    assert ring.bomb and not is_narrow(ring, is_universal(ring), ring.staple) and not _is_utility_artifact(ring)
+    assert lutri.hybrid == frozenset("UR") and set(lutri.home) == {"U", "R"}
+    assert not is_narrow(lutri, is_universal(lutri), lutri.staple)
+
+
+def test_bots_skip_conspiracy_cards():
+    cube = synthetic_cube() + [card("pp", "Power Play", "", 0, "Conspiracy",
+                                    "You are the starting player.", "", 1900)]
+    idx = build_card_index(cube)
+    assert idx["pp"].conspiracy
+    ctx = _two_seat_ctx(cube, [], [], [])
+    ctx.index = idx
+    scores = {c: sc for sc, c, _ in score_pool(ctx)}
+    assert scores["pp"] == 0.0 and max(scores.values()) > 0.5
+
+
+def test_committed_bot_takes_off_colour_cards_only_when_on_plan():
+    """A committed blue-red bot values a white card linked to its cards far above an unlinked, higher-rated
+    white card: it can expand into a colour for synergy, never for rating alone."""
+    cube = synthetic_cube() + [
+        card("linked", "Linked white card", "{1}{W}", 2, "Creature — Test", "", "W", 1500),
+        card("bomb", "Unlinked white bomb", "{1}{W}", 2, "Creature — Test", "", "W", 1800),
+    ]
+    mine = [f"U{i}" for i in range(6)] + [f"R{i}" for i in range(5)]
+    stats = {"partners": {"linked": {m: 1.0 for m in mine[:4]}}}
+    idx = build_card_index(cube, stats)
+    ctx = _two_seat_ctx(cube, [], mine, [], explain=True)
+    ctx.index = idx
+    rows = {c: (sc, i) for sc, c, i in score_pool(ctx)}
+    assert rows["linked"][0] > rows["bomb"][0] * 2
+    assert rows["linked"][1].get("on_plan") and not rows["bomb"][1].get("on_plan")

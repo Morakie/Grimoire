@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import api from "@/lib/api";
+import { deckName } from "@/lib/deckTypes";
 import { Loader2, X, FlaskConical, ChevronLeft, ChevronRight, RotateCcw, Copy, ArrowUp, ArrowDown, User, SlidersHorizontal } from "lucide-react";
 
 // Bot Lab: one pick of a rotisserie table as the bots' engine sees it, with every card's score split into
@@ -22,7 +22,6 @@ const MULTS = [
   ["deck", "Deck type", "Narrow or key card outside the bot's deck type (inside Rating)"],
   ["saturated", "Saturated", "The bot already has enough cards doing this job (inside Rating)"],
 ];
-const DECK_NAMES = { tolarian: "Tolarian", workshop: "Workshop", artifacts: "Artifacts", storm: "Storm", reanimator: "Reanimator", cheat: "Cheat", lands: "Lands", aggro: "Aggro" };
 const PIP = { W: "bg-amber-50", U: "bg-blue-500", B: "bg-purple-500", R: "bg-red-500", G: "bg-green-500" };
 const STORE = "grim_botlab_tuning";
 
@@ -126,7 +125,13 @@ function Knob({ k, value, onChange }) {
   );
 }
 
-export default function BotLab({ shareId, cubeById, seats, startSeat, onClose }) {
+// `fetchView(body)` returns the POST response for {seat, pick_no, tuning} (a real table's /bot-lab, or a simulated
+// draft's /lab/view). `inline` renders the panel in the page instead of as a pop-up; `reloadKey` forces a reload.
+// `focus` ({seat, pickNo}) jumps to a pick from outside; `onSlot` hears which table pick is shown and
+// `onTuning` the weights changed from the current ones (Bot Brain uses them to re-draft).
+// `onView` hears each view loaded (Bot Brain draws the seat's synergy web from it); `busy` adds a note while
+// the page re-drafts.
+export default function BotLab({ fetchView, cubeById, seats, startSeat, onClose, inline = false, reloadKey = 0, focus = null, onSlot, onTuning, onView, busy = "" }) {
   const [seat, setSeat] = useState(startSeat ?? seats[0]?.index ?? 0);
   const [pickNo, setPickNo] = useState(null);           // null = the seat's latest pick
   const [tuning, setTuning] = useState(loadTuning);
@@ -149,24 +154,30 @@ export default function BotLab({ shareId, cubeById, seats, startSeat, onClose })
   const load = useCallback((body) => {
     const id = ++req.current;
     setLoading(true); setError(null);
-    api.post(`/drafts/${shareId}/bot-lab`, body, { timeout: 60000 })
+    fetchView(body)
       .then(({ data }) => { if (id !== req.current) return; setData(data); setKnobs(data.knobs || []); })
       .catch((e) => { if (id === req.current) setError(e.response?.data?.detail || "Couldn't load this pick. Try again in a moment."); })
       .finally(() => { if (id === req.current) setLoading(false); });
-  }, [shareId]);
+  }, [fetchView]);
 
   // Reload when the seat, pick or weights change (weights debounced while a slider is dragged).
   useEffect(() => {
     const t = setTimeout(() => load({ seat, pick_no: pickNo, tuning }), 220);
     return () => clearTimeout(t);
-  }, [seat, pickNo, tuning, load]);
+  }, [seat, pickNo, tuning, load, reloadKey]);
+  useEffect(() => { if (startSeat != null) { setSeat(startSeat); setPickNo(null); } }, [startSeat, reloadKey]);
+  useEffect(() => { if (focus) { setSeat(focus.seat); setPickNo(focus.pickNo); } }, [focus]);
+  useEffect(() => { if (data && onSlot) onSlot(data.slot); }, [data, onSlot]);
+  useEffect(() => { if (data && onView) onView(data); }, [data, onView]);
+  useEffect(() => { if (onTuning) onTuning(effective); }, [effective, onTuning]);
   useEffect(() => { saveTuning(tuning); }, [tuning]);
   useEffect(() => { setOpen(null); }, [seat, pickNo]);
   useEffect(() => {
+    if (inline) return undefined;
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, inline]);
 
   const slots = data?.seat_slots || [];
   const curNo = data?.pick_no ?? 1;
@@ -190,12 +201,12 @@ export default function BotLab({ shareId, cubeById, seats, startSeat, onClose })
   const groups = useMemo(() => knobs.reduce((m, k) => { (m[k.group] = m[k.group] || []).push(k); return m; }, {}), [knobs]);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center p-2 sm:p-4 sm:pt-10" data-testid="bot-lab" onClick={onClose}>
-      <div className="w-[min(99vw,1240px)] max-h-[94vh] bg-[#0b111e] border border-slate-700 rounded-xl shadow-2xl overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+    <div className={inline ? "" : "fixed inset-0 z-50 bg-black/70 flex items-start justify-center p-2 sm:p-4 sm:pt-10"} data-testid="bot-lab" onClick={inline ? undefined : onClose}>
+      <div className={`${inline ? "w-full lg:h-[80vh]" : "w-[min(99vw,1240px)] max-h-[94vh] shadow-2xl"} bg-[#0b111e] border border-slate-700 rounded-xl overflow-hidden flex flex-col`} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-800 shrink-0">
           <span className="font-display font-semibold flex items-center gap-2"><FlaskConical className="w-4 h-4 text-amber-400" /> Bot Lab</span>
-          <span className="text-xs text-slate-500 hidden md:block">How the bots score each card at one pick. Weights you change here only affect this view.</span>
-          <button type="button" data-testid="bot-lab-close" onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close"><X className="w-4 h-4" /></button>
+          <span className="text-xs text-slate-500 hidden md:flex items-center gap-3">How the bots score each card at one pick. Weights you change here only affect this view.{!inline && <a href="/bots" className="text-amber-300 hover:underline whitespace-nowrap">Bot Brain</a>}</span>
+          {inline ? <span /> : <button type="button" data-testid="bot-lab-close" onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close"><X className="w-4 h-4" /></button>}
         </div>
 
         {/* Seat and pick */}
@@ -214,6 +225,7 @@ export default function BotLab({ shareId, cubeById, seats, startSeat, onClose })
             <span className="text-sm text-slate-300 tabular-nums whitespace-nowrap">{ordinal(curNo)} pick{data && <span className="text-slate-500 hidden sm:inline"> · table pick {data.slot + 1}</span>}</span>
           </div>
           {loading && <Loader2 className="w-4 h-4 animate-spin text-amber-400" aria-label="Loading" />}
+          {busy && <span className="text-xs text-sky-300">{busy}</span>}
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto lg:overflow-hidden lg:grid lg:grid-cols-[minmax(0,1fr)_330px]">
@@ -229,7 +241,7 @@ export default function BotLab({ shareId, cubeById, seats, startSeat, onClose })
                       <span className="text-slate-500 text-xs">{info.coloured_spells} coloured spells · {Math.round(info.commit * 100)}% committed</span></div></div>
                   <div className="min-w-0"><div className="text-[11px] uppercase tracking-wider text-slate-500">Deck types</div>
                     <div className="flex flex-wrap gap-1.5 mt-0.5">{Object.keys(info.decks).length ? Object.entries(info.decks).slice(0, 4).map(([t, v]) => (
-                      <span key={t} className={`text-xs px-2 py-0.5 rounded-full border ${v >= 0.5 ? "border-amber-400/60 text-amber-200" : "border-slate-700 text-slate-400"}`}>{DECK_NAMES[t] || t} {Math.round(v * 100)}%</span>
+                      <span key={t} className={`text-xs px-2 py-0.5 rounded-full border ${v >= 0.5 ? "border-amber-400/60 text-amber-200" : "border-slate-700 text-slate-400"}`}>{deckName(t)} {Math.round(v * 100)}%</span>
                     )) : <span className="text-slate-400">None yet</span>}</div></div>
                   <div className="min-w-0 basis-full sm:basis-auto sm:flex-1"><div className="text-[11px] uppercase tracking-wider text-slate-500">{seatName(data.seat)} owns ({info.owned.length})</div>
                     <div className="flex gap-1 mt-1 overflow-x-auto pb-1">{info.owned.map((cid) => { const c = cubeById[cid]; const img = c && (c.art_crop || c.image); return (
@@ -277,7 +289,7 @@ export default function BotLab({ shareId, cubeById, seats, startSeat, onClose })
             {copied && (copied === "Copied"
               ? <p className="text-xs text-emerald-400">Copied. Paste it into a message to change the bots for real.</p>
               : <textarea readOnly value={copied} onFocus={(e) => e.target.select()} className="w-full h-24 text-xs bg-slate-900 border border-slate-700 rounded p-2 text-slate-200" />)}
-            <p className="text-xs text-slate-500">Arrows on each card show how far it moved compared with the current weights. The tick under a slider marks the current value.</p>
+            <p className="text-xs text-slate-500">Arrows on each card show how far it moved compared with the current (default) weights. The tick under a slider marks the current value.</p>
             <div className={`${showKnobs ? "block" : "hidden"} lg:block space-y-5`}>
               {Object.entries(groups).map(([g, ks]) => (
                 <fieldset key={g} className="space-y-3">
