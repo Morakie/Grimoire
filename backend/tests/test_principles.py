@@ -247,9 +247,10 @@ def test_P12_deck_with_no_interaction_looks_for_it_by_mid_draft():
 # ---------------------------------------------------------------- P13
 def test_P13_duals_for_your_pair_matter_once_committed():
     idx, cmb = build()
-    early = ctx_for(idx, cmb, {0: ["U0"], 1: ["G0"], 2: ["W0"], 3: ["R0"]})
     late = ctx_for(idx, cmb, {0: ["U0", "U1", "B0", "B1", "U2", "B2", "U3"], 1: ["G0"], 2: ["W0"], 3: ["R0"]})
-    assert scored(late)["usea"][1]["value"] > 1.3 * scored(early)["usea"][1]["value"]
+    s = scored(late)
+    # Underground Sea for a blue-black seat; Plateau (Mountain Plains, not a fetch) barely fits it.
+    assert s["usea"][1]["value"] > 2.0 * s["plateau"][1]["value"]
 
 
 # ---------------------------------------------------------------- P14

@@ -20,6 +20,7 @@ bot report and the draft room can run either. Colour handling reuses engine.py's
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 import random
 from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple
@@ -44,7 +45,7 @@ TUNING2: Dict[str, float] = {
     # plans
     "deck_seat": 0.5,           # deck-type strength at which a seat is "in" that deck type
     "crowd_cut": 0.8,           # plan weight lost for a seat that would be over a lane's capacity
-    "start_weight": 0.8,        # how much a key card of an open deck type counts as a plan to start...
+    "start_weight": 1.0,        # how much a key card of an open deck type counts as a plan to start...
     "entry_window": 0.5,        # ...fading to nothing by this share of the seat's picks
     "good_floor": 0.75,         # weight of the "good stuff" plan for a seat fully in a deck type
     "narrow_floor": 0.35,       # value a narrow card (Top, Baubles, Karakas) keeps outside a deck that uses it
@@ -55,8 +56,8 @@ TUNING2: Dict[str, float] = {
     # value parts
     "partner_weight": 0.35,     # CubeCobra "drafted together" links to the seat's cards
     "combo_weight": 0.7,        # combo packages and Spellbook lines
-    "replace_weight": 0.35,     # share of a substitute's value that a card loses (Balance has none, Drain has Counterspell)
-    "fixing_damp": 0.5,         # dual/fetch lands' value at pick 1 (full once the seat is committed)
+    "replace_weight": 0.2,     # share of a substitute's value that a card loses (Balance has none, Drain has Counterspell)
+    "fixing_damp": 0.8,         # dual/fetch lands' value at pick 1 (full once the seat is committed)
     "interaction_weight": 0.25, # deck short of interaction by mid-draft
     "wincon_start": 0.3, "wincon_weight": 0.3,
     "reanimate_cut": 0.6, "reanimate_targets": 2, "fatty_cut": 0.6, "fatty_enablers": 2, "fatty_cmc": 7,
@@ -72,6 +73,8 @@ TUNING2: Dict[str, float] = {
     # People's value of a card (pick_order.py: how early real rotisserie tables take it) against its CubeCobra
     # rating: experienced roto drafters take fetches, tutors, cheap discard and blasts much earlier than ratings
     # suggest, and Timetwister or Chrome Mox later.
+    "mox_lean": 0.6,            # a one-colour Mox counts as this much of a card of its colour when choosing colours
+    "fetch_fit": 0.75,          # colour fit a fetchland always has
     "human_weight": 0.7,        # share of a card's quality that comes from how early people take it
     "human_top": 1.45, "human_floor": 0.2, "human_scale": 12.0,   # round 1 -> 1.45, round 10 -> ~0.8, never -> 0.2
 }
@@ -159,8 +162,8 @@ class Static:
                 self.tier[cid] = seen[0]
             elif name in _TIER:
                 self.tier[cid] = _TIER[name]
-            if c.staple:
-                q = max(q, human_quality(1.5))       # Power stays Power whatever the data says
+            if c.staple and seen is None:
+                q = max(q, human_quality(1.5))       # Power with no pick data: rate it like Power
             self.quality[cid] = q * _ADJUST.get(name, 1.0)
             self.job[cid] = job_of(c)
             uni = is_universal(c)
@@ -247,12 +250,18 @@ class SeatModel:
         n = len(self.pool)
         self.t = min(1.0, n / max(ctx.picks_per_seat, 1))
         rivals = [s for s in ctx.picks_by_seat if s != seat]
+        # A Mox says something about colours: drafters take "the Moxen of the colours I want" (LSV took Sapphire
+        # and Jet, then drafted UB). For choosing colours (not for how committed the seat is), a one-colour Mox
+        # counts as a weaker card of its colour.
+        lean = [dataclasses.replace(c, need=frozenset(c.produces), power=c.power * k2(ctx, "mox_lean"))
+                for c in self.pool if "fast_mana" in c.roles and not c.is_land and len(c.produces) == 1]
+        colour_pool = self.pool + lean
         if me:
-            self.dist, self.pair, self.splash = colour_state(ctx, self.pool, n, rivals)
+            self.dist, self.pair, self.splash = colour_state(ctx, colour_pool, n, rivals)
         else:
-            col = coloured_spells(self.pool)
-            self.dist = lane_distribution(self.pool, col)
-            self.pair = best_pair(self.pool) if col >= ctx.k("commit_start") else None
+            col = coloured_spells(colour_pool)
+            self.dist = lane_distribution(colour_pool, col)
+            self.pair = best_pair(colour_pool) if col >= ctx.k("commit_start") else None
             self.splash = None
         self.progress = commit_progress(ctx, self.pool)
         # A pool with spells in only one colour hasn't chosen its second colour yet: best_pair still names one
@@ -260,7 +269,7 @@ class SeatModel:
         # otherwise "be" blue-white and want every white card).
         self.weak = ""
         if self.pair:
-            counts = {c: sum(1 for x in self.pool if not x.is_land and c in x.need) for c in self.pair}
+            counts = {c: sum(1 for x in colour_pool if not x.is_land and c in x.need) for c in self.pair}
             empty = [c for c, v in counts.items() if v == 0]
             if len(empty) == 1:
                 self.weak = empty[0]
@@ -310,6 +319,7 @@ class SeatModel:
         self.lean = lean if lean in self.weight and not self.over.get(lean) else ""
         self.lean_w = k2(ctx, "lean_weight") * entry if self.lean else 0.0
         deepest = max(self.weight.values(), default=0.0)
+        self.deepest = deepest
         self.good = 1.0 - (1.0 - k2(ctx, "good_floor")) * min(1.0, deepest)
 
     def plan_fit(self, cid: str, card: CardInfo) -> Tuple[float, str, float]:
@@ -321,12 +331,18 @@ class SeatModel:
         # Power, bombs, cards every deck plays and interaction always fit; but a narrow deck's key card that
         # happens to deal damage (Grapeshot) is still that deck's card.
         exempt = card.staple or card.bomb or st.universal[cid] or (st.interaction[cid] and not card.key_of)
+        # Early on, a strong build-around is just a strong card (LSV's tables take Academy, Saga, Opal, LED, Flash
+        # in the first rounds to plant a flag); the "only in some decks" discount grows as the seat commits to
+        # something else (colours or a deck type).
+        commit = min(1.0, max(self.progress, self.deepest / k2(ctx, "deck_seat")))
         if exempt:
             base = 1.0
         elif st.narrow[cid]:
-            base = k2(ctx, "narrow_floor") * self.good
+            floor = k2(ctx, "narrow_floor") * self.good
+            base = 1.0 - (1.0 - floor) * commit
         elif card.key_of and card.power < k2(ctx, "generic_power"):
-            base = k2(ctx, "key_floor")
+            floor = k2(ctx, "key_floor")
+            base = 1.0 - (1.0 - floor) * commit
         else:
             base = self.good
         use, best, syn = 0.0, "good stuff", 0.0
@@ -368,6 +384,8 @@ class SeatModel:
                 elif not card.is_land and card.need <= self.pair | {self.splash} and self.splash not in card.heavy:
                     committed = self.ctx.k("splash_fit")
             v = committed if self.progress >= 1.0 else (1 - self.progress) * flexible + self.progress * committed
+        if "fetchland" in card.roles:
+            v = max(v, k2(self.ctx, "fetch_fit"))   # a fetch finds basics of either type: fits most decks
         self._fit[cid] = v
         return v
 
