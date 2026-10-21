@@ -42,22 +42,60 @@ async def fetch_combos(index: Dict[str, CardInfo], timeout: float = 20.0) -> Lis
     return with_cube_combos(index, await _spellbook_combos(index, timeout))
 
 
+SPELLBOOK_MAX_LINES = 600   # Commander Spellbook rejects longer decklists (backend common/serializers.py)
+SPELLBOOK_GROUP = 200       # big pools are asked about in groups of three of these (600 lines)
+SPELLBOOK_PAGES = 5         # result pages (1,000 variants each) followed per request
+
+
+def spellbook_batches(names: List[str], max_lines: int = SPELLBOOK_MAX_LINES, group: int = SPELLBOOK_GROUP) -> List[List[str]]:
+    """Name lists to send, each within Spellbook's limit. A pool that fits goes in one request; a bigger one
+    is cut into groups of up to `group` cards and every three groups are sent together, so the pieces of
+    any two- or three-card combo (the only lines the bots use) all appear in at least one request."""
+    if len(names) <= max_lines:
+        return [list(names)]
+    k = math.ceil(len(names) / group)
+    size = math.ceil(len(names) / k)
+    chunks = [names[i * size:(i + 1) * size] for i in range(k)]
+    from itertools import combinations
+    return [a + b + c for a, b, c in combinations(chunks, 3)]
+
+
 async def _spellbook_combos(index: Dict[str, CardInfo], timeout: float) -> List[Combo]:
     names = sorted({info.name.split(" // ")[0] for info in index.values()})
-    body = "\n".join(f"1 {n}" for n in names)
+    batches = spellbook_batches(names)
     try:
+        import asyncio
         import httpx  # imported lazily so the engine itself has no network dependency
-
-        async with httpx.AsyncClient(timeout=timeout, headers={"Accept": "application/json", "User-Agent": "GrimoireDeckBuilder/1.0"}) as hc:
-            r = await hc.post(SPELLBOOK_URL, content=body.encode("utf-8"), headers={"Content-Type": "text/plain"})
-        if r.status_code != 200:
-            log.warning("Commander Spellbook returned %s", r.status_code)
-            return []
-        variants = r.json().get("results", {}).get("included", [])
-    except Exception as exc:  # network / JSON problems shouldn't break a draft
-        log.warning("Commander Spellbook lookup failed: %s", exc)
+    except ImportError:
         return []
-    return _to_combos(variants, index)
+    sem = asyncio.Semaphore(3)
+
+    async def ask(hc, batch: List[str]) -> List[dict]:
+        body = "\n".join(f"1 {n}" for n in batch).encode("utf-8")
+        out: List[dict] = []
+        url = SPELLBOOK_URL
+        async with sem:
+            for _ in range(SPELLBOOK_PAGES):
+                try:
+                    r = await hc.post(url, content=body, headers={"Content-Type": "text/plain"})
+                except Exception as exc:   # network problems shouldn't break a draft
+                    log.warning("Commander Spellbook lookup failed: %s", exc)
+                    break
+                if r.status_code != 200:
+                    log.warning("Commander Spellbook returned %s for %d cards", r.status_code, len(batch))
+                    break
+                data = r.json()
+                out.extend((data.get("results") or {}).get("included", []))
+                url = data.get("next")
+                if not url:
+                    break
+        return out
+
+    async with httpx.AsyncClient(timeout=timeout, headers={"Accept": "application/json", "User-Agent": "GrimoireDeckBuilder/1.0"}) as hc:
+        found = await asyncio.gather(*(ask(hc, b) for b in batches))
+    if len(batches) > 1:
+        log.info("Commander Spellbook: %d cards asked in %d batches", len(names), len(batches))
+    return _to_combos([v for vs in found for v in vs], index)
 
 
 def _to_combos(variants: List[dict], index: Dict[str, CardInfo]) -> List[Combo]:

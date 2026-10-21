@@ -739,3 +739,15 @@ def test_bot_brain_dossier_summary_and_simulation():
     assert simulate(idx, [], 4, 10, seed=2)["picks"] == sim["picks"]      # same seed, same draft
     v = lab_view(idx, [], sim["order"], sim["picks"], sim["per_seat"], 9, people=frozenset())
     assert v["took"]["card"] == sim["picks"][9]["card_id"]
+
+
+def test_big_pools_go_to_spellbook_in_batches_that_cover_every_small_combo():
+    from itertools import combinations
+    from draftbot.combos import spellbook_batches
+    assert spellbook_batches([f"c{i}" for i in range(500)]) == [[f"c{i}" for i in range(500)]]
+    names = [f"c{i}" for i in range(903)]
+    batches = spellbook_batches(names)
+    assert len(batches) == 10 and all(len(b) <= 600 for b in batches)
+    sets = [set(b) for b in batches]
+    sample = names[::37]
+    assert all(any(set(trio) <= s for s in sets) for trio in combinations(sample, 3))

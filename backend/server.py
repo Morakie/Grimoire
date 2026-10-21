@@ -2459,7 +2459,7 @@ async def lab_source(body: LabSourceInput):
         if not pool:
             _warm_vrd_pool()
             raise HTTPException(status_code=503, detail="The VRD card pool is loading. Try again in a minute.")
-        key = f"vrd:{int(pool.get('built_at', 0))}"
+        key = f"vrd:{int(pool.get('built_at', 0))}:{len(pool.get('combos') or [])}"
         hit = _LAB_SOURCES.get(key)
         if not hit or (hit["partial"] and time.time() - hit["at"] > 60):
             # The VRD pool itself carries no CubeCobra links (VRD bots don't use them). Bot Brain reads whatever
