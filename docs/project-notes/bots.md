@@ -84,6 +84,21 @@ of the cube's own Power cards (Timetwister -> 2237).
 - `rating_weight` (default 1) scales how much raw Elo counts at all; lower it to let synergy lead, with Elo and
   combos as tie-breakers.
 
+## Lanes and personalities (2026-10-20)
+
+- Same colours are fine; the same deck type is limited to two seats. With two rivals in a deck type, a bot that
+  isn't deeper than the second of them backs off fully (`crowd_margin`, `crowd_tie`); its focus and
+  "fight for contested cards" bonus follow that backed-off depth.
+- Storm keys are finishers/engines only; rituals, Yawgmoth's Will, Citadel and Oracle/Pact are Storm core (any
+  black deck plays them).
+- Personalities: every bot gets a random style (archetype weights) and a different deck type to lean towards
+  (`Persona.lean`, assigned at draft start from deck types with 3+ key cards in the cube). `lean_weight` (0.15)
+  is a small early bonus that fades over the entry window, when rivals are in that lane (gone at two), and once
+  the bot is building something else, so it never forces a lane.
+- Measured on the group cube + PowerLSV (6 seeds, 8 x 45): main deck types shared by 3+ seats 1.0 -> 0 per table,
+  distinct main deck types 5.2 -> 6.0, deck Elo unchanged. Personalities at 0.15 change little (leaned lane is a
+  bot's main lane for ~1 bot in 8); 0.35 gives the same lane spread.
+
 ## Findings from reviews of real drafts
 
 - Replays use the bot-inputs export of a draft and the bot report (`GET /api/drafts/{id}/bot-report`), which
