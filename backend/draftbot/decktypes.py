@@ -51,8 +51,9 @@ KEYS: Dict[str, tuple] = {
         "Goblin Welder", "Goblin Engineer", "Daretti, Scrap Savant", "Kuldotha Forgemaster", "Bomat Courier",
         "Kuldotha Rebirth", "Daretti, Ingenious Iconoclast", "Scrap Trawler",
     ),
-    "wildfire": (    # artifact-mana ramp into land-destroying sweepers
-        "Wildfire", "Burning of Xinye", "Destructive Force", "Tezzeret the Seeker", "Upheaval",
+    "wildfire": (    # Wildfire / Upheaval: artifact-mana ramp into mass land destruction or a reset, then a big threat
+        "Wildfire", "Burning of Xinye", "Destructive Force", "Upheaval", "Jokulhaups", "Obliterate",
+        "Covetous Dragon", "Magnivore", "Tezzeret the Seeker", "Worn Powerstone", "Thran Dynamo",
     ),
     "painter": (     # Painter's Servant + Grindstone / colour hate
         "Painter's Servant", "Grindstone",
@@ -149,7 +150,9 @@ CORE: Dict[str, tuple] = {
     "pox": ("Dark Confidant", "Bloodghast", "Hymn to Tourach", "Thoughtseize", "Duress"),
     "ramp": ("Llanowar Elves", "Elvish Mystic", "Fyndhorn Elves", "Birds of Paradise", "Noble Hierarch",
              "Sylvan Caryatid"),
-    "wildfire": ("Grim Monolith", "Mana Vault", "Basalt Monolith"),
+    "wildfire": ("Grim Monolith", "Mana Vault", "Basalt Monolith", "Mind Stone", "Coalition Relic", "Hedron Archive",
+                 "Pentad Prism", "Frost Titan", "Inferno Titan", "Concentrate", "Deep Analysis", "Fiery Confluence",
+                 "Anger of the Gods", "Kozilek's Return", "Treasure Cruise"),
     "welder": ("Triplicate Titan", "Blightsteel Colossus", "Myr Battlesphere"),
     "gruul": ("Lightning Bolt", "Minsc & Boo, Timeless Heroes", "Bloodbraid Elf"),
 }

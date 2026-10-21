@@ -129,6 +129,10 @@ TUNING: Dict[str, float] = {
     # lean is a small bonus on that deck type's key and member cards; it fades over the entry window, as soon as
     # a rival is in that deck type (gone with two), and once the bot is clearly building something else.
     "lean_weight": 0.15,
+    # Conspiracy cards (Power Play, Advantageous Proclamation) only do something in a Conspiracy draft; the group
+    # doesn't play them, so they keep this share of their score (the bots still know what they are: set it to 1
+    # to draft them by rating again)
+    "conspiracy_value": 0.0,
     "support_after": 6,         # picks before that cut fully applies (early picks keep options open)
 }
 
@@ -811,7 +815,8 @@ def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[s
                 is_plain = False
             base = v.base.get(cid)
             if base is None:
-                base = v.base[cid] = max(card.power, 0.0) * (v.floor + (1 - v.floor) * fit_of(cid))
+                base = v.base[cid] = max(card.power, 0.0) * (v.floor + (1 - v.floor) * fit_of(cid)) \
+                    * (ctx.k("conspiracy_value") if card.conspiracy else 1.0)
             extra = v.extra.get(cid)
             if extra is None:
                 extra = v.extra[cid] = (package_value(card, None, v.strengths),
@@ -1097,6 +1102,8 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
                 t_other += k("splash_fixing_bonus")
         base = t_rating + t_combo + t_plan + t_partner + t_needs + t_other + t_hate
         lane_mult = floor + (1 - floor) * fit
+        if card.conspiracy:
+            lane_mult *= k("conspiracy_value")
         info = {"fit": round(fit, 2)}
         if d_mult < 1.0:
             info["deck"] = round(d_mult, 2)

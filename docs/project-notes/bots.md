@@ -99,6 +99,16 @@ of the cube's own Power cards (Timetwister -> 2237).
   distinct main deck types 5.2 -> 6.0, deck Elo unchanged. Personalities at 0.15 change little (leaned lane is a
   bot's main lane for ~1 bot in 8); 0.35 gives the same lane spread.
 
+## Conspiracy cards and odd ratings (2026-10-20)
+
+- The group doesn't play Conspiracy cards: bots and pack bots score them 0 (`conspiracy_value`; set to 1 to
+  draft them by rating if Conspiracy drafts are ever added). Rivals don't expect anyone to take them either.
+- Colourless cards in the cube's top 3% of Elo (The One Ring) are never narrow or "utility artifacts"; it went
+  22nd because artifact drafters take it most. Key cards (Time Vault) stay narrow.
+- Hybrid-only costs (Lutri, Lurrus) get a home in their colours instead of reading as colourless.
+- Strong gold cards are never keys (Minsc & Boo went undrafted as an RG-beats key).
+- Personality leans only go to deck types with 3+ key cards in the cube being drafted (`lean_choices`).
+
 ## Findings from reviews of real drafts
 
 - Replays use the bot-inputs export of a draft and the bot report (`GET /api/drafts/{id}/bot-report`), which

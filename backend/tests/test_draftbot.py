@@ -920,3 +920,14 @@ def test_colourless_bombs_and_hybrid_cards_are_not_narrow():
     assert ring.bomb and not is_narrow(ring, is_universal(ring), ring.staple) and not _is_utility_artifact(ring)
     assert lutri.hybrid == frozenset("UR") and set(lutri.home) == {"U", "R"}
     assert not is_narrow(lutri, is_universal(lutri), lutri.staple)
+
+
+def test_bots_skip_conspiracy_cards():
+    cube = synthetic_cube() + [card("pp", "Power Play", "", 0, "Conspiracy",
+                                    "You are the starting player.", "", 1900)]
+    idx = build_card_index(cube)
+    assert idx["pp"].conspiracy
+    ctx = _two_seat_ctx(cube, [], [], [])
+    ctx.index = idx
+    scores = {c: sc for sc, c, _ in score_pool(ctx)}
+    assert scores["pp"] == 0.0 and max(scores.values()) > 0.5

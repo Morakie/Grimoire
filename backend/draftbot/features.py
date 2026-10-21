@@ -124,6 +124,11 @@ class CardInfo:
     staple: bool = False                    # on the TAKE_ON_SIGHT list
     hybrid: FrozenSet[str] = field(default_factory=frozenset)  # colours of {U/R}-style hybrid symbols
     bomb: bool = False                      # colourless card rated with the cube's top 3% (The One Ring): goes in any deck
+
+    @property
+    def conspiracy(self) -> bool:
+        """Conspiracy cards (Power Play, Advantageous Proclamation) only matter in Conspiracy drafts."""
+        return "conspiracy" in self.types
     phyrexian: bool = False                 # Phyrexian mana in its cost (Dismember): castable in any deck
     key_of: FrozenSet[str] = field(default_factory=frozenset)   # deck types this card defines (decktypes.py)
     deck: Dict[str, float] = field(default_factory=dict)        # membership 0..1 per deck type
