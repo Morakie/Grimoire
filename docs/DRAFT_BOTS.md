@@ -125,3 +125,9 @@ the pick list. `tuning` overrides any `TUNING` value for that run.
 
 To replay a real draft offline, save `GET /api/drafts/{id}/bot-inputs` (cards, CubeCobra stats, combos, order and
 picks) and run the engine on it; `GET /api/drafts/{id}/suggestions?seat=N&explain=1` shows the live score parts.
+
+**Bot Lab** (draft room → "Bot Lab", rotisserie cube tables): `POST /api/drafts/{id}/bot-lab {seat, pick_no | slot, tuning}`
+rebuilds the table just before a pick and returns the engine's top cards with every score part, the card actually
+taken and its rank, and the seat's colours and deck types. `tuning` overrides any weight listed in `draftbot/lab.py`
+`KNOBS` for that view only (each card also gets its rank under the current weights); the live bots never see it.
+The page keeps tried weights in the browser and "Copy" gives them as JSON to bake into `TUNING`.

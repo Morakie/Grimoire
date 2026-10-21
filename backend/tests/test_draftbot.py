@@ -699,3 +699,23 @@ def test_cheat_spells_and_big_fatties_need_each_other():
     assert part(base, ["fat", "fat2"], "sneak") < 0.6 * part(base + ["fat2"], ["fat"], "sneak")
     # A fatty nobody can cast: worth much less without a reanimation or cheat spell.
     assert part(base, ["rean", "sneak"], "fat") < 0.6 * part(base + ["rean"], ["sneak"], "fat")
+
+
+def test_bot_lab_rebuilds_a_pick_and_tries_other_weights():
+    from draftbot.lab import clean_tuning, lab_view, pick_slot
+    cube = synthetic_cube()
+    idx = build_card_index(cube)
+    order = [0, 1, 1, 0] * 6
+    ids = sorted(idx, key=lambda c: -idx[c].elo)
+    picks = [{"order": i, "seat_index": s, "card_id": ids[i]} for i, s in enumerate(order[:9])]
+    # Only known weights, clamped to the knob's range; unchanged values dropped.
+    assert clean_tuning({"partner_weight": 9, "nope": 1, "rock_cut": 0.35}) == {"partner_weight": 1.5}
+    assert pick_slot(order, 9, 0, 2, None) == 3           # seat 0's 2nd pick
+    assert pick_slot(order, 9, 1, None, None) == 9        # seat 1's next pick (slot 9 not made yet)
+    v = lab_view(idx, [], order, picks, 12, 3, {"commit_rating_cut": 1.0}, n=5)
+    assert v["seat"] == 0 and v["pick_no"] == 2 and v["took"]["card"] == ids[3]
+    assert ids[3] in {r["card"] for r in v["rows"]} or v["took"]["rank"] > 5
+    assert all(r["base_rank"] for r in v["rows"]) and "rating" in v["rows"][0]["parts"]
+    assert ids[0] not in {r["card"] for r in v["rows"]}   # taken before this pick
+    nxt = lab_view(idx, [], order, picks, 12, 9)
+    assert nxt["next_pick"] and nxt["took"] is None

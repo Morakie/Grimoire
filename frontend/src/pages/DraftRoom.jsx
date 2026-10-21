@@ -2,6 +2,7 @@ import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import api from "@/lib/api";
 import BotReport from "@/components/BotReport";
+import BotLab from "@/components/BotLab";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -10,7 +11,7 @@ import { buildExport } from "@/components/ExportDialog";
 import { useAuth } from "@/context/AuthContext";
 import { getBasics } from "@/lib/mtg";
 import PackDraftView from "@/components/PackDraftView";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, ArrowRight, Megaphone, Shuffle, ListOrdered, UserX, EyeOff } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, ArrowRight, Megaphone, Shuffle, ListOrdered, UserX, EyeOff, FlaskConical } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -152,6 +153,7 @@ export default function DraftRoom() {
   const [deckSeat, setDeckSeat] = useState(null);
   const [showMiniTable, setShowMiniTable] = useState(false);
   const [showReport, setShowReport] = useState(false);     // the bot report pop-up
+  const [showLab, setShowLab] = useState(false);           // the Bot Lab pop-up
   const [sheet, setSheet] = useState(null);            // mobile bottom sheet: "queue" | "feed" | "chat"
   const [previewCard, setPreviewCard] = useState(null); // mobile tap-to-preview
   const seatStripRef = useRef(null);
@@ -1301,7 +1303,10 @@ export default function DraftRoom() {
                   {viewTabs([["pick", "Pick", LayoutGrid], ["table", "Draft Table", Table2], ["decks", "Decks", Eye]])}
                   <button data-testid="toggle-mini-table" onClick={() => setShowMiniTable((v) => !v)} className="hidden lg:flex text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 items-center gap-1.5"><Table2 className="w-3.5 h-3.5" /> {showMiniTable ? "Hide peek" : "Table peek"}</button>
                   {state.mode !== "packs" && state.pool !== "vintage" && state.pick_index >= 20 && (
+                    <>
                     <button type="button" data-testid="open-bot-report" onClick={() => setShowReport(true)} className="text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 flex items-center gap-1.5"><Bot className="w-3.5 h-3.5" /> Bot report</button>
+                    <button type="button" data-testid="open-bot-lab" onClick={() => setShowLab(true)} className="text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 flex items-center gap-1.5"><FlaskConical className="w-3.5 h-3.5" /> Bot Lab</button>
+                    </>
                   )}
                 </div>
                 {view === "table" ? renderDraftTable() : view === "decks" ? renderDecks() : renderPickGrid()}
@@ -1317,7 +1322,10 @@ export default function DraftRoom() {
                     ? [["pick", "Results", ListChecks], ["decks", "Decks", Eye]]
                     : [["pick", "Results", ListChecks], ["table", "Draft Table", Table2], ["decks", "Decks", Eye]])}
                   {state.mode !== "packs" && state.pool !== "vintage" && (
+                    <>
                     <button type="button" data-testid="open-bot-report-complete" onClick={() => setShowReport(true)} className="text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 flex items-center gap-1.5"><Bot className="w-3.5 h-3.5" /> Bot report</button>
+                    <button type="button" data-testid="open-bot-lab-complete" onClick={() => setShowLab(true)} className="text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 flex items-center gap-1.5"><FlaskConical className="w-3.5 h-3.5" /> Bot Lab</button>
+                    </>
                   )}
                 </div>
                 {view === "table" && state.mode !== "packs" ? renderDraftTable() : view === "decks" ? renderDecks() : renderResults()}
@@ -1414,6 +1422,9 @@ export default function DraftRoom() {
         </div>
       )}
 
+      {showLab && (
+        <BotLab shareId={shareId} cubeById={cubeById} seats={state.seats} startSeat={(isMirror ? state.my_seat : me?.seats?.[0]) ?? state.current_seat_index ?? undefined} onClose={() => setShowLab(false)} />
+      )}
       {showReport && (
         <BotReport shareId={shareId} cubeById={cubeById} seats={state.seats} pickCount={state.pick_index} onClose={() => setShowReport(false)} />
       )}
