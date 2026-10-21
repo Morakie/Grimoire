@@ -222,7 +222,7 @@ USE_CUBE_META = False    # merge synergy from CubeCobra's deck export (cubemeta.
 
 
 # Cards a group takes on sight whatever their CubeCobra rating says (Timetwister sits below Orcish
-# Bowmasters there): rated at least as high as the cube's top picks (its 98th percentile Elo).
+# Bowmasters there): rated at least as high as the cube's top picks and the rest of its Power (build_card_index).
 TAKE_ON_SIGHT = frozenset(n.lower() for n in (
     "Black Lotus", "Ancestral Recall", "Time Walk", "Timetwister",
     "Mox Pearl", "Mox Sapphire", "Mox Jet", "Mox Ruby", "Mox Emerald",
@@ -272,8 +272,13 @@ def build_card_index(cube: Iterable[dict], stats: Optional[dict] = None, meta: O
     lo = sorted(elos)[int(len(elos) * 0.05)] if elos else mid - 200
     hi = sorted(elos)[int(len(elos) * 0.95) - 1] if elos else mid + 200
     span = max(hi - lo, 1.0)
-    # Power is drafted first: TAKE_ON_SIGHT cards rank with the cube's top ~2% (the Moxen, in a powered cube).
+    # Power is drafted first: TAKE_ON_SIGHT cards rank with the cube's top ~2%, and with the rest of the Power
+    # in the cube (CubeCobra rates Timetwister far below the other Power Nine: 1810 against 2225+ in PowerLSV, which
+    # let Orcish Bowmasters and Ragavan outrank it). The floor is the lower quartile of the Power cards' own Elo.
     staple_floor = sorted(elos)[int(len(elos) * 0.98) - 1] if elos else hi
+    power_elos = sorted(float(c["elo"]) for c in cards if c.get("elo") and (c.get("name") or "").lower() in TAKE_ON_SIGHT)
+    if len(power_elos) >= 4:
+        staple_floor = max(staple_floor, power_elos[len(power_elos) // 4])
 
     index: Dict[str, CardInfo] = {}
     for c in cards:

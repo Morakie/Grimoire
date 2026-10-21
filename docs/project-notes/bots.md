@@ -69,6 +69,13 @@ Pod/Survival), blink, control, tempo (UR), white_aggro (white weenie / D&T), red
 - Everything else gets its membership from CubeCobra partners (the "web"), so the lists stay short.
 - Check a card's deck types in Bot Brain's Cards tab.
 
+## Power floor (2026-10-20)
+
+CubeCobra rates Timetwister far below the rest of the Power Nine (1810 against 2225+ in the group cube +
+PowerLSV), so with only a 98th-percentile floor, Orcish Bowmasters, Ragavan and Mana Drain outranked it and a bot
+holding Time Walk + Ancestral took Bowmasters over Timetwister. Power is now rated at least at the lower quartile
+of the cube's own Power cards (Timetwister -> 2237).
+
 ## Findings from reviews of real drafts
 
 - Replays use the bot-inputs export of a draft and the bot report (`GET /api/drafts/{id}/bot-report`), which

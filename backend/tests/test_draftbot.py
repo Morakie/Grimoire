@@ -852,3 +852,15 @@ def test_core_cards_belong_to_a_deck_type_without_being_keys():
     eff = {t: 0.0 for t in DECK_TYPES}
     assert deck_factor(ctx, idx["bolt"], eff, {t: 0.0 for t in DECK_TYPES}, 0.0) == 1.0
     assert deck_factor(ctx, idx["guide"], eff, {t: 0.0 for t in DECK_TYPES}, 0.0) < 1.0
+
+
+def test_power_ranks_with_the_rest_of_the_power():
+    """An underrated Power card (Timetwister, rated far below the other Power Nine on CubeCobra) still ranks
+    above the best non-Power cards, so a bot takes it over Orcish Bowmasters."""
+    power = [("lotus", "Black Lotus", 2480), ("walk", "Time Walk", 2320), ("anc", "Ancestral Recall", 2300),
+             ("saph", "Mox Sapphire", 2300), ("jet", "Mox Jet", 2270), ("ruby", "Mox Ruby", 2270),
+             ("pearl", "Mox Pearl", 2240), ("emer", "Mox Emerald", 2225), ("twister", "Timetwister", 1810)]
+    cube = synthetic_cube() + [card(cid, name, "{U}", 1, "Sorcery", "", "U", elo) for cid, name, elo in power] + [
+        card("bow", "Orcish Bowmasters", "{1}{B}", 2, "Creature — Orc Archer", "Flash", "B", 1853)]
+    idx = build_card_index(cube)
+    assert idx["twister"].elo >= 2237 and idx["twister"].power > idx["bow"].power
