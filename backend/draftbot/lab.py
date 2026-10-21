@@ -51,17 +51,27 @@ KNOBS: List[tuple] = [
 KNOB_KEYS = {k[1] for k in KNOBS}
 
 
-def knob_list() -> List[dict]:
+def _knobs(engine: str = ""):
+    """(knob rows, defaults) for an engine: engine 2 has its own weights (engine2.TUNING2)."""
+    if engine == "engine2":
+        from .engine2 import KNOBS2, TUNING2
+        return KNOBS2, TUNING2
+    return KNOBS, TUNING
+
+
+def knob_list(engine: str = "") -> List[dict]:
+    rows, defaults = _knobs(engine)
     return [{"group": g, "key": key, "label": label, "help": help_, "min": lo, "max": hi, "step": step,
-             "default": TUNING[key]} for g, key, label, help_, lo, hi, step in KNOBS]
+             "default": defaults[key]} for g, key, label, help_, lo, hi, step in rows]
 
 
-def clean_tuning(raw: Optional[dict]) -> Dict[str, float]:
-    """Only known weights, as numbers within each knob's range."""
+def clean_tuning(raw: Optional[dict], engine: str = "") -> Dict[str, float]:
+    """Only known weights (of that engine), as numbers within each knob's range."""
     out: Dict[str, float] = {}
-    limits = {k[1]: (k[4], k[5]) for k in KNOBS}
+    rows, TUNING = _knobs(engine)
+    limits = {k[1]: (k[4], k[5]) for k in rows}
     for key, val in (raw or {}).items():
-        if key not in KNOB_KEYS:
+        if key not in limits:
             continue
         try:
             v = float(val)

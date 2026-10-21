@@ -40,7 +40,7 @@ TUNING2: Dict[str, float] = {
     # the pick rule
     "keep": 0.5,                # share of its value a card that will come back is still worth taking now
     "rival_spread": 0.35,       # how sure the bots are about rivals' picks (lower = sharper)
-    "people_prior": 0.85,       # weight of "people usually take this by round N" (knowledge.PICK_TIERS)
+    "people_prior": 1.0,       # weight of "people usually take this by round N" (knowledge.PICK_TIERS)
     "plausible": 150,           # strongest cards (by rating) each rival is assumed to consider, plus combo pieces
     # plans
     "deck_seat": 0.5,           # deck-type strength at which a seat is "in" that deck type
@@ -54,9 +54,9 @@ TUNING2: Dict[str, float] = {
     "plan_colour": 0.75,        # off-colour card (one new colour, single pip) fitting the seat's plan
     "lean_weight": 0.15,        # personality: a little extra for one deck type early on
     # value parts
-    "partner_weight": 0.35,     # CubeCobra "drafted together" links to the seat's cards
-    "combo_weight": 0.7,        # combo packages and Spellbook lines
-    "replace_weight": 0.2,     # share of a substitute's value that a card loses (Balance has none, Drain has Counterspell)
+    "partner_weight": 0.5,     # CubeCobra "drafted together" links to the seat's cards
+    "combo_weight": 0.45,        # combo packages and Spellbook lines
+    "replace_weight": 0.05,     # (0.35 by LSV's Balance-over-Drain remark; replaying his drafts says almost none)     # share of a substitute's value that a card loses (Balance has none, Drain has Counterspell)
     "fixing_damp": 0.8,         # dual/fetch lands' value at pick 1 (full once the seat is committed)
     "interaction_weight": 0.25, # deck short of interaction by mid-draft
     "wincon_start": 0.3, "wincon_weight": 0.3,
@@ -73,13 +73,31 @@ TUNING2: Dict[str, float] = {
     # People's value of a card (pick_order.py: how early real rotisserie tables take it) against its CubeCobra
     # rating: experienced roto drafters take fetches, tutors, cheap discard and blasts much earlier than ratings
     # suggest, and Timetwister or Chrome Mox later.
-    "mox_lean": 0.6,            # a one-colour Mox counts as this much of a card of its colour when choosing colours
+    "mox_lean": 0.9,            # a one-colour Mox counts as this much of a card of its colour when choosing colours
     "fetch_fit": 0.75,          # colour fit a fetchland always has
     "human_weight": 0.7,        # share of a card's quality that comes from how early people take it
     "human_top": 1.45, "human_floor": 0.2, "human_scale": 12.0,   # round 1 -> 1.45, round 10 -> ~0.8, never -> 0.2
 }
 
 _REANIMATE_ROLES = frozenset({"reanimate", "cheat"})
+
+# The weights the Bot Lab offers for engine 2: (group, key, label, help, min, max, step).
+KNOBS2: List[tuple] = [
+    ("Pick rule", "keep", "Worth of a card that comes back", "How much of its value a card that will still be there next turn is worth taking now. Lower = more willing to float uncontested cards.", 0, 1, 0.05),
+    ("Pick rule", "people_prior", "Trust people's pick order", "How much 'people usually take this by round N' counts toward a card being gone.", 0, 1, 0.05),
+    ("Card value", "human_weight", "People's value vs rating", "Share of a card's value from how early real roto tables take it (rest: CubeCobra Elo).", 0, 1, 0.05),
+    ("Card value", "replace_weight", "Substitutes lower value", "How much a card loses to a substitute still likely to be there (Counterspell for Mana Drain).", 0, 0.8, 0.05),
+    ("Deck plans", "plan_bonus", "Synergy with the bot's deck", "Extra value for cards of the deck types the bot is in.", 0, 1.5, 0.05),
+    ("Deck plans", "narrow_floor", "Narrow cards outside their deck", "Value Top, Baubles, Karakas keep for a committed bot not in a deck that uses them.", 0, 1, 0.05),
+    ("Deck plans", "key_floor", "Key cards outside their deck", "Value Reanimate, Ajani keep for a committed bot outside their deck type.", 0, 1, 0.05),
+    ("Deck plans", "crowd_cut", "Back off full lanes", "Plan value lost for a bot that would be one seat too many in a lane.", 0, 1, 0.05),
+    ("Synergy", "partner_weight", "Drafted-together weight", "Value for cards CubeCobra drafters put with the bot's cards.", 0, 1.5, 0.05),
+    ("Synergy", "combo_weight", "Combo weight", "Value of combo packages and combo lines.", 0, 1.5, 0.05),
+    ("Colours", "mox_lean", "Moxen lean colours", "How much a one-colour Mox counts toward choosing that colour.", 0, 1, 0.05),
+    ("Colours", "fetch_fit", "Fetchlands fit any deck", "Colour fit a fetchland always has.", 0, 1, 0.05),
+    ("Other", "interaction_weight", "Find interaction", "Push towards removal, counters and discard for a deck short of them by mid-draft.", 0, 1, 0.05),
+    ("Other", "hate_weight", "Sideboard answers", "Value of hate cards against a deck another seat is building (late only).", 0, 1, 0.05),
+]
 
 
 def k2(ctx: BotContext, key: str) -> float:
@@ -601,9 +619,9 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
                 "gone": round(g, 2)}
         if ctx.explain:
             info.update(quality=round(parts["quality"], 3), plan_fit=round(parts["plan_fit"], 2),
-                        base=round(parts["base"], 3), partners=round(parts["partners"], 3),
-                        combo=round(parts["combo"], 3), need=round(need, 3), hate=round(hate, 3),
-                        substitute=round(sub, 3), keep=keep)
+                        base=round(parts["base"], 3), partners_raw=round(parts["partners"], 3),
+                        combo_raw=round(parts["combo"], 3), need=round(need, 3), hate_raw=round(hate, 3),
+                        substitute=round(sub, 3), keep=keep, **_lab_parts(parts, need, hate, score, g))
         out.append((score, cid, info))
     out.sort(key=lambda r: -r[0])
     tail = []
@@ -611,10 +629,26 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         info = {"fit": round(parts["colour"], 2), "plan": parts["plan"], "value": round(value, 3)}
         if ctx.explain:
             info.update(quality=round(parts["quality"], 3), plan_fit=round(parts["plan_fit"], 2),
-                        base=round(parts["base"], 3), partners=round(parts["partners"], 3),
-                        combo=round(parts["combo"], 3), need=round(need, 3), hate=round(hate, 3))
+                        base=round(parts["base"], 3), partners_raw=round(parts["partners"], 3),
+                        combo_raw=round(parts["combo"], 3), need=round(need, 3), hate_raw=round(hate, 3),
+                        **_lab_parts(parts, need, hate, value * keep, None))
         tail.append((value * keep, cid, info))
     return out + tail
+
+
+def _lab_parts(parts: dict, need: float, hate: float, score: float, gone: Optional[float]) -> dict:
+    """The score in the Bot Lab's terms (rating, drafted together, combo, needs, sideboard; x colour fit x
+    contention), so its bars and breakdown add up for engine 2 too: "contention" here is everything the pick
+    rule does after the value (substitutes, the chance it's gone, how much a card that comes back is worth)."""
+    lane = max(parts["colour"], 1e-6)
+    out = {"rating": round(parts["quality"] * parts["plan_fit"], 3), "partners": round(parts["partners"] / lane, 3),
+           "plan": 0.0, "combo": round(parts["combo"] / lane, 3), "needs": round(need / lane, 3), "other": 0.0,
+           "hate": round(hate / lane, 3), "colour": round(lane, 2)}
+    total = (out["rating"] + out["partners"] + out["combo"] + out["needs"] + out["hate"]) * lane
+    out["contested"] = round(score / total, 2) if total > 1e-9 else 1.0
+    if gone is not None:
+        out["risk"] = round(gone, 2)
+    return out
 
 
 def choose_pick(ctx: BotContext, rng: Optional[random.Random] = None) -> str:

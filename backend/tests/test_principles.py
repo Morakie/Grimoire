@@ -153,6 +153,7 @@ def test_P6_replaceable_cards_lose_value_to_their_substitutes():
     has none."""
     idx, cmb = build()
     ctx = ctx_for(idx, cmb, {0: ["U0", "U1", "W0", "W1", "U2", "W2"], 1: ["G0", "G1", "G2"], 2: ["R0", "R1", "R2"], 3: ["B0", "B1", "B2"]})
+    ctx.tuning = {"replace_weight": 0.35}      # the default is small (replays of LSV's drafts favour ~0)
     s = scored(ctx)
     assert s["drain"][1]["substitute"] > 0.2
     assert s["balance"][1]["substitute"] == 0.0
@@ -258,10 +259,10 @@ def test_P14_sideboard_answers_late_and_light():
     idx, cmb = build()
     artifacts = ["academy", "vault", "urza", "tinker", "top", "mightstone", "sapphire", "lotus", "vkey", "led"]
     early = ctx_for(idx, cmb, {0: ["G0", "G1", "G2"], 1: artifacts[:3], 2: ["W0"], 3: ["R0"]})
-    assert scored(early)["nullrod"][1]["hate"] == 0
+    assert scored(early)["nullrod"][1]["hate_raw"] == 0
     gb = [f"G{i}" for i in range(11)] + [f"B{i}" for i in range(11)]
     late = ctx_for(idx, cmb, {0: gb, 1: artifacts, 2: ["W0"], 3: ["R0"]}, per_seat=40)
-    hate = scored(late)["nullrod"][1]["hate"]
+    hate = scored(late)["nullrod"][1]["hate_raw"]
     assert 0 < hate <= engine2.TUNING2["hate_weight"]
 
 
@@ -285,3 +286,49 @@ def test_P16_crowded_colour_gives_way_to_an_open_one_early():
             key=lambda c: idx[c].elo)
     g = min((c for c in idx if c.startswith("G")), key=lambda c: abs(idx[c].elo - idx[u].elo))
     assert s[g][1]["value"] / max(idx[g].power, 1e-6) > s[u][1]["value"] / max(idx[u].power, 1e-6)
+
+
+# ---------------------------------------------------------------- P17-P21 (from replaying LSV's drafts)
+def test_P17_people_pick_order_is_the_main_card_value():
+    """Two cards with the same CubeCobra rating: the one real roto tables take early (Brainstorm, round ~11)
+    is worth more than one they rarely take."""
+    idx, cmb = build(extra=[card("bs", "Brainstorm", "{U}", 1, "Instant", "Draw three cards, then put two cards from your hand on top.", "U", 1450),
+                            card("filler", "Plain Cantrip", "{U}", 1, "Instant", "Draw a card.", "U", 1450)])
+    st = engine2.static_for(idx)
+    assert st.quality["bs"] > 1.2 * st.quality["filler"]
+
+
+def test_P18_a_mox_leans_its_colour():
+    """LSV's Sapphire + Jet start drafts UB: with Mox Jet, a blue seat's UB gold card fits."""
+    frog = card("frog", "Psychic Frog", "{U}{B}", 2, "Creature — Frog", "Flying", "UB", 1650)
+    jet = card("jet", "Mox Jet", "{0}", 0, "Artifact", "{T}: Add {B}.", "B", 2150)
+    idx, cmb = build(extra=[frog, jet])
+    blue = ["U0", "U1", "U2", "U3", "U4", "U5"]
+    without = ctx_for(idx, cmb, {0: blue, 1: ["G0"], 2: ["W0"], 3: ["R0"]})
+    with_jet = ctx_for(idx, cmb, {0: blue + ["jet"], 1: ["G0"], 2: ["W0"], 3: ["R0"]})
+    assert scored(with_jet)["frog"][1]["fit"] > scored(without)["frog"][1]["fit"] + 0.2
+
+
+def test_P19_build_arounds_are_strong_early_picks():
+    """Experts take Academy, Saga, Opal, LED in the first rounds to plant a flag; the discount for cards that
+    only go in some decks applies once the bot has committed to something else."""
+    partners = {"top": {"academy": 1.0, "vault": 1.0, "urza": 1.0, "tinker": 1.0}}
+    idx, cmb = build(partners=partners)
+    early = ctx_for(idx, cmb, {0: ["lotus"], 1: ["G0"], 2: ["W0"], 3: ["R0"]})
+    rg = [f"R{i}" for i in range(7)] + [f"G{i}" for i in range(1, 8)]
+    late = ctx_for(idx, cmb, {0: rg, 1: ["G20"], 2: ["W0"], 3: ["B0"]})
+    assert scored(early)["top"][1]["plan_fit"] >= 0.95
+    assert scored(late)["top"][1]["plan_fit"] < 0.6
+
+
+def test_P20_fetchlands_fit_most_decks():
+    fetch = card("delta", "Polluted Delta", "", 0, "Land", "{T}, Pay 1 life, Sacrifice Polluted Delta: Search your library for an Island or Swamp card, put it onto the battlefield.", "", 1500)
+    idx, cmb = build(extra=[fetch])
+    rg = [f"R{i}" for i in range(6)] + [f"G{i}" for i in range(1, 7)]
+    ctx = ctx_for(idx, cmb, {0: rg, 1: ["G20"], 2: ["W0"], 3: ["B0"]})
+    assert scored(ctx)["delta"][1]["fit"] >= 0.7
+
+
+def test_P21_lsv_drafts_follow_the_table_order():
+    from draftbot.benchmark import check_orders
+    assert check_orders() == []

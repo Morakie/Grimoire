@@ -2671,7 +2671,7 @@ async def lab_simulate(body: LabSimInput):
     attach_combos(src["index"], src["combos"])
     started = time.time()
     out = await run_in_threadpool(simulate, src["index"], src["combos"], body.seats, body.picks, body.seed,
-                                  clean_tuning(body.tuning), body.start, body.tuned_seats, body.stop, body.personas, body.engine)
+                                  clean_tuning(body.tuning, body.engine), body.start, body.tuned_seats, body.stop, body.personas, body.engine)
     out["seconds"] = round(time.time() - started, 2)
     return fast_json(out)
 
@@ -2688,8 +2688,8 @@ async def lab_view_any(body: LabViewInput):
     slot = pick_slot(body.order, len(picks), seat, body.pick_no, body.slot)
     attach_combos(src["index"], src["combos"])
     out = await run_in_threadpool(lab_view, src["index"], src["combos"], body.order, picks, per_seat, slot,
-                                  clean_tuning(body.tuning), frozenset(), (), True, max(5, min(body.n, 40)), body.engine)
-    out["knobs"] = knob_list()
+                                  clean_tuning(body.tuning, body.engine), frozenset(), (), True, max(5, min(body.n, 40)), body.engine)
+    out["knobs"] = knob_list(body.engine)
     return fast_json(out)
 
 

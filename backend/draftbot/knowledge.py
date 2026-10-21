@@ -150,6 +150,36 @@ COMBO_PACKAGES: List[Package] = [
     ]),
 ]
 
+# More Vintage cube combos (2026-10-21). No Vintage-specific combo database exists that we found: edh-combos.com's
+# Vintage page is Commander Spellbook filtered to Vintage-legal cards, which Grimoire already queries for every
+# cube, but its weights come from Commander popularity. These are the lines that show up in powered cube and
+# roto drafts (LSV's videos and article, common Vintage cube knowledge), weighted for cube play.
+COMBO_PACKAGES += [
+    ("thopter_sword", 0.75, [(1.0, {"Thopter Foundry": 1.0}), (1.0, {"Sword of the Meek": 1.0})]),
+    ("kitten_jewel", 0.6, [(1.0, {"Displacer Kitten": 1.0}), (0.9, {"Coveted Jewel": 1.0})]),
+    ("scepter", 0.6, [(1.0, {"Isochron Scepter": 1.0}), (1.0, {"Dramatic Reversal": 1.0})]),
+    ("saheeli", 0.6, [(1.0, {"Saheeli Rai": 1.0}), (1.0, {"Felidar Guardian": 1.0})]),
+    ("power_artifact", 0.7, [(1.0, {"Power Artifact": 1.0}),
+                             (0.8, {"Grim Monolith": 1.0, "Basalt Monolith": 1.0})]),
+    ("gadgeteer", 0.55, [(0.9, {"Forensic Gadgeteer": 1.0}), (0.9, {"Basalt Monolith": 1.0})]),
+    ("rings", 0.45, [(0.9, {"Rings of Brighthearth": 1.0}), (0.9, {"Basalt Monolith": 1.0})]),
+    ("salvagers", 0.6, [(1.0, {"Auriok Salvagers": 1.0}), (0.8, {"Lion's Eye Diamond": 1.0, "Black Lotus": 0.9})]),
+    ("nadu", 0.7, [(1.0, {"Nadu, Winged Wisdom": 1.0}),
+                   (0.8, {"Shuko": 1.0, "Lightning Greaves": 0.9, "Nomad's En-Kor": 0.9, "Skullclamp": 0.6})]),
+    ("illusionist", 0.5, [(1.0, {"Cephalid Illusionist": 1.0}), (0.9, {"Shuko": 1.0, "Nomad's En-Kor": 1.0}),
+                          (0.8, {"Thassa's Oracle": 1.0, "Dread Return": 0.8, "Narcomoeba": 0.6})]),
+    ("chain_smog", 0.6, [(1.0, {"Chain of Smog": 1.0}), (1.0, {"Witherbloom Apprentice": 1.0})]),
+    ("devoted", 0.55, [(1.0, {"Devoted Druid": 1.0}), (1.0, {"Vizier of Remedies": 1.0})]),
+    ("worldgorger", 0.45, [(1.0, {"Worldgorger Dragon": 1.0}), (0.8, {"Animate Dead": 1.0, "Necromancy": 1.0})]),
+    ("helm", 0.55, [(1.0, {"Helm of Obedience": 1.0}), (0.9, {"Rest in Peace": 1.0, "Leyline of the Void": 1.0})]),
+    ("sanguine", 0.5, [(1.0, {"Sanguine Bond": 1.0}), (1.0, {"Exquisite Blood": 1.0})]),
+    ("oath", 0.6, [(1.0, {"Oath of Druids": 1.0}),
+                   (0.8, {"Griselbrand": 1.0, "Emrakul, the Aeons Torn": 1.0, "Atraxa, Grand Unifier": 0.8,
+                          "Raph & Mikey, Troublemakers": 0.7})]),
+    ("academy_wheel", 0.4, [(0.8, {"Tolarian Academy": 1.0}),
+                            (0.6, {"Timetwister": 1.0, "Time Spiral": 1.0, "Wheel of Fortune": 0.8})]),
+]
+
 # ---------------------------------------------------------------- deck needs (P12)
 # Hand disruption isn't a role read from rules text yet; these count as interaction alongside removal and
 # counterspells.

@@ -27,3 +27,15 @@ Paraphrased notes on each are in the claude.ai Project ("lsv-roto-principles", "
 | P14 | Sideboard answers late, low weight, never hate-drafting as a goal | owner, group rule (LSV) | sideboard term (from engine 1) |
 | P15 | Starting a deck type late that a rival has established isn't worth it | owner | plan weight fades for unstarted plans; capacity |
 | P16 | Pivot to an under-drafted colour when your pair is crowded | LSV (suu9P7zsKBU, tied 1st) | colour openness (from engine 1) |
+| P17 | A card is worth what strong roto tables pay for it (pick order), more than its CubeCobra rating | VRD sheets; replay of LSV's drafts | `pick_order.py` (human_weight) |
+| P18 | A Mox leans its colour (Sapphire + Jet start drafts UB) | LSV (x6HSqjTfStE) | `mox_lean` in the colour model |
+| P19 | Build-arounds (Academy, Saga, Opal, LED, Flash) are strong early picks that plant a flag; the "only in some decks" discount applies once committed elsewhere | LSV's tables; replay | narrow/key floors grow with commitment |
+| P20 | Fetchlands fit almost any deck and go early | LSV's tables, VRD | `fetch_fit` |
+| P21 | LSV's drafts are the benchmark: reconstructed picks must stay valid | `lsv_drafts.py`, `benchmark.py` | `check_orders` |
+
+## Changed from the owner's earlier rules (2026-10-21)
+
+The owner asked to work from scratch and let expert drafts override earlier instructions where they disagree:
+- "Narrow cards wait until the bot is in a deck that uses them" now applies only once a bot has committed
+  elsewhere (P19): experts take build-arounds early.
+- Card value follows people's pick order (P17) rather than CubeCobra Elo first.
