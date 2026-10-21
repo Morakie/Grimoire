@@ -118,6 +118,15 @@ of the cube's own Power cards (Timetwister -> 2237).
 - Green is the least drafted colour because its cards rate lowest in this cube; about one green drafter per
   table is the expected result, not a bug.
 
+## Expanding into new colours on plan (2026-10-20)
+
+- Once committed, a card needing one new colour (no heavy pips) keeps up to `plan_colour` (0.75) of a full colour
+  fit when it is ON PLAN: a key/member of a deck type the bot is in, linked to its cards, or a piece of a combo
+  it has started. Rating alone still gets the committed floor (10%).
+- Group cube + PowerLSV (181 combos), 6 seeds: near-mono-colour bots 3.0 -> 2.7 of 8, colours a deck plays 2.0 ->
+  2.1, on-colour spells 97% -> 95% (the on-plan splashes), deck Elo within noise. Mono-colour locking predates
+  the commitment changes (3.0 of 8 before them too): blue and black are deep enough in this cube to fill a deck.
+
 ## Findings from reviews of real drafts
 
 - Replays use the bot-inputs export of a draft and the bot report (`GET /api/drafts/{id}/bot-report`), which
