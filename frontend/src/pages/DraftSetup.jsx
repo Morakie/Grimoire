@@ -427,6 +427,7 @@ export default function DraftSetup() {
               <div>
                 <Label className="text-slate-300">CubeCobra link or ID</Label>
                 <Input data-testid="draft-cubecobra" value={cubeCobra} onChange={(e) => setCubeCobra(e.target.value)} placeholder="https://cubecobra.com/cube/overview/xxxx" className="mt-1.5 bg-slate-950 border-slate-700 text-slate-100 focus-visible:ring-amber-400" />
+                <p className="text-[11px] text-slate-500 mt-1">Combine cubes with +, e.g. <span className="font-mono">43fd5f2a-… + PowerLSV</span> (each card once).</p>
               </div>
               <div className="text-center text-xs text-slate-600">— or paste / upload a list (txt, csv, json) —</div>
               <div>

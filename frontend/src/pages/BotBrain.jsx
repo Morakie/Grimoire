@@ -14,6 +14,12 @@ const DECK_COL = { tolarian: "#38bdf8", workshop: "#a8a29e", artifacts: "#f59e0b
 const MANA = { W: "#f2e8c9", U: "#3b82f6", B: "#a855f7", R: "#ef4444", G: "#22c55e" };
 const COL_NAME = { W: "white", U: "blue", B: "black", R: "red", G: "green" };
 const STORE = "grim_brain";
+const GROUP_CUBE = "43fd5f2a-942e-40c3-a563-bf3a7ce0cc22";
+const PRESETS = [   // [label, CubeCobra ids]
+  ["Group cube", GROUP_CUBE],
+  ["Group cube + PowerLSV", `${GROUP_CUBE} + PowerLSV`],
+  ["PowerLSV", "PowerLSV"],
+];
 const TUNING_STORE = "grim_botlab_tuning";
 
 function colourOf(c) {
@@ -190,7 +196,7 @@ function Dossier({ d, card, onPick }) {
 export default function BotBrain() {
   const saved = load(STORE, {});
   const [mode, setMode] = useState(saved.mode || "cube");
-  const [cubeId, setCubeId] = useState(saved.cubeId || "PowerLSV");
+  const [cubeId, setCubeId] = useState(saved.cubeId || PRESETS[1][1]);
   const [src, setSrc] = useState(null);
   const [step, setStep] = useState("");
   const [error, setError] = useState("");
@@ -300,9 +306,17 @@ export default function BotBrain() {
               ))}
             </div>
             {mode === "cube" && <>
-              <label htmlFor="brain-cube" className="sr-only">CubeCobra cube ID or link</label>
-              <input id="brain-cube" value={cubeId} onChange={(e) => setCubeId(e.target.value)} placeholder="CubeCobra ID or link"
-                className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-sm w-48" />
+              <label htmlFor="brain-preset" className="sr-only">Cube</label>
+              <select id="brain-preset" value={PRESETS.some(([, v]) => v === cubeId) ? cubeId : ""} data-testid="brain-preset"
+                onChange={(e) => { if (e.target.value) { setCubeId(e.target.value); loadSource("cube", e.target.value); } }}
+                className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-sm">
+                {PRESETS.map(([l, v]) => <option key={v} value={v}>{l}</option>)}
+                <option value="">Other CubeCobra cube…</option>
+              </select>
+              <label htmlFor="brain-cube" className="sr-only">CubeCobra cube ID or link (join several with +)</label>
+              <input id="brain-cube" value={cubeId} onChange={(e) => setCubeId(e.target.value)} placeholder="CubeCobra ID, or A + B"
+                title="CubeCobra ID or link. Join several cubes with + to combine them (duplicates removed)."
+                className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-sm w-56" />
               <button type="submit" className="px-3 py-1.5 rounded-lg border border-slate-700 text-sm text-slate-200 hover:text-amber-300 flex items-center gap-1.5" data-testid="brain-load"><Library className="w-4 h-4" /> Load</button>
             </>}
           </form>
