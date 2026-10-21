@@ -92,3 +92,37 @@ Same seeds in Bot Brain, engine 1 vs engine 2, on the group cube + PowerLSV pool
 - Known gaps: the Lab's weight sliders tune engine 1 (engine 2's weights are in `TUNING2`); Demonic Tutor and
   Academy go later than people take them in bot-only drafts; combo lines from Commander Spellbook can still pull
   in weak pieces (Enter the Infinite with Oracle); Worldspine Wurm sometimes goes undrafted.
+
+## Benchmark: LSV's drafts (2026-10-21)
+
+The target is now how LSV's tables draft (owner's call: those drafters are the best data we have; earlier rules
+give way where expert drafts disagree).
+
+- `draftbot/lsv_drafts.py`: five of LSV's rotisserie drafts reconstructed pick by pick from his videos (544 picks,
+  seats anonymised except LSV's), with his verdicts. `draftbot/benchmark.py` replays them on a pool and ranks
+  every real pick under an engine; `check_orders()` validates the reconstruction (a principle test).
+- `draftbot/pick_order.py`: average round each card goes in seven VRD rotisserie drafts (2,442 picks, no player
+  names; rebuild with `backend/scripts/build_pick_order.py`). Engine 2 uses it as the people's value of a card
+  (`human_weight` 0.7). LSV's drafts are not in it, so the benchmark stays a fair test.
+- Weights were then tuned on the benchmark (coordinate search over 12 weights, objective = mean log rank of all
+  picks + of LSV's picks). Kept: replace_weight 0.35 -> 0.05, partner_weight 0.35 -> 0.5, combo_weight 0.7 ->
+  0.45, people_prior 0.85 -> 1.0, mox_lean 0.6 -> 0.9. With 12 weights on 531 picks, expect a little overfit.
+
+Group cube + PowerLSV pool (903 cards):
+
+| | Engine 1 | Engine 2 (before) | Engine 2 (now) |
+|---|---|---|---|
+| All picks: #1 / top 3 / median rank | 10.0% / 22.0% / 17 | 11.5% / 21.7% / 16 | 13.2% / 23.4% / 15 |
+| LSV's picks: #1 / top 3 / median rank | 13.6% / 18.6% / 14 | 11.9% / 20.3% / 13 | 15.3% / 27.1% / 10 |
+| Rounds 1-6: #1 / top 3 / median rank | 13.9% / 28.9% / 10 | 15.0% / 30.1% / 8 | 19.9% / 34.6% / 7 |
+
+Changes that moved it: people's pick order as card value; build-arounds no longer discounted before a bot is
+committed elsewhere (P19); Moxen lean colours (P18); fetchlands fit most decks (P20); Timetwister rated by data,
+not forced to Power. A plain "people's pick order" ranking (no colours or plans) scores median 23, so the
+engine's context adds a lot on top of the data.
+
+All-bot tables after the changes (seeds 11-14): 0 seats over lane capacity, 6.25 lanes per table, 1.9 colours
+per deck, Spell Pierce ~29th, Polluted Delta ~47th, Timetwister ~24th.
+
+Next: more of LSV's drafts (later rounds of these, more videos), the team draft's LSV seats, and leave-one-out
+checks before trusting further tuning.
