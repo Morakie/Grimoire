@@ -109,6 +109,15 @@ of the cube's own Power cards (Timetwister -> 2237).
 - Strong gold cards are never keys (Minsc & Boo went undrafted as an RG-beats key).
 - Personality leans only go to deck types with 3+ key cards in the cube being drafted (`lean_choices`).
 
+## Colour commitment (2026-10-20)
+
+- commit_start 1 / commit_pick 5 (was 2 / 7), openness_weight 5 (was 2.5), table signals fade out by 14 coloured
+  spells (`open_settle`). Group cube + PowerLSV, 6 seeds: off-colour cards among a bot's first 12 coloured picks
+  0.52 -> 0.25, colours among its first 10 coloured picks 2.46 -> 2.10, deck Elo +3, main deck types shared by
+  3+ seats ~0.2 per table. Seats per colour (of 8 bots x 2): U 5.3, W 4.3, B 2.8, R 2.3, G 1.2.
+- Green is the least drafted colour because its cards rate lowest in this cube; about one green drafter per
+  table is the expected result, not a bug.
+
 ## Findings from reviews of real drafts
 
 - Replays use the bot-inputs export of a draft and the bot report (`GET /api/drafts/{id}/bot-report`), which
