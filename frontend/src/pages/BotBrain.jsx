@@ -575,11 +575,17 @@ export default function BotBrain() {
     return data;
   }, [local, withSource]);
 
+  const tuningKey = JSON.stringify([labTuning, tunedSeats ? [...tunedSeats].sort() : null, from]);
+  const lastKey = useRef(tuningKey);
+  const tuningKeyRef = useRef(tuningKey);
+  tuningKeyRef.current = tuningKey;
+
   // Draft with the current settings: the default-weights draft first (once per seed), then, if the Lab has
   // changed weights, the same draft re-run with them from pick `from`.
   const go = useCallback(async (cfgIn = null) => {
     if (!src) return;
     const id = ++runId.current;
+    lastKey.current = tuningKeyRef.current;     // a live re-draft still waiting would only repeat this one
     const cfg = { ...(cfgIn || (base ? { seats: base.seats_n, picks: base.picks_n, seed: base.seed } : simCfg)), pool: src.source };
     setError("");
     const started = performance.now();
@@ -590,9 +596,9 @@ export default function BotBrain() {
         setSim(null);
         const r = await draft({ seats: cfg.seats, picks: cfg.picks, seed: cfg.seed }, id, (run) => setSim({ ...run, tuning: {}, from: 0 }));
         if (id !== runId.current || !r) return;
-        b = { ...r, cfg, seed: cfg.seed, seats_n: cfg.seats, picks_n: cfg.picks };
+        b = { ...r, cfg, seed: cfg.seed, seats_n: cfg.seats, picks_n: cfg.picks, seconds: (performance.now() - started) / 1000 };
         setBase(b);
-        setSim({ ...r, tuning: {}, from: 0, seconds: (performance.now() - started) / 1000 });
+        setSim({ ...b, tuning: {}, from: 0 });
         setFocus({ ...slotFocus(r.order, Math.min(viewSlot, r.picks.length - 1)), at: viewSlot });
       }
       if (!Object.keys(labTuning).length) {
@@ -616,11 +622,9 @@ export default function BotBrain() {
 
   // Live: whenever the weights, the seats they apply to or the starting pick change, re-draft (after the
   // slider settles).
-  const tuningKey = JSON.stringify([labTuning, tunedSeats ? [...tunedSeats].sort() : null, from]);
-  const lastKey = useRef(tuningKey);
   useEffect(() => {
     if (!live || !base || tuningKey === lastKey.current) return undefined;
-    const t = setTimeout(() => { lastKey.current = tuningKey; go(); }, local ? 450 : 900);
+    const t = setTimeout(() => { if (lastKey.current !== tuningKey) { lastKey.current = tuningKey; go(); } }, local ? 450 : 900);
     return () => clearTimeout(t);
   }, [tuningKey, live, base, go, local]);
   useEffect(() => { lastKey.current = tuningKey; }, [runs]); // eslint-disable-line react-hooks/exhaustive-deps
