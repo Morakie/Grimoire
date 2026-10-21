@@ -172,14 +172,15 @@ class Static:
         w = TUNING2["human_weight"]
         for cid, c in index.items():
             name = _norm(c.name)
-            q = max(c.power, 0.0)
+            # Rating-only values live on the people's scale too: no card outranks Black Lotus on Elo alone.
+            q = min(max(c.power, 0.0), TUNING2["human_top"])
             seen = _ORDER.get(name)
+            if seen is None and name in _TIER:
+                seen = (float(_TIER[name]), 0)          # hand-kept tiers (knowledge.PICK_TIERS) for cards with no data
             if seen is not None:
                 # How early people take it (the people's value), blended with the rating.
                 q = w * human_quality(seen[0]) + (1 - w) * q
                 self.tier[cid] = seen[0]
-            elif name in _TIER:
-                self.tier[cid] = _TIER[name]
             if c.staple and seen is None:
                 q = max(q, human_quality(1.5))       # Power with no pick data: rate it like Power
             self.quality[cid] = q * _ADJUST.get(name, 1.0)
