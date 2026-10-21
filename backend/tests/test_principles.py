@@ -187,6 +187,29 @@ def test_P9_strong_generic_cards_do_not_slip_for_marginal_plan_cards():
     assert rank(ctx, "ragavan") < rank(ctx, "plateau")
 
 
+def test_P9_top_rated_key_cards_stay_generic():
+    """Ragavan keys red aggro, but it's one of the best cards in the cube: a red seat building something else
+    still wants it fully. A narrower key card (Ocelot Pride) is discounted outside its deck."""
+    idx, cmb = build()
+    ctx = ctx_for(idx, cmb, {0: ["R0", "U0", "R1", "U1", "R2", "U2", "R3", "U3"] + [f"G{i}" for i in range(14)],
+                             1: ["G20"], 2: ["W0"], 3: ["B0"]})
+    s = scored(ctx)
+    assert s["ragavan"][1]["plan_fit"] >= 0.95
+
+
+def test_P9_big_fatties_only_for_decks_that_cheat_them_in():
+    idx, cmb = build(extra=[card("grisel", "Griselbrand", "{4}{B}{B}{B}{B}", 8, "Legendary Creature — Demon",
+                                 "Flying, lifelink", "B", 1800),
+                            card("entomb", "Entomb", "{B}", 1, "Instant", "Search your library for a card and put it into your graveyard.", "B", 1650),
+                            card("reanimate", "Reanimate", "{B}", 1, "Sorcery", "Put target creature card from a graveyard onto the battlefield under your control.", "B", 1650),
+                            card("animate", "Animate Dead", "{1}{B}", 2, "Enchantment", "Enchant creature card in a graveyard. Return enchanted creature card to the battlefield under your control.", "B", 1550)],
+                     partners={"grisel": {"entomb": 1.0, "reanimate": 1.0, "animate": 1.0}})
+    ub = ["U0", "B0", "U1", "B1", "U2", "B2"]
+    plain = ctx_for(idx, cmb, {0: ub, 1: ["G0"], 2: ["W0"], 3: ["R0"]})
+    reanimator = ctx_for(idx, cmb, {0: ub + ["entomb", "reanimate", "animate"], 1: ["G0"], 2: ["W0"], 3: ["R0"]})
+    assert scored(reanimator)["grisel"][1]["value"] > 1.5 * scored(plain)["grisel"][1]["value"]
+
+
 # ---------------------------------------------------------------- P10
 def test_P10_combo_pieces_have_a_priority_and_substitutes():
     idx, cmb = build()

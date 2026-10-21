@@ -65,7 +65,14 @@ TUNING2: Dict[str, float] = {
     "hate_start": 19, "hate_full": 33, "hate_weight": 0.3, "hate_max": 4,
     "conspiracy_value": 0.0,
     "candidates": 60,           # cards per pick that get the full treatment (replaceability, gone)
+    "generic_power": 0.9,       # cards rated this high (about the cube's top 5%) go in any deck of their colours:
+                                # never discounted as a deck type's key card, never "replaceable" (P9: Ragavan,
+                                # Demonic Tutor)
+    "tier_blend": 0.5,          # how far a card's quality moves towards how early people take it (PICK_TIERS)
 }
+# Where each pick tier sits in the cube's own quality ranking (quantile): a card people take in round 2 is
+# rated at least like the cube's top 2% (blended by tier_blend).
+TIER_QUANTILE = {1: 0.995, 2: 0.98, 3: 0.96, 5: 0.92, 8: 0.85, 12: 0.75}
 
 _REANIMATE_ROLES = frozenset({"reanimate", "cheat"})
 
@@ -92,8 +99,8 @@ _DISCARD = {_norm(n) for n in K.DISCARD}
 
 def job_of(card: CardInfo) -> str:
     """The job a card does in a deck, for replaceability: cards with the same job can stand in for each other.
-    Power and bombs have no stand-in."""
-    if card.staple or card.bomb:
+    Power, bombs and the cube's very best cards have no stand-in."""
+    if card.staple or card.bomb or card.power >= TUNING2["generic_power"]:
         return ""
     r = card.roles
     if card.is_land:
@@ -132,15 +139,25 @@ class Static:
         self.narrow: Dict[str, bool] = {}
         self.universal: Dict[str, bool] = {}
         self.interaction: Dict[str, bool] = {}
+        ranked = sorted(max(c.power, 0.0) for c in index.values())
+
+        def quantile(q):
+            return ranked[min(len(ranked) - 1, int(len(ranked) * q))] if ranked else 0.0
+        blend = TUNING2["tier_blend"]
         for cid, c in index.items():
             name = _norm(c.name)
-            self.quality[cid] = max(c.power, 0.0) * _ADJUST.get(name, 1.0)
+            q = max(c.power, 0.0) * _ADJUST.get(name, 1.0)
             if name in _TIER:
                 self.tier[cid] = _TIER[name]
+                # People take this card by round N: rate it at least part of the way to where that sits.
+                q = max(q, (1 - blend) * q + blend * quantile(TIER_QUANTILE.get(_TIER[name], 0.75)))
+            self.quality[cid] = q
             self.job[cid] = job_of(c)
             uni = is_universal(c)
             self.universal[cid] = uni
-            self.narrow[cid] = is_narrow(c, uni, c.staple)
+            # Big fatties (Griselbrand, Emrakul) are only good in a deck that cheats them in: narrow like Top.
+            big = "fatty" in c.roles and c.cmc >= TUNING2["fatty_cmc"] and not (c.staple or c.bomb)
+            self.narrow[cid] = is_narrow(c, uni, c.staple) or big
             self.interaction[cid] = is_interaction(c)
         # Combo packages resolved to card ids: [(name, weight, [(priority, {cid: quality})])], and per card the
         # (package, slot) pairs it fills.
@@ -298,7 +315,7 @@ class SeatModel:
             base = 1.0
         elif st.narrow[cid]:
             base = k2(ctx, "narrow_floor") * self.good
-        elif card.key_of:
+        elif card.key_of and card.power < k2(ctx, "generic_power"):
             base = k2(ctx, "key_floor")
         else:
             base = self.good
