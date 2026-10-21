@@ -785,3 +785,27 @@ def test_lab_simulate_tuned_seats_and_stop():
     assert len(part["picks"]) == 10 and len(part["order"]) == 48
     bad = simulate(idx, [], 4, 12, seed=3, start=[{"order": 0, "seat_index": 2, "card_id": base["picks"][0]["card_id"]}])
     assert bad["kept"] == 0                                       # a kept pick in the wrong seat is dropped
+
+
+def test_shared_memo_never_changes_a_pick():
+    """lab.simulate shares one memo across the draft's picks; re-scoring every pick without it must agree."""
+    from draftbot.lab import _pick_rng, simulate
+    from draftbot.combos import Combo, attach_combos as _attach
+    idx = build_card_index(synthetic_cube())
+    ids = sorted(idx)
+    rng = random.Random(4)
+    combos = [Combo(tuple(rng.sample(ids, rng.choice([2, 3]))), 0.8) for _ in range(30)]
+    _attach(idx, combos)
+    tuning = {"partner_weight": 0.8, "focus_start": 0.3}
+    run = simulate(idx, combos, 4, 12, seed=11, tuning=tuning, tuned_seats=[1, 2])
+    by_seat = {s: [] for s in range(4)}
+    remaining = list(idx)
+    for p in run["picks"]:
+        seat, slot = p["seat_index"], p["order"]
+        t = tuning if seat in (1, 2) else None
+        ctx = BotContext(idx, combos, remaining, by_seat, seat, run["order"], slot, run["per_seat"],
+                         Persona("steady", temperature=0.03), t, people=frozenset())
+        assert choose_pick(ctx, _pick_rng(11, slot)) == p["card_id"]
+        by_seat[seat].append(p["card_id"])
+        name = idx[p["card_id"]].name.lower()
+        remaining = [c for c in remaining if c != p["card_id"] and idx[c].name.lower() != name]

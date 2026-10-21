@@ -236,6 +236,7 @@ def simulate(index: Dict[str, CardInfo], combos: List[Combo], seats: int, per_se
     taken_names = set()
     by_seat: Dict[int, List[str]] = {s: [] for s in range(seats)}
     picks: List[dict] = []
+    memo: dict = {}          # what each seat's pool says, shared across picks (picks are the same without it)
 
     def take(slot, seat, cid):
         nonlocal remaining
@@ -259,7 +260,7 @@ def simulate(index: Dict[str, CardInfo], combos: List[Combo], seats: int, per_se
         seat = order[slot]
         t = tuning if (only is None or seat in only) else None
         ctx = BotContext(index, combos, remaining, by_seat, seat, order, slot, per,
-                         Persona("steady", temperature=0.03), t or None, people=frozenset())
+                         Persona("steady", temperature=0.03), t or None, people=frozenset(), memo=memo)
         take(slot, seat, choose_pick(ctx, _pick_rng(seed, slot)))
     return {"order": order, "picks": picks, "per_seat": per, "kept": kept,
             "seats": seat_summaries(index, combos, by_seat)}

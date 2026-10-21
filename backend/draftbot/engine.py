@@ -270,6 +270,10 @@ class BotContext:
     tuning: Optional[Dict[str, float]] = None
     explain: bool = False                  # attach each card's score parts (for the bot report)
     people: Optional[FrozenSet[int]] = None  # seats drafted by people (None: treat every seat as a person)
+    # Optional cache shared by consecutive picks of one draft (a simulation, a bot report): what each seat's
+    # pool says (deck types, colours, how much it wants each card) is worked out once per pool instead of
+    # once per pick. Picks are identical with or without it. Only for drafts whose picks only ever grow.
+    memo: Optional[dict] = None
 
     def k(self, key: str) -> float:
         if self.tuning and key in self.tuning:
@@ -581,9 +585,22 @@ def picks_until_next_turn(ctx: BotContext) -> Dict[int, int]:
     return {"end": 1}
 
 
+def seat_decks(ctx: BotContext, seat: int) -> Dict[str, float]:
+    """A seat's deck-type strengths (from ctx.memo when the seat hasn't picked since)."""
+    picks = ctx.picks_by_seat.get(seat, [])
+    if ctx.memo is None:
+        return deck_strength(ctx.index[c] for c in picks if c in ctx.index)
+    store = ctx.memo.setdefault("decks", {})
+    hit = store.get(seat)
+    key = tuple(picks)
+    if hit is None or hit[0] != key:
+        hit = store[seat] = (key, deck_strength(ctx.index[c] for c in picks if c in ctx.index))
+    return hit[1]
+
+
 def deck_table(ctx: BotContext, rivals: List[int]) -> List[Dict[str, float]]:
     """Every rival's deck-type strengths."""
-    return [deck_strength(ctx.index[c] for c in ctx.picks_by_seat.get(s, []) if c in ctx.index) for s in rivals]
+    return [seat_decks(ctx, s) for s in rivals]
 
 
 def deck_outlook(ctx: BotContext, mine: Dict[str, float], others: List[Dict[str, float]]) -> Tuple[Dict[str, float], Dict[str, float]]:
@@ -613,6 +630,14 @@ def shared_types(ctx: BotContext, mine: Dict[str, float], others: List[Dict[str,
     k = ctx.k
     return {t: mine[t] for t in DECK_TYPES
             if mine[t] >= k("deck_seat") and any(o[t] >= k("deck_seat") for o in others)}
+
+
+def plain_card(cache: Dict[str, bool], cid: str, card: CardInfo) -> bool:
+    """True for a card deck_factor always rates at 1 (not narrow, not a key card); cached per card."""
+    v = cache.get(cid)
+    if v is None:
+        v = cache[cid] = not card.key_of and not is_narrow(card, is_universal(card), card.staple)
+    return v
 
 
 def deck_factor(ctx: BotContext, card: CardInfo, eff: Dict[str, float], open_: Dict[str, float],
@@ -676,6 +701,64 @@ def completes_combo(card: CardInfo, owned: set, combos: List[Combo], max_pieces:
     return False
 
 
+class _RivalView:
+    """What one rival's pool says, for float risk: worked out once per pool (and per set of weights) and
+    reused for every pick until that rival picks again. Per-card parts are filled in as they're asked for."""
+    __slots__ = ("pool", "owned", "fit_of", "strengths", "floor", "partners_from", "deck", "prog",
+                 "base", "extra", "combo", "desire")
+
+    def __init__(self, ctx: "BotContext", picks: List[str]):
+        self.pool = [ctx.index[p] for p in picks]
+        self.owned = set(picks)
+        dist = lane_distribution(self.pool, len(self.pool))
+        self.strengths = package_strengths(_role_counts(self.pool))
+        self.fit_of = fitter(ctx.index, dist)
+        # A rival who isn't committed yet still wants every colour (as the bot itself does early on):
+        # treating three blue picks as a blue drafter made Ragavan look like it would come back.
+        self.floor = rival_floor(ctx, self.pool)
+        self.partners_from = partner_sources(ctx.index, self.owned)
+        self.prog = commit_progress(ctx, self.pool)
+        self.base: Dict[str, float] = {}       # rating x colour fit
+        self.extra: Dict[str, tuple] = {}      # (package, partners, combo finish)
+        self.combo: Dict[str, tuple] = {}      # (combo version, value)
+        self.desire: Dict[str, tuple] = {}     # (combo version, whole desire) for cards with no deck-type part
+
+
+def _combo_versions(ctx: BotContext, remaining: set) -> Optional[Dict[str, int]]:
+    """Per card, a counter that moves whenever a card sharing a combo with it leaves the pool, so a cached
+    combo value is reused only while nothing it depends on has changed (ctx.memo only)."""
+    memo = ctx.memo
+    if memo is None:
+        return None
+    seen = memo.get("remaining")
+    ver = memo.setdefault("combo_ver", {})
+    if seen is None or not remaining <= seen:     # a pool that grew back: start over
+        ver.clear()
+        for _, view in memo.get("rivals", {}).values():
+            view.combo.clear()
+            view.desire.clear()
+    else:
+        for gone in seen - remaining:
+            card = ctx.index.get(gone)
+            for ci in (card.combos if card else ()):
+                for p in ctx.combos[ci].pieces:
+                    ver[p] = ver.get(p, 0) + 1
+    memo["remaining"] = set(remaining)
+    return ver
+
+
+def _rival_view(ctx: BotContext, seat: int, picks: List[str]) -> _RivalView:
+    if ctx.memo is None:
+        return _RivalView(ctx, picks)
+    key = tuple(picks)
+    slot = (seat, tuple(sorted(ctx.tuning.items())) if ctx.tuning else ())
+    store = ctx.memo.setdefault("rivals", {})
+    hit = store.get(slot)
+    if hit is None or hit[0] != key:
+        hit = store[slot] = (key, _RivalView(ctx, picks))
+    return hit[1]
+
+
 def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[str, float]:
     """Probability each candidate is taken by someone else before our next pick."""
     window = picks_until_next_turn(ctx)
@@ -685,28 +768,55 @@ def float_risk(ctx: BotContext, candidates: List[str], remaining: set) -> Dict[s
     cand_set = set(candidates)
     strongest = sorted(remaining, key=lambda c: -ctx.index[c].power)[:120]
     plausible = set(strongest) | cand_set | {c for c in remaining if ctx.index[c].combos}
+    versions = _combo_versions(ctx, remaining)
+    finish_w = ctx.k("rival_combo_finish")
+    max_pieces = ctx.k("combo_max_pieces")
+    drafted_share = ctx.k("drafted_with_share")
     for seat, n_picks in window.items():
         picks = [p for p in ctx.picks_by_seat.get(seat, []) if p in ctx.index]
-        pool = [ctx.index[p] for p in picks]
-        owned = set(picks)
-        dist = lane_distribution(pool, len(pool))
-        strengths = package_strengths(_role_counts(pool))
-        fit_of = fitter(ctx.index, dist)
-        # A rival who isn't committed yet still wants every colour (as the bot itself does early on):
-        # treating three blue picks as a blue drafter made Ragavan look like it would come back.
-        floor = rival_floor(ctx, pool)
-        partners_from = partner_sources(ctx.index, owned)
-        r_deck = deck_strength(pool)
-        r_eff, r_open = deck_outlook(ctx, r_deck, [deck_strength(ctx.index[c] for c in ctx.picks_by_seat.get(o, []) if c in ctx.index)
-                                                     for o in ctx.picks_by_seat if o != seat])
-        r_prog = commit_progress(ctx, pool)
-        desires = sorted(((max(ctx.index[cid].power, 0.0) * (floor + (1 - floor) * fit_of(cid))
-                           * deck_factor(ctx, ctx.index[cid], r_eff, r_open, r_prog * fit_of(cid))
-                           + 0.8 * combo_value(ctx.index[cid], owned, remaining, ctx.combos, fit_of)
-                           + package_value(ctx.index[cid], None, strengths)
-                           + 0.3 * partner_value(ctx.index[cid], partners_from, fit_of, ctx.k("drafted_with_share"))
-                           + (ctx.k("rival_combo_finish") if completes_combo(ctx.index[cid], owned, ctx.combos, ctx.k("combo_max_pieces")) else 0.0), cid)
-                          for cid in plausible), reverse=True)
+        v = _rival_view(ctx, seat, picks)
+        fit_of = v.fit_of
+        r_eff, r_open = deck_outlook(ctx, seat_decks(ctx, seat), [seat_decks(ctx, o) for o in ctx.picks_by_seat if o != seat])
+        desires = []
+        plain = ctx.memo.setdefault("plain", {}) if ctx.memo is not None else None
+        for cid in plausible:
+            card = ctx.index[cid]
+            if plain is not None:
+                # Most cards have no deck-type part (deck_factor is always 1): their whole desire only
+                # changes when this rival picks or a combo piece of theirs leaves the pool.
+                is_plain = plain_card(plain, cid, card)
+                if is_plain:
+                    hit = v.desire.get(cid)
+                    if hit is not None and hit[0] == versions.get(cid, 0):
+                        desires.append((hit[1], cid))
+                        continue
+            else:
+                is_plain = False
+            base = v.base.get(cid)
+            if base is None:
+                base = v.base[cid] = max(card.power, 0.0) * (v.floor + (1 - v.floor) * fit_of(cid))
+            extra = v.extra.get(cid)
+            if extra is None:
+                extra = v.extra[cid] = (package_value(card, None, v.strengths),
+                                        0.3 * partner_value(card, v.partners_from, fit_of, drafted_share),
+                                        finish_w if completes_combo(card, v.owned, ctx.combos, max_pieces) else 0.0)
+            if versions is None:
+                combo = combo_value(card, v.owned, remaining, ctx.combos, fit_of)
+            else:
+                ver = versions.get(cid, 0)
+                hit = v.combo.get(cid)
+                if hit is None or hit[0] != ver:
+                    hit = v.combo[cid] = (ver, combo_value(card, v.owned, remaining, ctx.combos, fit_of))
+                combo = hit[1]
+            desire = base * deck_factor(ctx, card, r_eff, r_open, v.prog * fit_of(cid))
+            desire += 0.8 * combo
+            desire += extra[0]
+            desire += extra[1]
+            desire += extra[2]
+            if is_plain:
+                v.desire[cid] = (versions.get(cid, 0), desire)
+            desires.append((desire, cid))
+        desires.sort(reverse=True)
         spread = 1.0 + 0.35 * n_picks
         for rank, (_, cid) in enumerate(desires):
             if cid in cand_set:
@@ -869,6 +979,9 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     deck_eff, deck_open = deck_outlook(ctx, deck_mine, others)
     shared = shared_types(ctx, deck_mine, others)
     entry = max(0.0, 1.0 - t / k("entry_window"))
+    # focus_factor is 1 for every card until the bot is past focus_start in some deck type
+    focus_on = bool(deck_mine) and (k("focus_start") >= 1.0 or max(deck_mine.values()) > k("focus_start"))
+    plain = ctx.memo.setdefault("plain", {}) if ctx.memo is not None else None
     commitment = max(progress, max(deck_mine.values(), default=0.0))
     w_power = (1.0 - k("power_late_drop") * t) * (1.0 - k("commit_rating_cut") * commitment) * p.w("power")
     # Reanimation spells: targets owned count fully, strong fatties still in the pool count a little each.
@@ -919,8 +1032,12 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         if utility_glut and _is_utility_artifact(card):
             sat *= 1.0 - k("utility_cut")
         power *= sat
-        d_mult = deck_factor(ctx, card, deck_eff, deck_open, progress * (_lane_fit(card, pair) if pair else 0.0),
-                             entry) * focus_factor(ctx, card, deck_mine)
+        if plain is not None and plain_card(plain, cid, card):
+            d_mult = 1.0           # deck_factor is 1 for these (worked out once per card, not every pick)
+        else:
+            d_mult = deck_factor(ctx, card, deck_eff, deck_open, progress * (_lane_fit(card, pair) if pair else 0.0), entry)
+        if focus_on:
+            d_mult *= focus_factor(ctx, card, deck_mine)
         power *= d_mult
         if card.is_land and card.is_fixing:
             damp = k("early_fixing_damp")

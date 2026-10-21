@@ -147,3 +147,9 @@ Simulated drafts are deterministic (each pick has its own random stream from the
 lets you step to any pick, change weights and **Re-draft from pick N**, then outlines every pick that changed and
 shows each seat's colours / deck types before and after. `tuned_seats` gives the new weights to some seats only,
 to pit them against the current weights in the same draft.
+
+Simulations and the bot report pass one `memo` dict through `BotContext` for the whole run: each seat's deck types
+and, for float risk, what each rival's pool wants are worked out once per pool (and per set of weights) instead of on
+every pick, and a rival's cached combo value is reused until a card sharing a combo leaves the pool. Picks and report
+ranks are identical with or without it (`test_shared_memo_never_changes_a_pick`); a full 8 x 45 all-bot draft runs
+about 1.6x faster. Live drafts don't pass a memo (their picks can be undone or changed by the host).
