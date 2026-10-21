@@ -629,3 +629,73 @@ def test_duals_do_not_win_on_drafted_with_partners():
     ctx.index = idx
     rows = {c: i for _, c, i in score_pool(ctx)}
     assert rows["dual"]["partners"] < 0.5 * rows["spell"]["partners"]
+
+
+def test_role_tags_skip_reminder_text_and_known_misfires():
+    cube = [
+        card("hull", "Hullbreacher", "{2}{U}", 3, "Creature — Merfolk Rogue",
+             "Flash\nIf an opponent would draw a card except the first one they draw in each of their draw steps, "
+             "instead you create a Treasure token. (It's an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")", "U"),
+        card("thop", "Thopter Foundry", "{W/B}{U}", 2, "Artifact",
+             "{1}, Sacrifice a nontoken artifact: Create a 1/1 blue Thopter artifact creature token with flying. You gain 1 life.", "WUB"),
+        card("cradle", "Gaea's Cradle", "", 0, "Legendary Land", "{T}: Add {G} for each creature you control.", "G"),
+        card("mono", "Grim Monolith", "{2}", 2, "Artifact",
+             "Grim Monolith doesn't untap during your untap step.\n{T}: Add {C}{C}{C}.\n{4}: Untap Grim Monolith."),
+        card("rit", "Dark Ritual", "{B}", 1, "Instant", "Add {B}{B}{B}.", "B"),
+        card("sword", "Sword of the Meek", "{2}", 2, "Artifact — Equipment",
+             "Whenever a 1/1 creature you control enters, you may return Sword of the Meek from your graveyard to the "
+             "battlefield, then attach it to that creature."),
+        card("snuff", "Snuff Out", "{3}{B}", 4, "Instant", "Destroy target nonblack creature. It can't be regenerated.", "B"),
+        card("kitten", "Displacer Kitten", "{3}{U}", 4, "Creature — Cat Nightmare",
+             "Whenever you cast a noncreature spell, exile up to one target nonland permanent you control, then return "
+             "that card to the battlefield under its owner's control.", "U"),
+        card("stock", "Stock Up", "{2}{U}", 3, "Sorcery",
+             "Look at the top five cards of your library. Put two of them into your hand and the rest on the bottom.", "U"),
+        card("goryo", "Goryo's Vengeance", "{1}{R}", 2, "Instant",
+             "Return target legendary creature card from your graveyard to the battlefield. It gains haste.", "R"),
+    ]
+    idx = build_card_index(cube)
+    assert "mana" not in idx["hull"].roles                     # Treasure reminder text isn't the card's own mana
+    assert "removal" not in idx["thop"].roles                  # a sacrifice cost isn't an edict
+    assert "sweeper" not in idx["cradle"].roles
+    assert "ritual" not in idx["mono"].roles and "ritual" in idx["rit"].roles
+    assert "reanimate" not in idx["sword"].roles and "reanimate" in idx["goryo"].roles
+    assert "removal" in idx["snuff"].roles
+    assert "removal" not in idx["kitten"].roles and "flicker" in idx["kitten"].roles
+    assert "draw" in idx["stock"].roles                        # ROLE_OVERRIDES
+
+
+def test_role_saturation_and_utility_artifacts():
+    from draftbot.engine import saturation_factor
+    sweeper = build_card_index([card("w", "Wrath", "{2}{W}{W}", 4, "Sorcery", "Destroy all creatures.", "W")])["w"]
+    assert saturation_factor(sweeper, {"sweeper": 2}, 0.5) == 1.0       # room for a third
+    assert saturation_factor(sweeper, {"sweeper": 3}, 0.5) == 0.75      # one past the limit
+    assert saturation_factor(sweeper, {"sweeper": 5}, 0.5) == 0.5
+    # Colourless utility artifacts: past two, a deck without an artifact plan wants another one less.
+    cube = synthetic_cube() + [card(f"ut{i}", f"Trinket {i}", "{1}", 1, "Artifact",
+                                    "{1}, {T}: Look at the top card of your library.", "", 1600) for i in range(4)]
+    few = {cid: i["rating"] for s, cid, i in score_pool(_two_seat_ctx(cube, [], ["ut0"], [], explain=True))}
+    glut = {cid: i["rating"] for s, cid, i in score_pool(_two_seat_ctx(cube, [], ["ut0", "ut1"], [], explain=True))}
+    assert glut["ut3"] < few["ut3"] * 0.7, (few["ut3"], glut["ut3"])
+
+
+def test_cheat_spells_and_big_fatties_need_each_other():
+    cube = synthetic_cube() + [
+        card("sneak", "Sneak Attack", "{3}{R}", 4, "Enchantment",
+             "{R}: You may put a creature card from your hand onto the battlefield. It gains haste.", "R", 1700),
+        card("rean", "Reanimate", "{B}", 1, "Sorcery",
+             "Put target creature card from a graveyard onto the battlefield under your control.", "B", 1700),
+        card("fat", "Griselbrand", "{4}{B}{B}{B}{B}", 8, "Legendary Creature — Demon", "Flying, lifelink", "B", 1700),
+        card("fat2", "Big Wurm", "{6}{B}", 7, "Creature — Wurm", "Trample", "B", 1500),
+    ]
+    idx = build_card_index(cube)
+
+    def part(mine, rival, cid):
+        ctx = _two_seat_ctx(cube, [], mine, rival, explain=True)
+        ctx.index = idx
+        return {c: i for _, c, i in score_pool(ctx)}[cid]["rating"]
+    base = [f"B{i}" for i in range(4)] + [f"R{i}" for i in range(3)]
+    # A cheat spell with no fatty to cheat in is worth much less (as reanimation spells already were).
+    assert part(base, ["fat", "fat2"], "sneak") < 0.6 * part(base + ["fat2"], ["fat"], "sneak")
+    # A fatty nobody can cast: worth much less without a reanimation or cheat spell.
+    assert part(base, ["rean", "sneak"], "fat") < 0.6 * part(base + ["rean"], ["sneak"], "fat")

@@ -98,9 +98,19 @@ TUNING: Dict[str, float] = {
     "run_share": 0.25,          # share of those picks being fixing lands that counts as a full run
     "run_boost": 0.6,           # fixing lands' rating boost during a full run (and no early-draft discount)
     "unsupported_cut": 0.7,     # share of such a card's rating lost when the pool has none of its support
-    # reanimation spells need something to reanimate: owned fatties, or ones still likely to come
-    "reanimate_cut": 0.6,       # share of a reanimation spell's rating lost with no target owned or available
+    # reanimation and cheat spells (Reanimate, Sneak Attack, Show and Tell) need something to put into play:
+    # owned fatties, or ones still likely to come
+    "reanimate_cut": 0.6,       # share of such a spell's rating lost with no target owned or available
     "reanimate_targets": 2,     # targets that make it fully live (owned count fully, available ones partly)
+    # ...and the other way round: a 7+ mana fatty (Griselbrand, Emrakul) is only a card with a way to cheat it in
+    "fatty_cut": 0.6,           # share of a big fatty's rating lost with no reanimation/cheat spell owned or available
+    "fatty_enablers": 2,        # enablers that make it fully live (owned count fully, available ones partly)
+    "fatty_cmc": 7,             # mana value from which a fatty can't just be cast
+    "open_support_share": 0.2,  # how much each strong enabler still in the pool counts (it may go elsewhere)
+    # role saturation: past a deck's fill of one job, another card doing the same job adds less
+    "saturation_cut": 0.5,      # share of rating lost once a role is two or more past its limit (half at one past)
+    "utility_limit": 2,         # colourless utility artifacts (Top, Baubles, Skullclamp) a deck with no artifact plan wants
+    "utility_cut": 0.4,         # share of rating lost past that limit
     # extra mana rocks: a deck without an artifact plan only needs a few
     "rock_limit": 3,            # mana artifacts owned before more of them lose value
     "rock_cut": 0.35,           # share of a 2+ mana rock's rating lost past the limit (no artifact plan)
@@ -121,6 +131,13 @@ DEPENDENT_PAYOFFS: Dict[str, Tuple[Tuple[str, ...], int]] = {
     "land_recursion": (("fetchland", "landfall"), 3),
 }
 _DEPENDENT_ROLES = frozenset(DEPENDENT_PAYOFFS)
+
+# How many cards doing one job a 40-card deck wants before more of them add less (role -> limit).
+# Reanimator wants four or five fatties, not eight; a deck wants a few sweepers or planeswalkers, not a pile.
+ROLE_SATURATION: Dict[str, int] = {
+    "fatty": 5, "reanimate": 5, "cheat": 3, "equipment": 3, "sweeper": 3, "planeswalker": 6, "tutor": 5,
+}
+_TARGET_ENABLERS = frozenset({"reanimate", "cheat"})
 
 # Plans: (roles on one side, how many make that side complete, roles on the other side, how many).
 # A pool's strength in a plan is half from each side, so a pool with Flash and no fatty is a half-built
@@ -703,6 +720,23 @@ def _is_rock(card: CardInfo) -> bool:
     return "mana" in card.roles and "artifact" in card.roles and not card.is_creature and not card.is_land
 
 
+def _is_utility_artifact(card: CardInfo) -> bool:
+    """Colourless non-mana artifacts that aren't creatures or key cards (Top, Baubles, Skullclamp, Currency
+    Converter): good in general, but a deck without an artifact plan only plays a couple."""
+    return ("artifact" in card.roles and not card.need and not card.is_land and not card.is_creature
+            and "mana" not in card.roles and not card.staple and not card.key_of)
+
+
+def saturation_factor(card: CardInfo, role_counts: Dict[str, int], cut: float) -> float:
+    """Share of its rating a card keeps given how many cards with the same job the pool already has."""
+    worst = 0
+    for role in card.roles:
+        limit = ROLE_SATURATION.get(role)
+        if limit is not None:
+            worst = max(worst, role_counts.get(role, 0) - limit + 1)
+    return 1.0 - cut * min(1.0, worst / 2) if worst > 0 else 1.0
+
+
 # ---------------------------------------------------------------- sideboard / counter picks
 
 HATE_TARGETS = ("artifact", "graveyard", "counters", "creatures", "spells")
@@ -841,6 +875,13 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     owned_targets = sum(1 for c in mine if "fatty" in c.roles)
     open_targets = sum(1 for c in remaining if "fatty" in ctx.index[c].roles and ctx.index[c].power >= 0.5)
     target_fill = min(1.0, (owned_targets + 0.25 * open_targets) / k("reanimate_targets"))
+    # Big fatties need a reanimation/cheat spell: owned ones count fully, strong ones still in the pool a little.
+    owned_enablers = sum(1 for c in mine if c.roles & _TARGET_ENABLERS)
+    open_enablers = sum(1 for c in remaining if ctx.index[c].roles & _TARGET_ENABLERS and ctx.index[c].power >= 0.3)
+    enabler_fill = min(1.0, (owned_enablers + k("open_support_share") * open_enablers) / k("fatty_enablers"))
+    # Utility artifacts: past a couple, only a deck with an artifact plan wants more.
+    art_plan = max(deck_mine.get(t, 0.0) for t in ("tolarian", "workshop", "artifacts"))
+    utility_glut = art_plan < 0.5 and sum(1 for c in mine if _is_utility_artifact(c)) >= k("utility_limit")
     splash_fixing = sum(1 for c in mine if c.is_land and splash and splash in c.produces and pair and c.produces & pair) \
         if splash else 0
     w_combo = (k("combo_base") + k("combo_growth") * min(1.0, 2 * t)) * p.w("combo")
@@ -870,8 +911,14 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
                 power *= 1.0 - k("plan_conflict_cut") * plan_ramp * plan_conflict(card, plans)
         if rock_glut and _is_rock(card) and card.cmc >= 2:
             power *= 1.0 - k("rock_cut")
-        if "reanimate" in card.roles and "fatty" not in card.roles and support_ramp:
+        if card.roles & _TARGET_ENABLERS and "fatty" not in card.roles and support_ramp:
             power *= 1.0 - k("reanimate_cut") * support_ramp * (1.0 - target_fill)
+        if "fatty" in card.roles and card.cmc >= k("fatty_cmc") and support_ramp:
+            power *= 1.0 - k("fatty_cut") * support_ramp * (1.0 - enabler_fill)
+        sat = saturation_factor(card, role_counts, k("saturation_cut"))
+        if utility_glut and _is_utility_artifact(card):
+            sat *= 1.0 - k("utility_cut")
+        power *= sat
         d_mult = deck_factor(ctx, card, deck_eff, deck_open, progress * (_lane_fit(card, pair) if pair else 0.0),
                              entry) * focus_factor(ctx, card, deck_mine)
         power *= d_mult
@@ -909,6 +956,8 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
         info = {"fit": round(fit, 2)}
         if d_mult < 1.0:
             info["deck"] = round(d_mult, 2)
+        if sat < 1.0:
+            info["saturated"] = round(sat, 2)
         if ctx.explain:
             info.update(rating=round(t_rating, 3), combo=round(t_combo, 3), plan=round(t_plan, 3),
                         partners=round(t_partner, 3), needs=round(t_needs, 3), other=round(t_other, 3), hate=round(t_hate, 3),
