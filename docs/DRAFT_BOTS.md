@@ -153,3 +153,19 @@ and, for float risk, what each rival's pool wants are worked out once per pool (
 every pick, and a rival's cached combo value is reused until a card sharing a combo leaves the pool. Picks and report
 ranks are identical with or without it (`test_shared_memo_never_changes_a_pick`); a full 8 x 45 all-bot draft runs
 about 1.6x faster. Live drafts don't pass a memo (their picks can be undone or changed by the host).
+
+### Bot Brain in the browser
+
+The Bot Brain page runs the bots in the browser: `frontend/src/lib/labEngine.js` starts a Web Worker with Pyodide
+(Python in WebAssembly, from jsDelivr) and loads the server's own `draftbot/*.py` files from `GET /api/lab/engine`,
+so the browser and the live bots run the same code. A saved pool is downloaded once from
+`GET /api/lab/pool-export?key=...` (the gzip'd `lab_pools` document) and kept in IndexedDB until the pool is
+rebuilt. `draftbot/browser.py` is the worker's entry point (load, card, view, lanes, web, and drafts run a few picks
+at a time with `lab.DraftRun` so picks stream onto the board). If the worker can't start, the page falls back to
+the server endpoints.
+
+On the page, a draft is first run with the current weights (`base`); moving a weight re-runs the same seed with
+the new weights from a chosen table pick (live, after the slider settles), outlines every pick that differs and
+compares each seat with the base draft. The lanes table shows every seat's deck types at the pick shown, and the
+synergy web shows the picking seat's cards, the cards it is weighing and the CubeCobra links between them.
+

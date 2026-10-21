@@ -809,3 +809,26 @@ def test_shared_memo_never_changes_a_pick():
         by_seat[seat].append(p["card_id"])
         name = idx[p["card_id"]].name.lower()
         remaining = [c for c in remaining if c != p["card_id"] and idx[c].name.lower() != name]
+
+
+def test_browser_session_streams_the_same_draft_as_simulate():
+    """The Bot Brain page runs drafts a few picks at a time in the browser; they must match lab.simulate."""
+    import json
+    from draftbot.browser import Session
+    from draftbot.lab import simulate
+    cube = synthetic_cube()
+    s = Session()
+    src = json.loads(s.load(json.dumps({"cards": cube, "stats": None, "combos": []})))
+    assert src["summary"]["cards"] == len(cube) and src["knobs"]
+    tuning = {"partner_weight": 0.9}
+    json.loads(s.run_start(json.dumps({"seats": 4, "picks": 12, "seed": 5, "tuning": tuning})))
+    picks = []
+    while True:
+        r = json.loads(s.run_step(5))
+        picks += r["picks"]
+        if r["done"]:
+            break
+    assert picks == simulate(s.index, s.combos, 4, 12, seed=5, tuning=tuning)["picks"]
+    assert len(r["seats"]) == 4
+    view = json.loads(s.view(json.dumps({"order": [p["seat_index"] for p in picks], "picks": picks, "slot": 10})))
+    assert view["slot"] == 10 and view["rows"]

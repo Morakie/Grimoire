@@ -205,6 +205,15 @@ def source_summary(index: Dict[str, CardInfo], combos: List[Combo]) -> dict:
             "decks": decks, "connected": [{**_brief(c), "links": syn[c.id]} for c in top if syn[c.id]]}
 
 
+def source_payload(index: Dict[str, CardInfo], combos: List[Combo], cards: Sequence[dict]) -> dict:
+    """What the Bot Brain page gets for a loaded pool: the overview, a light card list and the knobs."""
+    light = [{"id": c["id"], "name": c["name"], "image": c.get("image"), "art_crop": c.get("art_crop"),
+              "elo": round(index[c["id"]].elo), "colors": "".join(x for x in "WUBRG" if x in index[c["id"]].need),
+              "land": index[c["id"]].is_land}
+             for c in cards if c["id"] in index]
+    return {"summary": source_summary(index, combos), "cards": light, "knobs": knob_list()}
+
+
 def snake_order(seats: int, per_seat: int) -> List[int]:
     out: List[int] = []
     for r in range(per_seat):
@@ -219,6 +228,61 @@ def _pick_rng(seed: int, slot: int):
     return random.Random(seed * 1_000_003 + slot)
 
 
+class DraftRun:
+    """An all-bot rotisserie draft (snake order) that can be run a few picks at a time (the browser streams
+    picks onto the page this way). `simulate` runs one to the end."""
+
+    def __init__(self, index: Dict[str, CardInfo], combos: List[Combo], seats: int, per_seat: int, seed: int = 0,
+                 tuning: Optional[Dict[str, float]] = None, start: Sequence[dict] = (),
+                 tuned_seats: Optional[Iterable[int]] = None, stop: Optional[int] = None):
+        self.index, self.combos, self.seed, self.tuning = index, combos, seed, tuning
+        self.order = snake_order(seats, min(per_seat, max(1, len(index) // max(seats, 1))))
+        self.per = len(self.order) // seats
+        self.only = frozenset(tuned_seats) if tuned_seats is not None else None
+        self.remaining = list(index)
+        self.by_seat: Dict[int, List[str]] = {s: [] for s in range(seats)}
+        self.picks: List[dict] = []
+        self.memo: dict = {}     # what each seat's pool says, shared across picks (picks are the same without it)
+        # Replay the kept picks; stop at the first one that no longer fits (other seats, a card gone).
+        for slot, p in enumerate(sorted(start, key=lambda p: p.get("order", 0))):
+            cid = p.get("card_id")
+            if slot >= len(self.order) or p.get("order") != slot or p.get("seat_index") != self.order[slot] \
+                    or cid not in self.remaining:
+                break
+            self._take(slot, self.order[slot], cid)
+        self.kept = len(self.picks)
+        self.end = len(self.order) if stop is None else max(self.kept, min(int(stop), len(self.order)))
+
+    def _take(self, slot: int, seat: int, cid: str) -> None:
+        self.by_seat[seat].append(cid)
+        self.picks.append({"order": slot, "seat_index": seat, "card_id": cid})
+        name = self.index[cid].name.lower()
+        self.remaining = [c for c in self.remaining if c != cid and self.index[c].name.lower() != name]
+
+    @property
+    def done(self) -> bool:
+        return len(self.picks) >= self.end or not self.remaining
+
+    def step(self, n: int = 1) -> List[dict]:
+        """Make up to n more picks; returns them."""
+        from .engine import choose_pick
+        made = []
+        while n > 0 and not self.done:
+            slot = len(self.picks)
+            seat = self.order[slot]
+            t = self.tuning if (self.only is None or seat in self.only) else None
+            ctx = BotContext(self.index, self.combos, self.remaining, self.by_seat, seat, self.order, slot, self.per,
+                             Persona("steady", temperature=0.03), t or None, people=frozenset(), memo=self.memo)
+            self._take(slot, seat, choose_pick(ctx, _pick_rng(self.seed, slot)))
+            made.append(self.picks[-1])
+            n -= 1
+        return made
+
+    def result(self) -> dict:
+        return {"order": self.order, "picks": self.picks, "per_seat": self.per, "kept": self.kept,
+                "seats": seat_summaries(self.index, self.combos, self.by_seat)}
+
+
 def simulate(index: Dict[str, CardInfo], combos: List[Combo], seats: int, per_seat: int, seed: int = 0,
              tuning: Optional[Dict[str, float]] = None, start: Sequence[dict] = (),
              tuned_seats: Optional[Iterable[int]] = None, stop: Optional[int] = None) -> dict:
@@ -228,42 +292,9 @@ def simulate(index: Dict[str, CardInfo], combos: List[Combo], seats: int, per_se
     `start` keeps the first picks of an earlier run (a rewind): the bots re-draft only from there on.
     `tuned_seats` limits the weights to some seats (the others use the current ones), to compare the two
     side by side in one draft. `stop` ends the draft at that table pick."""
-    from .engine import choose_pick
-    order = snake_order(seats, min(per_seat, max(1, len(index) // max(seats, 1))))
-    per = len(order) // seats
-    only = frozenset(tuned_seats) if tuned_seats is not None else None
-    remaining = list(index)
-    taken_names = set()
-    by_seat: Dict[int, List[str]] = {s: [] for s in range(seats)}
-    picks: List[dict] = []
-    memo: dict = {}          # what each seat's pool says, shared across picks (picks are the same without it)
-
-    def take(slot, seat, cid):
-        nonlocal remaining
-        by_seat[seat].append(cid)
-        picks.append({"order": slot, "seat_index": seat, "card_id": cid})
-        name = index[cid].name.lower()
-        taken_names.add(name)
-        remaining = [c for c in remaining if c != cid and index[c].name.lower() != name]
-
-    # Replay the kept picks; stop at the first one that no longer fits (other seats, a card gone).
-    for slot, p in enumerate(sorted(start, key=lambda p: p.get("order", 0))):
-        cid = p.get("card_id")
-        if slot >= len(order) or p.get("order") != slot or p.get("seat_index") != order[slot] or cid not in remaining:
-            break
-        take(slot, order[slot], cid)
-    kept = len(picks)
-    end = len(order) if stop is None else max(kept, min(int(stop), len(order)))
-    for slot in range(kept, end):
-        if not remaining:
-            break
-        seat = order[slot]
-        t = tuning if (only is None or seat in only) else None
-        ctx = BotContext(index, combos, remaining, by_seat, seat, order, slot, per,
-                         Persona("steady", temperature=0.03), t or None, people=frozenset(), memo=memo)
-        take(slot, seat, choose_pick(ctx, _pick_rng(seed, slot)))
-    return {"order": order, "picks": picks, "per_seat": per, "kept": kept,
-            "seats": seat_summaries(index, combos, by_seat)}
+    run = DraftRun(index, combos, seats, per_seat, seed, tuning, start, tuned_seats, stop)
+    run.step(len(run.order))
+    return run.result()
 
 
 def seat_summaries(index: Dict[str, CardInfo], combos: List[Combo], by_seat: Dict[int, List[str]]) -> List[dict]:

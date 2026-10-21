@@ -3,13 +3,14 @@ import { Link } from "react-router-dom";
 import api from "@/lib/api";
 import { resolveCube, stepError } from "@/lib/cube";
 import BotLab from "@/components/BotLab";
-import { Sparkles, Loader2, Brain, Search, Shuffle, Dices, Play, Network, Library, RefreshCw, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Undo2, GitCompare } from "lucide-react";
+import { startEngine, poolBytes } from "@/lib/labEngine";
+import { Sparkles, Loader2, Brain, Search, Shuffle, Dices, Play, Network, Library, RefreshCw, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, GitCompare, Zap, Cpu, Server, Square } from "lucide-react";
 
 // Bot Brain: how the draft bots think, outside any draft. Load a cube (CubeCobra) or the VRD pool, then
-// look up any card (what the bots know about it and what it links to) or run an all-bot draft and step
-// through its picks in the Bot Lab view. A built pool is saved on the server (one document) and listed under
-// "Saved pools", so loading it again skips CubeCobra, Scryfall and the stats lookups. Draft runs are never
-// saved: rewind to any pick, change weights and re-draft from there to see what changes.
+// look up any card (what the bots know about it and what it links to) or run an all-bot draft, turn the
+// weights and watch the draft change. A built pool is saved on the server (one document); the page downloads
+// it once, keeps it in this browser and runs the same bot code here (lib/labEngine.js), so turning knobs and
+// re-drafting never call the server. If the in-browser engine can't start, the server runs the bots instead.
 
 const DECK_NAMES = { tolarian: "Tolarian", workshop: "Workshop", artifacts: "Artifacts", storm: "Storm", reanimator: "Reanimator", cheat: "Cheat", lands: "Lands", aggro: "Aggro" };
 const DECK_COL = { tolarian: "#38bdf8", workshop: "#a8a29e", artifacts: "#f59e0b", storm: "#e879f9", reanimator: "#8b5cf6", cheat: "#f43f5e", lands: "#84cc16", aggro: "#fb923c" };
@@ -204,9 +205,9 @@ function slotFocus(order, slot) {
   return { seat, pickNo: n };
 }
 
-function DraftBoard({ sim, byId, seats, viewSlot, changed, kept, onPick }) {
+function DraftBoard({ sim, base, byId, seats, viewSlot, changed, kept, onPick }) {
   const n = seats.length;
-  const rounds = Math.ceil(sim.picks.length / n);
+  const rounds = Math.ceil(sim.order.length / n);       // the whole board, filling in as picks stream in
   const bySlot = sim.picks;
   const cell = (r, s) => r * n + (r % 2 === 0 ? s : n - 1 - s);
   const viewRef = useRef(null);
@@ -225,13 +226,14 @@ function DraftBoard({ sim, byId, seats, viewSlot, changed, kept, onPick }) {
               {seats.map((s, si) => {
                 const slot = cell(r, si);
                 const p = bySlot[slot];
-                if (!p) return <td key={s.index} />;
+                if (!p) return <td key={s.index} className="p-0.5"><span className="block rounded px-1 py-0.5 text-slate-700">·</span></td>;
                 const c = byId[p.card_id];
                 const here = slot === viewSlot;
                 const ch = changed.has(slot);
+                const was = ch && base?.picks[slot] ? byId[base.picks[slot].card_id]?.name : null;
                 return (
                   <td key={s.index} className="p-0.5" ref={here ? viewRef : undefined}>
-                    <button type="button" onClick={() => onPick(slot)} title={`Table pick ${slot + 1}: ${c?.name || "?"}${ch ? " (changed by the re-draft)" : ""}`}
+                    <button type="button" onClick={() => onPick(slot)} title={`Table pick ${slot + 1}: ${c?.name || "?"}${was ? ` (was ${was} with the current weights)` : ""}`}
                       data-testid={`brain-board-${slot}`}
                       className={`w-full text-left flex items-center gap-1 rounded px-1 py-0.5 border ${here ? "border-amber-400 bg-amber-400/15 text-amber-100" : ch ? "border-sky-400/70 bg-sky-400/10 text-slate-100" : "border-transparent hover:bg-slate-800/70 text-slate-300"} ${slot < kept ? "opacity-60" : ""}`}>
                       <span className="w-1.5 h-3 rounded-sm shrink-0" style={{ background: c ? colourOf(c) : "#334155" }} />
@@ -276,7 +278,122 @@ function SeatSummary({ s, before, name, tuned }) {
   );
 }
 
+
+// ---------------------------------------------------------------- lanes at a pick: who is in which deck type
+
+function LanesStrip({ lanes, focusSeat, onSeat }) {
+  if (!lanes) return null;
+  const types = Object.keys(DECK_NAMES).filter((t) => lanes.seats.some((s) => (s.decks[t] || 0) >= 0.25));
+  const inLane = (t) => lanes.seats.filter((s) => (s.decks[t] || 0) >= 0.5).length;
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-3 space-y-2" data-testid="brain-lanes">
+      <div className="text-[11px] uppercase tracking-wider text-slate-500">Lanes before table pick {lanes.slot + 1} <span className="normal-case tracking-normal">· a seat counts as in a deck type from 50%</span></div>
+      {types.length === 0 ? <p className="text-sm text-slate-500">No seat leans towards a deck type yet.</p> : (
+        <div className="overflow-x-auto">
+          <table className="text-xs border-separate border-spacing-0.5">
+            <thead><tr><th />
+              {types.map((t) => {
+                const n = inLane(t);
+                return <th key={t} className="px-1 text-left font-normal min-w-[78px]"><span className="flex items-center gap-1 text-slate-300"><span className="w-2 h-2 rounded-full" style={{ background: DECK_COL[t] }} />{DECK_NAMES[t]}</span>
+                  <span className={`tabular-nums ${n >= 3 ? "text-rose-400 font-semibold" : n === 2 ? "text-amber-300" : "text-slate-500"}`}>{n} seat{n === 1 ? "" : "s"}{n >= 3 ? " · crowded" : ""}</span></th>;
+              })}</tr></thead>
+            <tbody>
+              {lanes.seats.map((s) => (
+                <tr key={s.seat} className={s.seat === focusSeat ? "bg-amber-400/10" : ""}>
+                  <td className="pr-2 whitespace-nowrap"><button type="button" onClick={() => onSeat?.(s.seat)} className={`flex items-center gap-1.5 ${s.seat === focusSeat ? "text-amber-200" : "text-slate-300 hover:text-amber-300"}`}>Bot {s.seat + 1} <SeatPips pair={s.pair} /></button></td>
+                  {types.map((t) => {
+                    const v = s.decks[t] || 0;
+                    return <td key={t} title={`${DECK_NAMES[t]} ${Math.round(v * 100)}%`}><span className="relative block h-3.5 rounded bg-slate-800 overflow-hidden">
+                      <span className="absolute inset-y-0 left-0" style={{ width: `${v * 100}%`, background: DECK_COL[t], opacity: v >= 0.5 ? 0.95 : 0.45 }} /></span></td>;
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- a seat's synergy web at a pick
+
+// The seat's cards on a ring (grouped by deck type), the cards it is weighing in the middle, and the CubeCobra
+// links between them: hover a candidate to see which of the seat's cards pull it up.
+function SeatWeb({ web, seatName, scores, took, onPick }) {
+  const W = 760, H = 440;
+  const [hover, setHover] = useState(null);
+  const layout = useMemo(() => {
+    if (!web) return null;
+    const order = ["", ...Object.keys(DECK_NAMES)];
+    const owned = web.nodes.filter((n) => !n.candidate).sort((a, b) => order.indexOf(a.deck) - order.indexOf(b.deck) || b.elo - a.elo);
+    const cands = web.nodes.filter((n) => n.candidate);
+    const pos = {};
+    owned.forEach((n, k) => {
+      const t = -Math.PI / 2 + (k / Math.max(owned.length, 1)) * Math.PI * 2;
+      pos[n.id] = { ...n, x: W / 2 + Math.cos(t) * 300, y: H / 2 + Math.sin(t) * 172, left: Math.cos(t) < -0.05 };
+    });
+    cands.forEach((n, k) => {
+      pos[n.id] = { ...n, x: W / 2, y: H / 2 - ((cands.length - 1) / 2 - k) * 34 };
+    });
+    const links = {};
+    web.edges.forEach(([a, b, s]) => {
+      [[a, b], [b, a]].forEach(([x, y]) => { if (pos[x]?.candidate && pos[y] && !pos[y].candidate) (links[x] = links[x] || []).push([y, s]); });
+    });
+    return { pos, owned, cands, links };
+  }, [web]);
+  if (!layout) return null;
+  const { pos, owned, cands, links } = layout;
+  const lit = hover ?? cands[0]?.id;
+  return (
+    <div className="space-y-2" data-testid="brain-web">
+      <h3 className="text-[11px] uppercase tracking-wider text-slate-500 flex items-center gap-1.5"><Network className="w-3.5 h-3.5" /> {seatName}'s synergy web at this pick</h3>
+      <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-950">
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[560px] h-auto block" role="img" aria-label={`${seatName}'s cards, the cards it is weighing, and how they link`}>
+          {web.edges.map(([a, b, s], k) => {
+            const pa = pos[a], pb = pos[b];
+            if (!pa || !pb) return null;
+            const toCand = pa.candidate || pb.candidate;
+            const on = toCand && (a === lit || b === lit);
+            if (pa.candidate && pb.candidate) return null;
+            return <line key={k} x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke={on ? "#fbbf24" : toCand ? "#64748b" : "#38bdf8"}
+              strokeOpacity={on ? 0.85 : toCand ? 0.06 : (s >= 1 ? 0.35 : 0.14)} strokeWidth={on ? (s >= 1 ? 2 : 1.2) : (s >= 1 ? 1.2 : 0.7)} />;
+          })}
+          {owned.map((n) => {
+            const p = pos[n.id];
+            const linked = (links[lit] || []).some(([y]) => y === n.id);
+            return (
+              <g key={n.id} transform={`translate(${p.x},${p.y})`} className="cursor-pointer" onClick={() => onPick(n.id)}>
+                <circle r={6} fill={colourOf(n)} stroke={n.deck ? DECK_COL[n.deck] : "#020617"} strokeWidth={n.deck ? 2.5 : 1} />
+                <text x={p.left ? -10 : 10} y={4} textAnchor={p.left ? "end" : "start"} fontSize={10.5} fill={linked ? "#fde68a" : "#cbd5e1"}
+                  style={{ paintOrder: "stroke", stroke: "#020617", strokeWidth: 3 }}>{shortName(n.name).slice(0, 18)}</text>
+              </g>
+            );
+          })}
+          {cands.map((n) => {
+            const p = pos[n.id];
+            const ls = links[n.id] || [];
+            const strength = ls.reduce((t, [, s]) => t + s, 0);
+            const on = n.id === lit;
+            return (
+              <g key={n.id} transform={`translate(${p.x},${p.y})`} className="cursor-pointer" onMouseEnter={() => setHover(n.id)} onMouseLeave={() => setHover(null)} onClick={() => onPick(n.id)}>
+                <rect x={-104} y={-13} width={208} height={26} rx={6} fill={on ? "#422006" : "#0f172a"} stroke={n.id === took ? "#fbbf24" : on ? "#f59e0b" : "#334155"} strokeWidth={n.id === took ? 2 : 1} />
+                <circle cx={-92} r={5} fill={colourOf(n)} />
+                <text x={-82} y={4} fontSize={11} fill="#f1f5f9">{shortName(n.name).slice(0, 19)}</text>
+                <text x={98} y={4} fontSize={10} textAnchor="end" fill={ls.length ? "#fbbf24" : "#64748b"}>{scores[n.id] != null ? `${scores[n.id].toFixed(2)} · ` : ""}{ls.length} link{ls.length === 1 ? "" : "s"}{strength ? ` (${strength.toFixed(1)})` : ""}</text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+      <p className="text-xs text-slate-500">Ring: the seat's cards, grouped and outlined by deck type. Blue lines: links between its own cards (solid for "synergistic", faint for "often drafted with"). Middle: the cards it is weighing now, with score and how many of its cards they link to. Hover one to light up its links; tap any card to open it. The card taken has a gold border.</p>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- page
+
+const sameCfg = (a, b) => a && b && a.seats === b.seats && a.picks === b.picks && a.seed === b.seed && a.pool === b.pool;
 
 export default function BotBrain() {
   const saved = load(STORE, {});
@@ -285,37 +402,78 @@ export default function BotBrain() {
   const [src, setSrc] = useState(null);
   const [step, setStep] = useState("");
   const [error, setError] = useState("");
-  const [tab, setTab] = useState("cards");
+  const [tab, setTab] = useState(saved.tab || "cards");
   const [query, setQuery] = useState("");
   const [sel, setSel] = useState(null);
   const [dossier, setDossier] = useState(null);
   const [dLoading, setDLoading] = useState(false);
-  const [sim, setSim] = useState(null);
-  const [prev, setPrev] = useState(null);          // the run before a re-draft, to show what changed
+  const [pools, setPools] = useState(null);
+  const [engineState, setEngineState] = useState("starting");   // starting | ready | failed
+  // Drafts: `base` is the draft with the current (default) weights; `sim` is what the board shows: the base
+  // draft, or the same draft with the Lab's weights from table pick `from` on. Same seed, so every difference
+  // between the two comes from the weights.
   const [simCfg, setSimCfg] = useState({ seats: 8, picks: 45, seed: Math.floor(Math.random() * 10000) });
-  const [simming, setSimming] = useState(false);
+  const [base, setBase] = useState(null);
+  const [sim, setSim] = useState(null);
+  const [running, setRunning] = useState("");
+  const [from, setFrom] = useState(0);
+  const [live, setLive] = useState(saved.live ?? true);
   const [runs, setRuns] = useState(0);
   const [viewSlot, setViewSlot] = useState(0);
   const [focus, setFocus] = useState(null);
   const [labTuning, setLabTuning] = useState({});  // weights changed in the Lab panel
   const [tunedSeats, setTunedSeats] = useState(null); // null = new weights for every bot
-  const [pools, setPools] = useState([]);
+  const [lanes, setLanes] = useState(null);
+  const [labView, setLabView] = useState(null);
+  const [web, setWeb] = useState(null);
   const cubeCards = useRef(null);          // the resolved cube, to send again if the server forgot the pool
+  const engine = useRef(null);
+  const runId = useRef(0);
+  const simRef = useRef(null);
+  simRef.current = sim;
+  const local = !!src?.local;
 
-  const refreshPools = useCallback(() => api.get("/lab/pools").then(({ data }) => setPools(data.pools || [])).catch(() => {}), []);
+  useEffect(() => { save(STORE, { ...load(STORE, {}), tab, live }); }, [tab, live]);
 
-  // Load a pool: a saved one by key (one read on the server), or build it (CubeCobra cube or VRD).
-  const loadSource = useCallback(async ({ m = mode, id = cubeId, pool = null, refresh = false } = {}) => {
-    setError(""); setSrc(null); setDossier(null); setSel(null); setSim(null); setPrev(null);
+  // The in-browser engine: started once per visit. If it can't start, the server runs the bots.
+  useEffect(() => {
     try {
+      engine.current = startEngine();
+      engine.current.ready.then(() => setEngineState("ready"), () => setEngineState("failed"));
+    } catch { setEngineState("failed"); }
+  }, []);
+
+  const refreshPools = useCallback(() => api.get("/lab/pools").then(({ data }) => { setPools(data.pools || []); return data.pools || []; }).catch(() => { setPools([]); return []; }), []);
+
+  // A saved pool into this browser's engine: its data from this browser if it has the latest build, else
+  // downloaded once. Falls back to the server's copy if the engine can't start.
+  const openPool = useCallback(async (meta) => {
+    try {
+      const { bytes, cached } = await poolBytes(meta, setStep);
+      setStep(cached ? "Opening the pool from this browser…" : "Opening the pool…");
+      await engine.current.ready;
+      setStep("Reading the pool into the bot engine…");
+      const data = await engine.current.call("load", bytes);
+      return { ...data, source: meta.key, label: meta.label, built_at: meta.built_at, partial: meta.partial, vrd: meta.vrd, local: true, cached };
+    } catch (e) {
+      setEngineState("failed");
+      console.warn("Bot Brain: running on the server instead:", e);
+      setStep("Loading the saved pool on the server…");
+      const { data } = await api.post("/lab/source", { pool: meta.key }, { timeout: 60000 });
+      return data;
+    }
+  }, []);
+
+  // Load a pool: a saved one (from this browser or downloaded once), or build it (CubeCobra cube or VRD).
+  const loadSource = useCallback(async ({ m = mode, id = cubeId, pool = null, refresh = false, list = null } = {}) => {
+    setError(""); setSrc(null); setDossier(null); setSel(null); setSim(null); setBase(null); setLanes(null); setWeb(null);
+    runId.current += 1; setRunning("");
+    try {
+      const known = list || pools || await refreshPools();
+      let meta = pool ? known.find((p) => p.key === pool) : (!refresh && known.find((p) => (m === "vrd" ? p.vrd : !p.vrd && p.label === id.trim())));
       let data = null;
-      const saved = pool || (!refresh && pools.find((p) => (m === "vrd" ? p.vrd : !p.vrd && p.label === id.trim()))?.key);
-      if (saved) {
-        setStep("Loading the saved pool…");
-        try { data = (await api.post("/lab/source", { pool: saved }, { timeout: 60000 })).data; }
-        catch (e) { if (e.response?.status !== 404) throw e; }
-      }
-      if (!data) {
+      if (meta) data = await openPool(meta);
+      else {
         let body;
         if (m === "vrd") { setStep("Building the VRD pool (every Vintage-legal card)…"); body = { vrd: true, refresh }; }
         else {
@@ -325,27 +483,32 @@ export default function BotBrain() {
           body = { cards: res.cards, label: id.trim(), refresh };
         }
         data = (await api.post("/lab/source", body, { timeout: 120000 })).data;
-        refreshPools();
+        const fresh = await refreshPools();
+        meta = fresh.find((p) => p.key === data.source);
+        if (meta && engineState !== "failed") data = await openPool(meta);
       }
       const isVrd = !!data.vrd;
       setMode(isVrd ? "vrd" : "cube");
       if (!isVrd && data.label) setCubeId(data.label);
-      save(STORE, { mode: isVrd ? "vrd" : "cube", cubeId: isVrd ? id : data.label || id, pool: data.source });
+      save(STORE, { ...load(STORE, {}), mode: isVrd ? "vrd" : "cube", cubeId: isVrd ? id : data.label || id, pool: data.source });
       setSrc(data);
+      // The weights kept from last time, so the first draft already uses them.
+      const kept = load(TUNING_STORE, {});
+      const t = {};
+      (data.knobs || []).forEach((k) => { if (kept[k.key] != null && Math.abs(kept[k.key] - k.default) > 1e-9) t[k.key] = kept[k.key]; });
+      setLabTuning(t);
       const first = data.summary.connected[0]?.id || data.cards[0]?.id;
       if (first) setSel(first);
     } catch (e) {
       setError(e.message && !e.response ? e.message : stepError(m === "vrd" ? "Couldn't load the VRD pool" : "Couldn't load the cube", e));
     } finally { setStep(""); }
-  }, [mode, cubeId, pools, refreshPools]);
+  }, [mode, cubeId, pools, refreshPools, openPool, engineState]);
 
   useEffect(() => {
-    refreshPools();
-    loadSource(saved.pool ? { pool: saved.pool } : {});
+    refreshPools().then((list) => loadSource(saved.pool && list.some((p) => p.key === saved.pool) ? { pool: saved.pool, list } : { list }));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Calls that need the pool on the server: if it was forgotten (restart), load it again once (the saved
-  // copy first, which is one read, then the cards this page resolved).
+  // Server calls that need the pool on the server (only when the engine runs there).
   const withSource = useCallback(async (fn) => {
     try { return await fn(src.source); } catch (e) {
       if (e.response?.status !== 410) throw e;
@@ -360,16 +523,24 @@ export default function BotBrain() {
     }
   }, [src, mode, cubeId]);
 
+  // One call to the bots: in this browser, or on the server.
+  const ask = useCallback((op, body) => {
+    if (local) return engine.current.call(op, body);
+    const path = { card: "/lab/card", view: "/lab/view" }[op];
+    if (!path) return Promise.resolve(null);
+    return withSource((source) => api.post(path, op === "card" ? { source, card: body } : { source, ...body }, { timeout: 60000 })).then(({ data }) => data);
+  }, [local, withSource]);
+
   useEffect(() => {
     if (!src || !sel) return;
     let alive = true;
     setDLoading(true);
-    withSource((source) => api.post("/lab/card", { source, card: sel }))
-      .then(({ data }) => { if (alive) setDossier(data); })
+    ask("card", sel)
+      .then((data) => { if (alive) setDossier(data); })
       .catch((e) => { if (alive) setError(stepError("Couldn't load that card", e)); })
       .finally(() => { if (alive) setDLoading(false); });
     return () => { alive = false; };
-  }, [sel, src?.source]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sel, src?.source, ask]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const byId = useMemo(() => Object.fromEntries((src?.cards || []).map((c) => [c.id, c])), [src]);
   const results = useMemo(() => {
@@ -387,31 +558,86 @@ export default function BotBrain() {
     }, 50);
   };
 
-  // Run the draft, or re-draft from table pick `from` (picks before it are kept) with the Lab's weights.
-  const runDraft = async (from = null) => {
-    setSimming(true); setError("");
-    const fork = from != null && sim;
-    const cfg = fork ? { seats: sim.seats.length, picks: sim.per_seat, seed: sim.seed } : simCfg;
-    const body = { ...cfg, tuning: labTuning, tuned_seats: tunedSeats ? [...tunedSeats] : null, start: fork ? sim.picks.slice(0, from) : [] };
+  // One draft: streamed pick by pick from this browser's engine, or in one go from the server.
+  const draft = useCallback(async (cfg, id, show) => {
+    if (local) {
+      let run = null;
+      await engine.current.run(cfg, (chunk) => {
+        if (id !== runId.current) return;
+        if (chunk.type === "start") run = { order: chunk.order, per_seat: chunk.per_seat, kept: chunk.kept, picks: chunk.picks, seats: null };
+        else run = { ...run, picks: run.picks.concat(chunk.picks), seats: chunk.done ? chunk.seats : null };
+        show(run);
+      }, 4);
+      return run;
+    }
+    const { data } = await withSource((source) => api.post("/lab/simulate", { source, ...cfg }, { timeout: 180000 }));
+    if (id === runId.current) show(data);
+    return data;
+  }, [local, withSource]);
+
+  // Draft with the current settings: the default-weights draft first (once per seed), then, if the Lab has
+  // changed weights, the same draft re-run with them from pick `from`.
+  const go = useCallback(async (cfgIn = null) => {
+    if (!src) return;
+    const id = ++runId.current;
+    const cfg = { ...(cfgIn || (base ? { seats: base.seats_n, picks: base.picks_n, seed: base.seed } : simCfg)), pool: src.source };
+    setError("");
+    const started = performance.now();
     try {
-      const { data } = await withSource((source) => api.post("/lab/simulate", { source, ...body }, { timeout: 180000 }));
-      const sameDraft = sim && sim.seed === cfg.seed && sim.order.length === data.order.length;
-      setPrev(sameDraft ? sim : null);
-      setSim({ ...data, seed: cfg.seed, tuning: body.tuning, tuned_seats: body.tuned_seats });
-      setRuns((r) => r + 1);
-      const at = fork ? Math.min(from, data.picks.length - 1) : 0;
-      setFocus({ ...slotFocus(data.order, at), at });
-    } catch (e) { setError(stepError("Couldn't run the draft", e)); } finally { setSimming(false); }
-  };
-  const labFetch = useCallback((body) => withSource((source) => api.post("/lab/view", { source, order: sim.order, picks: sim.picks, ...body }, { timeout: 60000 })), [withSource, sim]);
+      let b = base;
+      if (!sameCfg(b?.cfg, cfg)) {
+        setRunning("Drafting with the current weights…");
+        setSim(null);
+        const r = await draft({ seats: cfg.seats, picks: cfg.picks, seed: cfg.seed }, id, (run) => setSim({ ...run, tuning: {}, from: 0 }));
+        if (id !== runId.current || !r) return;
+        b = { ...r, cfg, seed: cfg.seed, seats_n: cfg.seats, picks_n: cfg.picks };
+        setBase(b);
+        setSim({ ...r, tuning: {}, from: 0, seconds: (performance.now() - started) / 1000 });
+        setFocus({ ...slotFocus(r.order, Math.min(viewSlot, r.picks.length - 1)), at: viewSlot });
+      }
+      if (!Object.keys(labTuning).length) {
+        setSim({ ...b, tuning: {}, from: 0 }); setRunning(""); setRuns((n) => n + 1);
+        return;
+      }
+      const at = Math.min(from, b.picks.length);
+      setRunning(`Re-drafting from pick ${at + 1} with your weights…`);
+      const t0 = performance.now();
+      const body = { seats: cfg.seats, picks: cfg.picks, seed: cfg.seed, tuning: labTuning, tuned_seats: tunedSeats ? [...tunedSeats] : null, start: b.picks.slice(0, at) };
+      const r = await draft(body, id, (run) => setSim({ ...run, tuning: labTuning, tuned_seats: body.tuned_seats, from: at }));
+      if (id !== runId.current || !r) return;
+      setSim({ ...r, tuning: labTuning, tuned_seats: body.tuned_seats, from: at, seconds: (performance.now() - t0) / 1000 });
+      setRunning(""); setRuns((n) => n + 1);
+    } catch (e) {
+      if (id === runId.current) { setError(stepError("Couldn't run the draft", e)); setRunning(""); }
+    }
+  }, [src, base, simCfg, labTuning, tunedSeats, from, draft, viewSlot]);
+
+  const stop = () => { runId.current += 1; setRunning(""); if (local) engine.current.stop(); };
+
+  // Live: whenever the weights, the seats they apply to or the starting pick change, re-draft (after the
+  // slider settles).
+  const tuningKey = JSON.stringify([labTuning, tunedSeats ? [...tunedSeats].sort() : null, from]);
+  const lastKey = useRef(tuningKey);
+  useEffect(() => {
+    if (!live || !base || tuningKey === lastKey.current) return undefined;
+    const t = setTimeout(() => { lastKey.current = tuningKey; go(); }, local ? 450 : 900);
+    return () => clearTimeout(t);
+  }, [tuningKey, live, base, go, local]);
+  useEffect(() => { lastKey.current = tuningKey; }, [runs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const labFetch = useCallback((body) => {
+    const s = simRef.current;
+    return ask("view", { order: s.order, picks: s.picks, ...body }).then((data) => ({ data }));
+  }, [ask]);
   const simSeats = useMemo(() => Array.from({ length: simCfg.seats }, (_, i) => ({ index: i, player_name: `Bot ${i + 1}` })), [simCfg.seats]);
-  const simSeatsUsed = useMemo(() => (sim ? Array.from(new Set(sim.order)).sort((a, b) => a - b).map((i) => ({ index: i, player_name: `Bot ${i + 1}` })) : simSeats), [sim, simSeats]);
+  const simSeatsUsed = useMemo(() => (sim ? Array.from(new Set(sim.order)).sort((a, b) => a - b).map((i) => ({ index: i, player_name: `Bot ${i + 1}` })) : simSeats), [sim?.order, simSeats]); // eslint-disable-line react-hooks/exhaustive-deps
+  const tunedRun = sim && base && sim !== base && Object.keys(sim.tuning || {}).length > 0;
   const changed = useMemo(() => {
     const out = new Set();
-    if (sim && prev) sim.picks.forEach((p, i) => { if (prev.picks[i]?.card_id !== p.card_id) out.add(i); });
+    if (tunedRun) sim.picks.forEach((p, i) => { if (base.picks[i]?.card_id !== p.card_id) out.add(i); });
     return out;
-  }, [sim, prev]);
-  const goSlot = (slot) => { if (!sim) return; const at = Math.max(0, Math.min(slot, sim.picks.length - 1)); setFocus({ ...slotFocus(sim.order, at), at }); };
+  }, [sim, base, tunedRun]);
+  const goSlot = (slot) => { if (!sim) return; const at = Math.max(0, Math.min(slot, sim.order.length - 1)); setFocus({ ...slotFocus(sim.order, at), at }); };
   const viewPick = sim?.picks[viewSlot];
   const changedCount = Object.keys(labTuning).length;
   const toggleSeat = (i) => setTunedSeats((t) => {
@@ -419,6 +645,27 @@ export default function BotBrain() {
     if (next.has(i)) next.delete(i); else next.add(i);
     return next.size ? next : null;
   });
+
+  // Lanes and the synergy web follow the pick shown (in-browser engine only: they're cheap there).
+  const doneKey = sim?.seats ? runs : -1;
+  useEffect(() => {
+    if (!local || !sim || !sim.seats) return;
+    engine.current.call("lanes", { order: sim.order, picks: sim.picks, slot: viewSlot }).then(setLanes).catch(() => setLanes(null));
+  }, [viewSlot, doneKey, local]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!local || !labView) { setWeb(null); return; }
+    const cands = labView.rows.slice(0, 6).map((r) => r.card);
+    if (labView.took && !cands.includes(labView.took.card)) cands.push(labView.took.card);
+    engine.current.call("web", { owned: labView.seat_info.owned, candidates: cands }).then(setWeb).catch(() => setWeb(null));
+  }, [labView, local]);
+  const webScores = useMemo(() => {
+    const out = {};
+    (labView?.rows || []).forEach((r) => { out[r.card] = r.score; });
+    if (labView?.took) out[labView.took.card] = labView.took.score;
+    return out;
+  }, [labView]);
+
+  const where = local ? (src.cached ? "This browser · pool kept here" : "This browser") : engineState === "starting" ? "Server (the in-browser engine is starting)" : "Server";
 
   return (
     <div className="min-h-screen bg-[#060a14] text-slate-100">
@@ -433,14 +680,14 @@ export default function BotBrain() {
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="font-display text-3xl font-bold flex items-center gap-2"><Brain className="w-7 h-7 text-amber-400" /> Bot Brain</h1>
-            <p className="text-sm text-slate-400 mt-1 max-w-2xl">How the draft bots see a card pool: look up any card, or run an all-bot draft and step through what each bot was thinking at every pick.</p>
+            <p className="text-sm text-slate-400 mt-1 max-w-2xl">How the draft bots see a card pool: look up any card, or run an all-bot draft, turn the weights and watch the draft change.</p>
           </div>
           <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); loadSource({ m: mode, id: cubeId }); }} data-testid="brain-source">
-            {pools.length > 0 && <>
+            {pools?.length > 0 && <>
               <label htmlFor="brain-pool" className="sr-only">Saved pools</label>
               <select id="brain-pool" value={pools.some((p) => p.key === src?.source) ? src.source : ""} data-testid="brain-pool"
                 onChange={(e) => { if (e.target.value) loadSource({ pool: e.target.value }); }}
-                className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-sm max-w-[220px]" title="Pools built before load instantly, with no CubeCobra or Scryfall lookups">
+                className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-sm max-w-[220px]" title="Pools built before: downloaded once, then kept in this browser">
                 <option value="">Saved pools…</option>
                 {pools.map((p) => <option key={p.key} value={p.key}>{PRESETS.find(([, v]) => v === p.label)?.[0] || p.label} · {p.cards} cards{p.partial ? " (partial)" : ""}</option>)}
               </select>
@@ -478,6 +725,8 @@ export default function BotBrain() {
               <span><span className="text-slate-100 font-semibold tabular-nums">{src.summary.with_partners}</span> with CubeCobra links</span>
               <span><span className="text-slate-100 font-semibold tabular-nums">{src.summary.combos}</span> combos</span>
               {src.label && <span title={src.built_at ? `Built ${new Date(src.built_at).toLocaleString()}` : undefined}>Saved as <span className="text-slate-200">{PRESETS.find(([, v]) => v === src.label)?.[0] || src.label}</span>{src.built_at && <> · built {new Date(src.built_at).toLocaleDateString()}</>}</span>}
+              <span className={`flex items-center gap-1 ${local ? "text-emerald-400" : "text-slate-400"}`} title={local ? "The bots run in this browser: turning knobs and re-drafting don't call the server" : "The bots run on the server"} data-testid="brain-where">
+                {local ? <Cpu className="w-3.5 h-3.5" /> : <Server className="w-3.5 h-3.5" />} {where}</span>
               {src.partial && <span className="text-amber-300">Some CubeCobra data was still loading when this pool was built{src.vrd ? " (1,500 card pages, about 10–20 minutes the first time)" : ""}; rebuild it later for the full picture.</span>}
               <button type="button" onClick={() => loadSource({ m: src.vrd ? "vrd" : "cube", id: cubeId, refresh: true })} data-testid="brain-rebuild"
                 title="Read the cube list, CubeCobra links and combos again, and save the new pool"
@@ -521,7 +770,7 @@ export default function BotBrain() {
               </div>
             ) : (
               <div className="space-y-4">
-                <form className="flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); runDraft(null); }} data-testid="brain-sim-form">
+                <form className="flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); go({ ...simCfg }); }} data-testid="brain-sim-form">
                   <label className="text-sm"><span className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Bots</span>
                     <select id="brain-seats" value={simCfg.seats} onChange={(e) => setSimCfg((c) => ({ ...c, seats: Number(e.target.value) }))} className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5">
                       {Array.from({ length: 11 }, (_, i) => i + 2).map((n) => <option key={n} value={n}>{n}</option>)}
@@ -531,14 +780,14 @@ export default function BotBrain() {
                   <label className="text-sm"><span className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Seed</span>
                     <span className="flex gap-1"><input id="brain-seed" type="number" value={simCfg.seed} onChange={(e) => setSimCfg((c) => ({ ...c, seed: Number(e.target.value) || 0 }))} className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 w-24" />
                       <button type="button" onClick={() => setSimCfg((c) => ({ ...c, seed: Math.floor(Math.random() * 10000) }))} className="px-2 rounded-lg border border-slate-700 text-slate-300 hover:text-amber-300" aria-label="New random seed"><Dices className="w-4 h-4" /></button></span></label>
-                  <button type="submit" disabled={simming} className="px-4 py-2 rounded-lg bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold text-sm flex items-center gap-2 disabled:opacity-60" data-testid="brain-run">
-                    {simming ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />} {sim ? "Run again" : "Run draft"}</button>
-                  <p className="text-xs text-slate-500 basis-full sm:basis-auto sm:flex-1">The bots draft with the weights set in the panel below. Same seed and weights give the same draft, so you can rewind to any pick, change weights and re-draft from there. {mode === "vrd" && "VRD drafts take longer: the pool is three times the size of a cube."}</p>
+                  <button type="submit" className="px-4 py-2 rounded-lg bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold text-sm flex items-center gap-2" data-testid="brain-run">
+                    <Play className="w-4 h-4" /> {base ? "New draft" : "Run draft"}</button>
+                  {running && <button type="button" onClick={stop} className="px-3 py-2 rounded-lg border border-slate-700 text-sm text-slate-200 hover:text-rose-300 flex items-center gap-1.5" data-testid="brain-stop"><Square className="w-3.5 h-3.5" /> Stop</button>}
+                  <p className="text-xs text-slate-500 basis-full sm:basis-auto sm:flex-1">Same seed, same draft: every pick that changes after you move a weight is the weights' doing. {local ? "The bots draft in this browser; picks appear as they're made." : "The bots draft on the server; this can take a while on staging."}</p>
                 </form>
-                {simming && <p className="text-sm text-slate-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin text-amber-400" /> The bots are drafting… usually a few seconds.</p>}
+                {running && <p className="text-sm text-slate-300 flex items-center gap-2" data-testid="brain-running"><Loader2 className="w-4 h-4 animate-spin text-amber-400" /> {running} {sim && <span className="text-slate-500 tabular-nums">{sim.picks.length} of {sim.order.length} picks</span>}</p>}
                 {sim ? (
                   <>
-                    {/* Step through the table, rewind and re-draft */}
                     <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-3 space-y-3" data-testid="brain-replay">
                       <div className="flex flex-wrap items-center gap-2">
                         <div className="flex items-center gap-1">
@@ -547,16 +796,21 @@ export default function BotBrain() {
                             <button key={label} type="button" onClick={fn} aria-label={label} title={label} className="p-1.5 rounded border border-slate-700 text-slate-300 hover:text-amber-300"><Icon className="w-4 h-4" /></button>
                           ))}
                         </div>
-                        <span className="text-sm text-slate-300 tabular-nums">Table pick <span className="text-slate-100 font-semibold">{viewSlot + 1}</span> of {sim.picks.length}
-                          {viewPick && <> · Bot {viewPick.seat_index + 1} took <span className="text-slate-100">{shortName(byId[viewPick.card_id]?.name)}</span></>}</span>
-                        <span className="text-xs text-slate-500 ml-auto tabular-nums">{sim.seconds != null && `${sim.seconds}s`}{sim.kept > 0 && ` · first ${sim.kept} picks kept`}</span>
+                        <span className="text-sm text-slate-300 tabular-nums">Table pick <span className="text-slate-100 font-semibold">{viewSlot + 1}</span> of {sim.order.length}
+                          {viewPick && <> · Bot {viewPick.seat_index + 1} took <span className="text-slate-100">{shortName(byId[viewPick.card_id]?.name)}</span></>}
+                          {viewPick && changed.has(viewSlot) && base?.picks[viewSlot] && <span className="text-sky-300"> (was {shortName(byId[base.picks[viewSlot].card_id]?.name)})</span>}</span>
+                        <span className="text-xs text-slate-500 ml-auto tabular-nums">{sim.seconds != null && `${sim.seconds.toFixed(1)}s`}</span>
                       </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button type="button" disabled={simming} onClick={() => runDraft(viewSlot)} data-testid="brain-redraft"
-                          className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold text-sm flex items-center gap-1.5 disabled:opacity-60">
-                          <Undo2 className="w-4 h-4" /> Re-draft from pick {viewSlot + 1}</button>
-                        <button type="button" disabled={simming} onClick={() => runDraft(0)} className="px-3 py-1.5 rounded-lg border border-slate-700 text-sm text-slate-200 hover:text-amber-300 disabled:opacity-60">Re-draft all (same seed)</button>
-                        <span className="text-xs text-slate-400">{changedCount ? `${changedCount} weight${changedCount === 1 ? "" : "s"} changed in the panel below` : "Using the current weights: change some below first"}</span>
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+                        <label className="flex items-center gap-2 cursor-pointer" title="Re-draft by itself a moment after you move a weight">
+                          <input type="checkbox" checked={live} onChange={(e) => setLive(e.target.checked)} className="accent-amber-400" data-testid="brain-live" />
+                          <Zap className="w-4 h-4 text-amber-400" /> Live: re-draft when a weight moves</label>
+                        {!live && <button type="button" onClick={() => go()} disabled={!!running} className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold text-sm disabled:opacity-60" data-testid="brain-apply">Re-draft with these weights</button>}
+                        <span className="flex items-center gap-2">New weights from table pick
+                          <span className="tabular-nums text-slate-100 font-semibold">{from + 1}</span>
+                          <button type="button" onClick={() => setFrom(viewSlot)} disabled={from === viewSlot} className="text-xs px-2 py-0.5 rounded border border-slate-700 text-slate-300 hover:text-amber-300 disabled:opacity-40" data-testid="brain-from-here">From this pick</button>
+                          <button type="button" onClick={() => setFrom(0)} disabled={from === 0} className="text-xs px-2 py-0.5 rounded border border-slate-700 text-slate-300 hover:text-amber-300 disabled:opacity-40">From the start</button></span>
+                        <span className="text-xs text-slate-400">{changedCount ? `${changedCount} weight${changedCount === 1 ? "" : "s"} changed in the panel below` : "Move a weight in the panel below to see the draft change"}</span>
                       </div>
                       <div className="flex flex-wrap items-center gap-1.5 text-xs">
                         <span className="text-slate-500 mr-1">New weights for:</span>
@@ -567,25 +821,34 @@ export default function BotBrain() {
                         ))}
                         <span className="text-slate-500 ml-1">Pick a few seats to pit new weights against the current ones in the same draft.</span>
                       </div>
-                      {prev && (
+                      {tunedRun && (
                         <p className="text-sm flex items-center gap-2 text-sky-300" data-testid="brain-diff"><GitCompare className="w-4 h-4" />
-                          {changed.size ? `${changed.size} of ${sim.picks.length - sim.kept} re-drafted picks changed (outlined in blue).` : "Same picks as before: these weights change nothing from here."}
-                          <button type="button" onClick={() => setPrev(null)} className="text-xs text-slate-400 hover:text-white underline">clear</button></p>
+                          {changed.size ? `${changed.size} of ${sim.picks.length - sim.from} picks from pick ${sim.from + 1} differ from the current weights' draft (outlined in blue).` : "Same picks as with the current weights so far."}</p>
                       )}
                     </div>
 
-                    <DraftBoard sim={sim} byId={byId} seats={simSeatsUsed} viewSlot={viewSlot} changed={changed} kept={sim.kept} onPick={goSlot} />
+                    <DraftBoard sim={sim} base={tunedRun ? base : null} byId={byId} seats={simSeatsUsed} viewSlot={viewSlot} changed={changed} kept={sim.from || 0} onPick={goSlot} />
 
-                    <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3" data-testid="brain-sim-seats">
-                      {sim.seats.map((s) => (
-                        <SeatSummary key={s.seat} s={s} before={prev?.seats.find((x) => x.seat === s.seat)} name={`Bot ${s.seat + 1}`}
-                          tuned={Object.keys(sim.tuning || {}).length > 0 && (!sim.tuned_seats || sim.tuned_seats.includes(s.seat))} />
-                      ))}
-                    </div>
-                    <BotLab inline fetchView={labFetch} cubeById={byId} seats={simSeatsUsed} startSeat={0} reloadKey={runs} onClose={() => {}}
-                      focus={focus} onSlot={setViewSlot} onTuning={setLabTuning} />
+                    {local && <LanesStrip lanes={lanes} focusSeat={sim.order[viewSlot]} onSeat={(s) => {
+                      const slot = sim.order.findIndex((x, i) => i >= viewSlot && x === s);
+                      goSlot(slot >= 0 ? slot : viewSlot);
+                    }} />}
+
+                    {sim.seats ? (
+                      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3" data-testid="brain-sim-seats">
+                        {sim.seats.map((s) => (
+                          <SeatSummary key={s.seat} s={s} before={tunedRun ? base.seats.find((x) => x.seat === s.seat) : null} name={`Bot ${s.seat + 1}`}
+                            tuned={tunedRun && (!sim.tuned_seats || sim.tuned_seats.includes(s.seat))} />
+                        ))}
+                      </div>
+                    ) : <p className="text-sm text-slate-500">Seat summaries appear when the draft finishes.</p>}
+
+                    <BotLab inline fetchView={labFetch} cubeById={byId} seats={simSeatsUsed} startSeat={null} reloadKey={runs} onClose={() => {}}
+                      focus={focus} onSlot={setViewSlot} onTuning={setLabTuning} onView={setLabView} busy={running ? "re-drafting…" : ""} />
+
+                    {local && web && labView && <SeatWeb web={web} seatName={`Bot ${labView.seat + 1}`} scores={webScores} took={labView.took?.card} onPick={pick} />}
                   </>
-                ) : !simming && <p className="text-sm text-slate-500">Run a draft to step through the bots' picks.</p>}
+                ) : !running && <p className="text-sm text-slate-500">Run a draft to step through the bots' picks.</p>}
               </div>
             )}
           </>

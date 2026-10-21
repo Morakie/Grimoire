@@ -34,7 +34,7 @@ from draftbot.cardstats import draft_stats, ensure_stats
 from draftbot.report import build_report
 from draftbot.personas import Persona
 from draftbot.engine import score_pool, suggest_picks
-from draftbot.lab import card_dossier, clean_tuning, knob_list, lab_view, pick_slot, simulate, source_summary
+from draftbot.lab import card_dossier, clean_tuning, knob_list, lab_view, pick_slot, simulate, source_payload
 from draftbot.deckbuild import suggest_deck
 from draftbot.packbot import choose_from_pack, rank_pack
 import packdraft as pd
@@ -2583,14 +2583,45 @@ async def lab_source(body: LabSourceInput):
             await db.lab_pools.update_one({"key": key}, {"$set": {"label": src["label"]}})
         _lab_remember(key, src)
     attach_combos(src["index"], src["combos"])
-    summary = await run_in_threadpool(source_summary, src["index"], src["combos"])
-    ix = src["index"]
-    cards = [{"id": c["id"], "name": c["name"], "image": c.get("image"), "art_crop": c.get("art_crop"),
-              "elo": round(ix[c["id"]].elo), "colors": "".join(x for x in "WUBRG" if x in ix[c["id"]].need),
-              "land": ix[c["id"]].is_land}
-             for c in src["cards"] if c["id"] in ix]
+    payload = await run_in_threadpool(source_payload, src["index"], src["combos"], src["cards"])
     return fast_json({"source": key, "vrd": src["vrd"], "partial": src["partial"], "label": src.get("label", ""),
-                      "built_at": src.get("built_at", ""), "summary": summary, "cards": cards, "knobs": knob_list()})
+                      "built_at": src.get("built_at", ""), **payload})
+
+
+@api_router.get("/lab/pool-export")
+async def lab_pool_export(key: str):
+    """A saved pool as one gzip'd JSON file ({cards, stats, combos}) for the Bot Brain page to keep in the
+    browser and run the bots locally. One Mongo read; the page asks again only when the pool is rebuilt."""
+    doc = await db.lab_pools.find_one({"key": key}, {"_id": 0, "blob": 1, "built_at": 1, "label": 1})
+    blob = doc.get("blob") if doc else None
+    built_at = (doc or {}).get("built_at", "")
+    if not blob:
+        src = _LAB_SOURCES.get(key)        # built but too big to save: send the copy in memory
+        if not src:
+            raise HTTPException(status_code=404, detail="That saved pool is gone; load the cube again")
+        import gzip
+        blob = await run_in_threadpool(lambda: gzip.compress(json.dumps(
+            {"cards": src["cards"], "stats": src["stats"], "combos": src["combo_dicts"]}, separators=(",", ":")).encode(), 6))
+        built_at = src.get("built_at", "")
+    return Response(content=bytes(blob), media_type="application/octet-stream",
+                    headers={"X-Built-At": built_at, "Access-Control-Expose-Headers": "X-Built-At",
+                             "Cache-Control": "no-store"})
+
+
+_ENGINE_FILES: Optional[dict] = None
+
+
+@api_router.get("/lab/engine")
+async def lab_engine():
+    """The bot engine's Python files, for the Bot Brain page to run the same bots in the browser.
+    `version` changes whenever any file does (the page caches the files under it)."""
+    global _ENGINE_FILES
+    if _ENGINE_FILES is None:
+        folder = ROOT_DIR / "draftbot"
+        files = {f.name: f.read_text(encoding="utf-8") for f in sorted(folder.glob("*.py"))}
+        version = hashlib.sha1("".join(k + v for k, v in files.items()).encode()).hexdigest()[:12]
+        _ENGINE_FILES = {"version": version, "files": files}
+    return fast_json(_ENGINE_FILES)
 
 
 @api_router.post("/lab/card")

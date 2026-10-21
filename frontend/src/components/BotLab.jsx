@@ -129,7 +129,9 @@ function Knob({ k, value, onChange }) {
 // draft's /lab/view). `inline` renders the panel in the page instead of as a pop-up; `reloadKey` forces a reload.
 // `focus` ({seat, pickNo}) jumps to a pick from outside; `onSlot` hears which table pick is shown and
 // `onTuning` the weights changed from the current ones (Bot Brain uses them to re-draft).
-export default function BotLab({ fetchView, cubeById, seats, startSeat, onClose, inline = false, reloadKey = 0, focus = null, onSlot, onTuning }) {
+// `onView` hears each view loaded (Bot Brain draws the seat's synergy web from it); `busy` adds a note while
+// the page re-drafts.
+export default function BotLab({ fetchView, cubeById, seats, startSeat, onClose, inline = false, reloadKey = 0, focus = null, onSlot, onTuning, onView, busy = "" }) {
   const [seat, setSeat] = useState(startSeat ?? seats[0]?.index ?? 0);
   const [pickNo, setPickNo] = useState(null);           // null = the seat's latest pick
   const [tuning, setTuning] = useState(loadTuning);
@@ -166,6 +168,7 @@ export default function BotLab({ fetchView, cubeById, seats, startSeat, onClose,
   useEffect(() => { if (startSeat != null) { setSeat(startSeat); setPickNo(null); } }, [startSeat, reloadKey]);
   useEffect(() => { if (focus) { setSeat(focus.seat); setPickNo(focus.pickNo); } }, [focus]);
   useEffect(() => { if (data && onSlot) onSlot(data.slot); }, [data, onSlot]);
+  useEffect(() => { if (data && onView) onView(data); }, [data, onView]);
   useEffect(() => { if (onTuning) onTuning(effective); }, [effective, onTuning]);
   useEffect(() => { saveTuning(tuning); }, [tuning]);
   useEffect(() => { setOpen(null); }, [seat, pickNo]);
@@ -222,6 +225,7 @@ export default function BotLab({ fetchView, cubeById, seats, startSeat, onClose,
             <span className="text-sm text-slate-300 tabular-nums whitespace-nowrap">{ordinal(curNo)} pick{data && <span className="text-slate-500 hidden sm:inline"> · table pick {data.slot + 1}</span>}</span>
           </div>
           {loading && <Loader2 className="w-4 h-4 animate-spin text-amber-400" aria-label="Loading" />}
+          {busy && <span className="text-xs text-sky-300">{busy}</span>}
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto lg:overflow-hidden lg:grid lg:grid-cols-[minmax(0,1fr)_330px]">
@@ -285,7 +289,7 @@ export default function BotLab({ fetchView, cubeById, seats, startSeat, onClose,
             {copied && (copied === "Copied"
               ? <p className="text-xs text-emerald-400">Copied. Paste it into a message to change the bots for real.</p>
               : <textarea readOnly value={copied} onFocus={(e) => e.target.select()} className="w-full h-24 text-xs bg-slate-900 border border-slate-700 rounded p-2 text-slate-200" />)}
-            <p className="text-xs text-slate-500">Arrows on each card show how far it moved compared with the current weights. The tick under a slider marks the current value.</p>
+            <p className="text-xs text-slate-500">Arrows on each card show how far it moved compared with the current (default) weights. The tick under a slider marks the current value.</p>
             <div className={`${showKnobs ? "block" : "hidden"} lg:block space-y-5`}>
               {Object.entries(groups).map(([g, ks]) => (
                 <fieldset key={g} className="space-y-3">
