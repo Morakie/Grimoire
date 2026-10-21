@@ -1,6 +1,9 @@
 # Working on Grimoire
 
-Notes for anyone (human or AI) changing this codebase. Start with the [README](README.md).
+Notes for anyone (human or AI) changing this codebase. Start with the [README](README.md), then
+[docs/project-notes/](docs/project-notes/README.md): environments and how to ship, the owner's decisions, how the
+draft bots are meant to draft, the bot tuning tools and the roadmap. Keep those notes current when you change
+something they describe.
 
 ## Architecture
 
