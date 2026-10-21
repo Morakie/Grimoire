@@ -134,6 +134,10 @@ TUNING: Dict[str, float] = {
     # lean is a small bonus on that deck type's key and member cards; it fades over the entry window, as soon as
     # a rival is in that deck type (gone with two), and once the bot is clearly building something else.
     "lean_weight": 0.15,
+    # off-colour cards that fit the plan: a committed bot can still take a card of one new colour when it belongs
+    # to its deck type, links to its cards or completes its combos; plan_colour is how much of a full colour fit
+    # that gives (rating alone never does)
+    "plan_colour": 0.75,
     # Conspiracy cards (Power Play, Advantageous Proclamation) only do something in a Conspiracy draft; the group
     # doesn't play them, so they keep this share of their score (the bots still know what they are: set it to 1
     # to draft them by rating again)
@@ -1011,6 +1015,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     # focuses on it nor fights for its contested cards.
     shared = shared_types(ctx, deck_eff, others)
     entry = max(0.0, 1.0 - t / k("entry_window"))
+    in_types = [(dt, min(1.0, e)) for dt, e in deck_eff.items() if e >= k("deck_seat")]   # deck types the bot is in
     lean = p.lean if p.lean in deck_mine else ""
     if lean:
         elsewhere = max((v for dt, v in deck_mine.items() if dt != lean), default=0.0)
@@ -1083,8 +1088,8 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
             power *= (damp + (1 - damp) * max(min(1.0, 2 * t), run)) * (1 + k("run_boost") * run)
         t_rating = w_power * power
         finishes = bool(card.combos) and completes_combo(card, owned, ctx.combos, k("combo_max_pieces"))
-        t_combo = (max(w_combo, k("combo_finish_weight")) if finishes else w_combo) * combo_value(
-            card, owned, remaining, ctx.combos, fit_of, k("combo_rest_share"), k("combo_max_pieces"))
+        cv = combo_value(card, owned, remaining, ctx.combos, fit_of, k("combo_rest_share"), k("combo_max_pieces"))
+        t_combo = (max(w_combo, k("combo_finish_weight")) if finishes else w_combo) * cv
         t_plan = package_value(card, None, strengths) + k("plan_weight") * plan_ramp * plan_value(card, fill, plans)
         if shared:
             # Fighting a rival for a deck type: its key and member cards come first.
@@ -1093,7 +1098,8 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
                  for dt, s in shared.items()), default=0.0)
         if lean:
             t_plan += lean_w * (1.0 if lean in card.key_of else min(1.0, card.deck.get(lean, 0.0) / 0.5))
-        t_partner = k("partner_weight") * p.w("combo") * partner_value(card, partners_from, fit_of, k("drafted_with_share"), k("partner_full"))
+        pv = partner_value(card, partners_from, fit_of, k("drafted_with_share"), k("partner_full"))
+        t_partner = k("partner_weight") * p.w("combo") * pv
         if card.is_fixing:
             t_partner *= k("fixing_partner_share")
         t_needs = w_needs * needs_value(card, mine, p, counts)
@@ -1109,10 +1115,21 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
                     and splash_fixing < k("splash_fixing_target"):
                 t_other += k("splash_fixing_bonus")
         base = t_rating + t_combo + t_plan + t_partner + t_needs + t_other + t_hate
-        lane_mult = floor + (1 - floor) * fit
+        # Expanding beyond the committed colours: a card needing one new colour (single pip) counts as fitting
+        # as far as it is ON PLAN for this bot (a key/member of a deck type it is in, linked to its cards, or a
+        # piece of a combo it has started), never for its rating alone.
+        plan_fit = 0.0
+        if pair and fit < 1.0 and not card.is_land and card.need and len(card.need - pair) == 1 \
+                and not (card.need - pair) & card.heavy:
+            deck_fit = max((e * (1.0 if dt in card.key_of else min(1.0, card.deck.get(dt, 0.0) / 0.5))
+                            for dt, e in in_types), default=0.0)
+            plan_fit = k("plan_colour") * max(deck_fit, pv, min(1.0, cv / 0.5))
+        lane_mult = floor + (1 - floor) * max(fit, plan_fit)
         if card.conspiracy:
             lane_mult *= k("conspiracy_value")
-        info = {"fit": round(fit, 2)}
+        info = {"fit": round(max(fit, plan_fit), 2)}
+        if plan_fit > fit:
+            info["on_plan"] = round(plan_fit, 2)
         if d_mult < 1.0:
             info["deck"] = round(d_mult, 2)
         if sat < 1.0:

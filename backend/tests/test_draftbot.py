@@ -931,3 +931,20 @@ def test_bots_skip_conspiracy_cards():
     ctx.index = idx
     scores = {c: sc for sc, c, _ in score_pool(ctx)}
     assert scores["pp"] == 0.0 and max(scores.values()) > 0.5
+
+
+def test_committed_bot_takes_off_colour_cards_only_when_on_plan():
+    """A committed blue-red bot values a white card linked to its cards far above an unlinked, higher-rated
+    white card: it can expand into a colour for synergy, never for rating alone."""
+    cube = synthetic_cube() + [
+        card("linked", "Linked white card", "{1}{W}", 2, "Creature — Test", "", "W", 1500),
+        card("bomb", "Unlinked white bomb", "{1}{W}", 2, "Creature — Test", "", "W", 1800),
+    ]
+    mine = [f"U{i}" for i in range(6)] + [f"R{i}" for i in range(5)]
+    stats = {"partners": {"linked": {m: 1.0 for m in mine[:4]}}}
+    idx = build_card_index(cube, stats)
+    ctx = _two_seat_ctx(cube, [], mine, [], explain=True)
+    ctx.index = idx
+    rows = {c: (sc, i) for sc, c, i in score_pool(ctx)}
+    assert rows["linked"][0] > rows["bomb"][0] * 2
+    assert rows["linked"][1].get("on_plan") and not rows["bomb"][1].get("on_plan")
