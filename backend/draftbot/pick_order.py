@@ -1243,7 +1243,7 @@ def lsv_rounds(drafts: Iterable[dict], exclude: Optional[str] = None) -> Dict[st
         seen = {}
         for i, (_, card) in enumerate(d["picks"]):
             if card != "?":
-                seen.setdefault(_key(card), i // n + 1)
+                seen.setdefault(_key(card), i / n + 1)       # fractional, as in the VRD tables
         taken.append((seen, len(d["picks"]) // n))
     names = {c for seen, _ in taken for c in seen}
     return {c: [(seen.get(c), rounds) for seen, rounds in taken] for c in names}
