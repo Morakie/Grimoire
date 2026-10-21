@@ -42,6 +42,7 @@ TUNING: Dict[str, float] = {
                                 # per bot and moved green from 1.0 to 1.5 seats per table, deck Elo +3)
     "flex_floor": 0.9,          # off-colour cards keep this share of their value while flexible...
     "committed_floor": 0.1,     # ...and this share once committed
+    "open_settle": 10,          # coloured spells owned by which table signals stop counting (they fade from commit_start)
     "openness_weight": 5.0,     # colour signals from the table (early picks only): what's left in each colour and
                                 # how many rivals are in it, so an under-drafted colour (green) gets picked up
     "rival_committed_floor": 0.3,  # how much a committed rival still wants an off-colour card (float risk);
@@ -928,7 +929,7 @@ def colour_state(ctx: BotContext, mine: List[CardInfo], n: int, rivals: List[int
     t_open = 1 - min(1.0, n / max(ctx.picks_per_seat, 1)) * 1.6
     # Table signals matter while the bot is open and fade as it commits: six blue and six red cards stay
     # blue-red however open black looks.
-    settled = min(1.0, max(0.0, (col - k("commit_start")) / max(1.0, k("commit_pick") - k("commit_start"))))
+    settled = min(1.0, max(0.0, (col - k("commit_start")) / max(1.0, k("open_settle") - k("commit_start"))))
     open_by_colour = openness(ctx, rivals)
     prior = {lane: k("openness_weight") * max(t_open, 0.0) * (1.0 - settled) * ctx.persona.w("openness")
              * sum(open_by_colour[c] for c in lane) / len(lane) for lane in LANES}
