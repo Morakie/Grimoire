@@ -32,6 +32,7 @@ Paraphrased notes on each are in the claude.ai Project ("lsv-roto-principles", "
 | P19 | Build-arounds (Academy, Saga, Opal, LED, Flash) are strong early picks that plant a flag; the "only in some decks" discount applies once committed elsewhere | LSV's tables; replay | narrow/key floors grow with commitment |
 | P20 | Fetchlands fit almost any deck and go early | LSV's tables, VRD | `fetch_fit` |
 | P21 | LSV's drafts are the benchmark: reconstructed picks must stay valid | `lsv_drafts.py`, `benchmark.py` | `check_orders` |
+| P22 | Pick values follow LSV's tables first, then the VRD sheets, then the owner's group; an expert's early pick only counts in a deck that plays the card (Balance early, but not for a blue-black seat) | owner (2026-10-21) | `pick_order.combined_order` (`lsv_source` 24, `vrd_source` 1, `group_source` 0.2) x colour and plan fit |
 
 ## Changed from the owner's earlier rules (2026-10-21)
 
@@ -39,3 +40,5 @@ The owner asked to work from scratch and let expert drafts override earlier inst
 - "Narrow cards wait until the bot is in a deck that uses them" now applies only once a bot has committed
   elsewhere (P19): experts take build-arounds early.
 - Card value follows people's pick order (P17) rather than CubeCobra Elo first.
+- Whose pick order: LSV's tables lead (P22). The owner's group and the VRD sheets fill in cards his drafts don't
+  show; the owner rates his group below LSV's tables.

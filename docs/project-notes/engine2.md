@@ -126,3 +126,19 @@ per deck, Spell Pierce ~29th, Polluted Delta ~47th, Timetwister ~24th.
 
 Next: more of LSV's drafts (later rounds of these, more videos), the team draft's LSV seats, and leave-one-out
 checks before trusting further tuning.
+
+### Source ordering (2026-10-21, later)
+People's pick order now combines three sources (`pick_order.combined_order`): LSV's five reconstructed drafts
+(weight 24 per draft that took the card), the seven VRD sheets (1) and the owner's group's 14 drafts (0.2,
+aggregated, no names: `GROUP_ORDER`). A draft where LSV didn't take a card within the reconstructed rounds counts as
+"later than that". The benchmark now scores each LSV draft with an order built without it (leave-one-out).
+
+| Held out, same pool | before | after |
+|---|---|---|
+| All picks: #1 / top 3 / top 10 / median rank | 13.2% / 24.1% / 42.9% / 15 | 13.0% / 26.4% / 51.4% / 10 |
+| LSV's picks: #1 / top 3 / top 10 / median | 15.3% / 27.1% / 50.8% / 10 | 16.9% / 32.2% / 59.3% / 8 |
+| Rounds 1-6: #1 / top 3 / median | 19.9% / 36.1% / 7 | 18.4% / 37.6% / 7 |
+
+Weights swept: LSV 3/6/12/24 and group 0/0.2/0.5. The group's drafts at 0.5 made LSV's picks harder to match; 0.2
+kept the coverage of cards LSV's drafts don't show. All-bot drafts (8 seats, seeds 11-12): Flash about pick 62
+(was ~172), Underworld Breach 53, Balance 70, Griselbrand 105, Academy 16; Worldspine Wurm only with Flash.
