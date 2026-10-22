@@ -82,7 +82,7 @@ TUNING2: Dict[str, float] = {
     "lsv_source": 24.0, "vrd_source": 1.0, "group_source": 0.2,   # held-out benchmark sweep 2026-10-21
     # LSV's conditional rules (rules.py): 1 = on, 0 = off.
     "rule_cheat_colour": 1.0,
-    "rule_deck_mix": 1.0, "mix_slack": 2.0, "mix_cut": 0.15, "mix_land_boost": 0.06,
+    "rule_deck_mix": 1.0, "mix_slack": 1.0, "mix_cut": 0.15, "mix_land_boost": 0.06,
     "human_weight": 0.7,        # share of a card's quality that comes from how early people take it
     "human_top": 1.45, "human_floor": 0.2, "human_scale": 12.0,   # round 1 -> 1.45, round 10 -> ~0.8, never -> 0.2
 }
