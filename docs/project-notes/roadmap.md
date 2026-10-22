@@ -1,12 +1,12 @@
-# Roadmap and ideas (as of 2026-10-20)
+# Roadmap and ideas (as of 2026-10-22)
 
 Roughly in priority order. Nothing here is committed to a date.
 
 ## Bots
-0. Engine 2 ([engine2.md](engine2.md)): compare with engine 1 in Bot Brain (switch "Bot logic"), replay real
-   drafts (bot-inputs exports, the VRD sheets as mirror replays), add its own Lab weights, then decide whether it
-   replaces engine 1 for live tables and pick suggestions.
-1. Ship Bot Brain (on `dev`) to production when the owner says.
+0. Engine 2 ([engine2.md](engine2.md)): more LSV rules (candidates in [bot-principles.md](bot-principles.md)),
+   tighter deck budgets for cheat decks, more of LSV's drafts reconstructed; then decide whether it replaces engine 1
+   for live tables and pick suggestions.
+1. Bot Lab legend text for engine 2.
 2. Bot Brain simulations with random personas per seed, so they behave like real tables.
 3. Multi-seed summary in Bot Brain: seats per deck type, seats with no deck type, crowding, to measure tuning.
 4. Soft plan-fit factor for in-colour cards that don't fit the deck (Sheoldred in storm, Emrakul in aggro).

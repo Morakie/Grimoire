@@ -189,3 +189,21 @@ DISCARD: Tuple[str, ...] = (
     "Opposition Agent", "Dreams of Steel and Oil",
 )
 INTERACTION_TARGET = 6    # interaction cards (counters, removal, discard) a finished deck wants
+
+
+# ---------------------------------------------------------------- deck mix (rules.py R2)
+# What a deck type's first 40 picks hold at real roto tables: median count per kind of card (rules.card_kind), from
+# the 7 VRD sheets and the owner's group's 14 drafts (2026-10-22, compare.human_rows; deck types with 5+ seats). Other
+# deck types use good_stuff. (seats seen, {kind: median})
+DECK_MIX: Dict[str, Tuple[int, Dict[str, float]]] = {
+    "storm": (12, {"creature": 3.9, "fatty": 0.0, "enabler": 0.0, "counter": 2.8, "removal": 1.2, "discard": 1.3, "ritual": 0.0, "tutor": 1.9, "draw": 4.4, "mana": 3.2, "artifact": 1.3, "walker": 0.6, "land": 9.8}),
+    "reanimator": (21, {"creature": 6.5, "fatty": 2.3, "enabler": 3.3, "counter": 1.1, "removal": 3.2, "discard": 2.1, "ritual": 0.0, "tutor": 2.7, "draw": 3.1, "mana": 1.1, "artifact": 1.2, "walker": 0.0, "land": 9.3}),
+    "good_stuff": (46, {"creature": 11.5, "fatty": 0.0, "enabler": 0.0, "counter": 2.9, "removal": 2.5, "discard": 0.0, "ritual": 0.0, "tutor": 0.0, "draw": 2.9, "mana": 1.5, "artifact": 0.0, "walker": 1.2, "land": 9.3}),
+    "lands": (19, {"creature": 9.7, "fatty": 0.0, "enabler": 0.0, "counter": 0.0, "removal": 1.1, "discard": 0.0, "ritual": 0.0, "tutor": 1.2, "draw": 2.4, "mana": 1.4, "artifact": 1.4, "walker": 2.4, "land": 12.6}),
+    "tolarian": (18, {"creature": 6.6, "fatty": 0.0, "enabler": 0.0, "counter": 2.4, "removal": 1.4, "discard": 0.0, "ritual": 0.0, "tutor": 2.4, "draw": 5.3, "mana": 3.9, "artifact": 6.4, "walker": 1.2, "land": 6.9}),
+    "cheat": (12, {"creature": 3.5, "fatty": 2.5, "enabler": 2.6, "counter": 1.7, "removal": 1.3, "discard": 0.0, "ritual": 0.0, "tutor": 1.8, "draw": 4.8, "mana": 2.3, "artifact": 0.0, "walker": 2.5, "land": 10.4}),
+    "white_aggro": (12, {"creature": 17.5, "fatty": 0.0, "enabler": 0.0, "counter": 1.1, "removal": 3.0, "discard": 0.0, "ritual": 0.0, "tutor": 0.0, "draw": 1.3, "mana": 2.5, "artifact": 0.0, "walker": 1.1, "land": 7.9}),
+    "tempo": (7, {"creature": 9.1, "fatty": 0.0, "enabler": 0.0, "counter": 6.2, "removal": 4.3, "discard": 0.0, "ritual": 0.0, "tutor": 0.0, "draw": 5.7, "mana": 1.4, "artifact": 0.0, "walker": 0.0, "land": 7.1}),
+    "workshop": (8, {"creature": 8.8, "fatty": 1.3, "enabler": 0.0, "counter": 1.9, "removal": 2.5, "discard": 0.0, "ritual": 0.0, "tutor": 0.0, "draw": 5.2, "mana": 4.9, "artifact": 4.0, "walker": 2.0, "land": 8.4}),
+    "red_aggro": (5, {"creature": 12.0, "fatty": 0.0, "enabler": 0.0, "counter": 1.3, "removal": 4.0, "discard": 0.0, "ritual": 0.0, "tutor": 0.0, "draw": 1.6, "mana": 3.2, "artifact": 1.3, "walker": 3.2, "land": 11.2}),
+}
