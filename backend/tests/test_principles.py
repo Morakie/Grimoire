@@ -357,3 +357,32 @@ def test_P22_lsv_tables_lead_the_pick_order():
         assert order[name][0] < min(PICK_ORDER[name.title()][0], GROUP_ORDER[name.title()][0]) - 5
     # ...and Griselbrand, which only one LSV draft took (round 18), stays a late pick.
     assert order["griselbrand"][0] > 25
+
+
+# ---------------------------------------------------------------- R1 (rules.py)
+WURM = card("wurm", "Worldspine Wurm", "{8}{G}{G}{G}", 11, "Creature — Wurm",
+            "Trample. When Worldspine Wurm dies, create three 5/5 green Wurm creature tokens with trample.", "G", 1500)
+FLASH = card("flash", "Flash", "{1}{U}", 2, "Instant",
+             "You may put a creature card from your hand onto the battlefield. If you do, sacrifice it unless you pay its mana cost reduced by up to {2}.", "U", 1500)
+ENTOMB_TARGET = card("grisel", "Griselbrand", "{4}{B}{B}{B}{B}", 8, "Legendary Creature — Demon", "Flying, lifelink", "B", 1600)
+REANIMATE = card("reanimate", "Reanimate", "{B}", 1, "Sorcery",
+                 "Put target creature card from a graveyard onto the battlefield under your control.", "B", 1700)
+
+
+def test_R1_cheat_targets_ignore_colour_only_with_an_enabler():
+    idx, cmb = build([WURM, FLASH, ENTOMB_TARGET, REANIMATE])
+    ub = ["U0", "U1", "B0", "B1", "U2", "B2", "U3", "B3"]
+    without = scored(ctx_for(idx, cmb, {0: ub, 1: ["G0"], 2: ["W0"], 3: ["R0"]}))
+    with_flash = scored(ctx_for(idx, cmb, {0: ub + ["flash"], 1: ["G0"], 2: ["W0"], 3: ["R0"]}))
+    # Green Wurm for a blue-black seat: off-colour without Flash, on-colour with it.
+    assert with_flash["wurm"][1]["value"] > 2.0 * without["wurm"][1]["value"]
+    # Reanimate can't bring back Worldspine Wurm (it shuffles away), so reanimation alone doesn't help it.
+    with_reanimate = scored(ctx_for(idx, cmb, {0: ["U0", "U1", "R0", "R1", "U2", "R2", "reanimate"],
+                                               1: ["G0"], 2: ["W0"], 3: ["B0"]}))
+    plain = scored(ctx_for(idx, cmb, {0: ["U0", "U1", "R0", "R1", "U2", "R2", "U3"], 1: ["G0"], 2: ["W0"], 3: ["B0"]}))
+    assert with_reanimate["wurm"][1]["value"] <= 1.05 * plain["wurm"][1]["value"]
+    # Switched off, the rule changes nothing.
+    ctx = ctx_for(idx, cmb, {0: ub + ["flash"], 1: ["G0"], 2: ["W0"], 3: ["R0"]})
+    ctx.tuning = {"rule_cheat_colour": 0.0}
+    off = scored(ctx)
+    assert off["wurm"][1]["value"] < 0.6 * with_flash["wurm"][1]["value"]

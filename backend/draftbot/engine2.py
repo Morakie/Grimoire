@@ -28,6 +28,7 @@ from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple
 from . import knowledge as K
 from .lsv_drafts import DRAFTS as LSV_DRAFTS
 from .pick_order import combined_order
+from . import rules as R
 from .decktypes import ARTIFACT_TYPES, DECK_TYPES, deck_strength, is_narrow, is_universal
 from .engine import (BotContext, _is_rock, _is_utility_artifact, _lane_fit, best_pair, colour_state, coloured_spells,
                      combo_value, commit_progress, completes_combo, deck_targets, fitter, hate_value, lane_distribution,
@@ -79,6 +80,8 @@ TUNING2: Dict[str, float] = {
     # Whose pick order counts most (owner, 2026-10-21): LSV's tables, then the VRD sheets, then the owner's group.
     # Weight per draft that took the card (pick_order.combined_order).
     "lsv_source": 24.0, "vrd_source": 1.0, "group_source": 0.2,   # held-out benchmark sweep 2026-10-21
+    # LSV's conditional rules (rules.py): 1 = on, 0 = off.
+    "rule_cheat_colour": 1.0,
     "human_weight": 0.7,        # share of a card's quality that comes from how early people take it
     "human_top": 1.45, "human_floor": 0.2, "human_scale": 12.0,   # round 1 -> 1.45, round 10 -> ~0.8, never -> 0.2
 }
@@ -92,6 +95,7 @@ KNOBS2: List[tuple] = [
     ("Card value", "human_weight", "People's value vs rating", "Share of a card's value from how early real roto tables take it (rest: CubeCobra Elo).", 0, 1, 0.05),
     ("Card value", "replace_weight", "Substitutes lower value", "How much a card loses to a substitute still likely to be there (Counterspell for Mana Drain).", 0, 0.8, 0.05),
     ("Deck plans", "plan_bonus", "Synergy with the bot's deck", "Extra value for cards of the deck types the bot is in.", 0, 1.5, 0.05),
+    ("LSV rules", "rule_cheat_colour", "Cheat targets ignore colour", "R1: a seat with Flash, Sneak Attack, Show and Tell, Oath or reanimation rates the creatures it puts into play as on-colour (Worldspine Wurm for a blue-black Flash deck). 0 = off.", 0, 1, 1),
     ("Deck plans", "narrow_floor", "Narrow cards outside their deck", "Value Top, Baubles, Karakas keep for a committed bot not in a deck that uses them.", 0, 1, 0.05),
     ("Deck plans", "key_floor", "Key cards outside their deck", "Value Reanimate, Ajani keep for a committed bot outside their deck type.", 0, 1, 0.05),
     ("Deck plans", "crowd_cut", "Back off full lanes", "Plan value lost for a bot that would be one seat too many in a lane.", 0, 1, 0.05),
@@ -319,10 +323,14 @@ class SeatModel:
         # Support counts for reanimation / big fatties (owned; the table's open ones come in `table`).
         self.owned_targets = sum(1 for c in self.pool if "fatty" in c.roles)
         self.owned_enablers = sum(1 for c in self.pool if c.roles & _REANIMATE_ROLES)
+        # Enablers that don't go through the graveyard (Worldspine Wurm, Emrakul can't be reanimated).
+        self.owned_cheaters = sum(1 for c in self.pool if "cheat" in c.roles
+                                  or R.CHEAT_ENABLERS.get(c.name, "grave") != "grave")
         self.table = table
         art_plan = max(self.decks.get(t, 0.0) for t in ARTIFACT_TYPES)
         self.utility_glut = art_plan < 0.5 and sum(1 for c in self.pool if _is_utility_artifact(c)) >= k2(ctx, "utility_limit")
         self.rock_glut = art_plan < 0.5 and sum(1 for c in self.pool if _is_rock(c)) >= k2(ctx, "rock_limit")
+        self.cheat_kinds = R.cheat_kinds(c.name for c in self.pool) if k2(ctx, "rule_cheat_colour") else set()
         self.cheat_plan = max(self.decks.get("reanimator", 0.0), self.decks.get("cheat", 0.0))
         self._desire: Dict[str, tuple] = {}
 
@@ -439,6 +447,8 @@ class SeatModel:
         if self.pair and fit < 1.0 and not card.is_land and card.need and len(card.need - self.pair) == 1 \
                 and not (card.need - self.pair) & card.heavy and in_plan > 0:
             fit = max(fit, k2(ctx, "plan_colour") * in_plan)
+        if self.cheat_kinds and R.is_cheat_target(card, self.cheat_kinds):
+            fit = 1.0                                   # R1: put into play, never cast
         lane = self.floor + (1 - self.floor) * fit
         # Format and deck: slow spells without fast mana, lands before commitment, too many of one job.
         if not card.is_land and card.cmc >= K.SLOW_CMC and not self.fast_mana and not card.staple \
@@ -457,7 +467,8 @@ class SeatModel:
             fill = min(1.0, (self.owned_targets + 0.25 * self.table["open_targets"]) / k2(ctx, "reanimate_targets"))
             q *= 1.0 - k2(ctx, "reanimate_cut") * ramp * (1.0 - fill)
         if "fatty" in card.roles and card.cmc >= k2(ctx, "fatty_cmc") and ramp:
-            fill = min(1.0, (self.owned_enablers + k2(ctx, "open_support_share") * self.table["open_enablers"])
+            owned = self.owned_cheaters if R.key(card.name) in R.NOT_REANIMATABLE else self.owned_enablers
+            fill = min(1.0, (owned + k2(ctx, "open_support_share") * self.table["open_enablers"])
                        / k2(ctx, "fatty_enablers"))
             q *= 1.0 - k2(ctx, "fatty_cut") * ramp * (1.0 - fill)
         base = q * lane * pf
