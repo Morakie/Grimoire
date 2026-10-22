@@ -102,6 +102,18 @@ of the cube's own Power cards (Timetwister -> 2237).
   distinct main deck types 5.2 -> 6.0, deck Elo unchanged. Personalities at 0.15 change little (leaned lane is a
   bot's main lane for ~1 bot in 8); 0.35 gives the same lane spread.
 
+## Control membership for counterspells (2026-10-22)
+
+- Owner: almost all counterspells go in control decks. Every blue card with the `counter` role is now a control
+  member at `COUNTER_MEMBERSHIP` 0.4 (named core cards like Force of Will / Counterspell stay at 0.6). Not keys:
+  tempo, Academy, storm and Oracle decks play counters too. Counters alone never make a pool read as control
+  (8 counters = 0.48 < deck_seat 0.5); a control key (Wrath, Moat, Opposition, Teferi...) is still needed.
+  Red Blasts and colourless counters (Pyroblast, Chalice) don't count.
+- CubeCobra's cube JSON (`/cube/api/cubeJSON/<id>`) carries Scryfall oracle tags for every card ("counterspell",
+  "sweeper", "tutor", "removal"...; 48 counterspell-tagged cards in the group cube). A possible later source
+  for card roles instead of our rules-text patterns (features.py). Its Combos tab is Commander Spellbook data,
+  which Grimoire already reads.
+
 ## Conspiracy cards and odd ratings (2026-10-20)
 
 - The group doesn't play Conspiracy cards: bots and pack bots score them 0 (`conspiracy_value`; set to 1 to

@@ -158,6 +158,12 @@ CORE: Dict[str, tuple] = {
 }
 # Only coloured cards and mana rocks belong here: a colourless spell with this membership would count as narrow.
 CORE_MEMBERSHIP = 0.6
+# Every blue counterspell (the "counter" role: Mana Leak, Spell Pierce, Daze, Spellstutter Sprite...) is also a
+# control member, a little below the named core cards. Kept below the core level because tempo, Academy, storm
+# and Oracle decks play counters too: a blue drafter holding a few counters must not read as "in control" (that
+# would make control look crowded at tables where one seat plays it). Red Blasts and colourless "counters"
+# (Chalice, Pyroblast) don't count.
+COUNTER_MEMBERSHIP = 0.4
 # Role tags that make a card a key card of a deck type (from features.ROLE_PATTERNS), for cards not named above.
 ROLE_KEYS = {"artifact_payoff": "artifacts", "storm_payoff": "storm", "reanimate": "reanimator",
              "cheat": "cheat", "land_recursion": "lands"}
@@ -214,6 +220,8 @@ def attach_deck_types(index: Dict[str, CardInfo]) -> None:
         for t in core:
             if t not in info.key_of:
                 deck[t] = max(deck.get(t, 0.0), CORE_MEMBERSHIP)
+        if "counter" in info.roles and "U" in info.need and "control" not in info.key_of:
+            deck["control"] = max(deck.get("control", 0.0), COUNTER_MEMBERSHIP)
         info.deck = {t: round(v, 3) for t, v in deck.items() if v >= 0.1}
 
 

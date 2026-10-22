@@ -1008,3 +1008,17 @@ def test_lean_is_dropped_in_both_engines_once_committed_elsewhere():
     assert plan(committed, "white_aggro") == plan(committed, "")     # ...not a bot already in Tolarian
     assert lean_w(early, "white_aggro") > 0
     assert lean_w(committed, "white_aggro") == 0
+
+
+def test_blue_counterspells_are_control_members_but_red_blasts_are_not():
+    from draftbot.decktypes import CORE_MEMBERSHIP, COUNTER_MEMBERSHIP
+    cube = synthetic_cube() + [
+        card("leak", "Mana Leak", "{1}{U}", 2, "Instant", "Counter target spell unless its controller pays {3}.", "U", 1500),
+        card("fow", "Force of Will", "{3}{U}{U}", 5, "Instant", "Counter target spell.", "U", 1800),
+        card("pyro", "Pyroblast", "{R}", 1, "Instant", "Choose one — Counter target spell if it's blue.", "R", 1500),
+        card("bolt", "Lightning Bolt", "{R}", 1, "Instant", "Lightning Bolt deals 3 damage to any target.", "R", 1600),
+    ]
+    idx = build_card_index(cube)
+    assert idx["leak"].deck.get("control") == COUNTER_MEMBERSHIP
+    assert idx["fow"].deck.get("control") == CORE_MEMBERSHIP          # named core card keeps the higher level
+    assert "control" not in idx["pyro"].deck and "control" not in idx["bolt"].deck
