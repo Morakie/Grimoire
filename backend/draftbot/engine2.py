@@ -35,6 +35,7 @@ from .engine import (BotContext, _is_rock, _is_utility_artifact, _lane_fit, best
                      partner_sources, partner_value, picks_until_next_turn, rival_floor, saturation_factor, table_targets,
                      threat_level, win_plan, HATE_TARGETS, _role_counts)
 from .features import CardInfo, lookup_by_name
+from .personas import lean_fade
 
 ENGINE = "engine2"
 
@@ -365,8 +366,9 @@ class SeatModel:
             self.weight[t] = s * (1.0 - cut) if over else s
             self.open[t] = (1.0 if not seats_in else (0.5 if len(seats_in) < cap else 0.0)) * entry
         lean = self.ctx.persona.lean if self.me else ""      # rivals' personalities are unknown
-        self.lean = lean if lean in self.weight and not self.over.get(lean) else ""
-        self.lean_w = k2(ctx, "lean_weight") * entry if self.lean else 0.0
+        fade = lean_fade(lean, self.decks, seat_in) if lean in self.weight and not self.over.get(lean) else 0.0
+        self.lean = lean if fade > 0 else ""          # in another deck type: draft what it's building
+        self.lean_w = k2(ctx, "lean_weight") * entry * fade if self.lean else 0.0
         deepest = max(self.weight.values(), default=0.0)
         self.deepest = deepest
         self.good = 1.0 - (1.0 - k2(ctx, "good_floor")) * min(1.0, deepest)

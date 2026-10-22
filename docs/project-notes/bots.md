@@ -92,9 +92,12 @@ of the cube's own Power cards (Timetwister -> 2237).
 - Storm keys are finishers/engines only; rituals, Yawgmoth's Will, Citadel and Oracle/Pact are Storm core (any
   black deck plays them).
 - Personalities: every bot gets a random style (archetype weights) and a different deck type to lean towards
-  (`Persona.lean`, assigned at draft start from deck types with 3+ key cards in the cube). `lean_weight` (0.15)
-  is a small early bonus that fades over the entry window, when rivals are in that lane (gone at two), and once
-  the bot is building something else, so it never forces a lane.
+  (`Persona.lean`, assigned at draft start from deck types the cube supports, see below). `lean_weight` (0.15)
+  is a small early bonus that fades over the entry window, when rivals are in that lane (gone at two), and as
+  another deck type pulls ahead. Owner's rule (2026-10-22): the lean only steers the start. Once the bot is in
+  another deck type (`deck_seat` deep and deeper than the lean) the lean is dropped and the bot drafts what it is
+  building (`personas.lean_fade`, both engines). In engine 2 the lean is weaker still: it adds little on top of
+  an open deck type's key cards.
 - Measured on the group cube + PowerLSV (6 seeds, 8 x 45): main deck types shared by 3+ seats 1.0 -> 0 per table,
   distinct main deck types 5.2 -> 6.0, deck Elo unchanged. Personalities at 0.15 change little (leaned lane is a
   bot's main lane for ~1 bot in 8); 0.35 gives the same lane spread.
@@ -107,7 +110,9 @@ of the cube's own Power cards (Timetwister -> 2237).
   22nd because artifact drafters take it most. Key cards (Time Vault) stay narrow.
 - Hybrid-only costs (Lutri, Lurrus) get a home in their colours instead of reading as colourless.
 - Strong gold cards are never keys (Minsc & Boo went undrafted as an RG-beats key).
-- Personality leans only go to deck types with 3+ key cards in the cube being drafted (`lean_choices`).
+- Personality leans only go to deck types the cube can support (`lean_choices`): at least 4 key cards, or 40%
+  of a long key list (white aggro 8 of 19, lands 6 of 14), and every piece of a two- or three-card type (Painter,
+  Nadu). `personas.lean_keys_needed`. (Was 3 key cards for every type.)
 
 ## Colour commitment (2026-10-20)
 

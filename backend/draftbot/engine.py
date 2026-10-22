@@ -29,7 +29,7 @@ from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 from .combos import PACKAGES, Combo
 from .decktypes import ARTIFACT_TYPES, DECK_TYPES, deck_strength, is_narrow, is_universal
 from .features import COLORS, CardInfo
-from .personas import Persona
+from .personas import Persona, lean_fade
 
 TUNING: Dict[str, float] = {
     # colours
@@ -1018,8 +1018,7 @@ def score_pool(ctx: BotContext) -> List[Tuple[float, str, dict]]:
     in_types = [(dt, min(1.0, e)) for dt, e in deck_eff.items() if e >= k("deck_seat")]   # deck types the bot is in
     lean = p.lean if p.lean in deck_mine else ""
     if lean:
-        elsewhere = max((v for dt, v in deck_mine.items() if dt != lean), default=0.0)
-        lean_w = k("lean_weight") * entry * deck_open[lean] * max(0.0, 1.0 - 2.0 * max(0.0, elsewhere - deck_mine[lean]))
+        lean_w = k("lean_weight") * entry * deck_open[lean] * lean_fade(lean, deck_mine, k("deck_seat"))
         if lean_w <= 0:
             lean = ""
     # focus_factor is 1 for every card until the bot is past focus_start in some deck type

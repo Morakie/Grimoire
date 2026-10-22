@@ -885,8 +885,10 @@ def test_third_seat_backs_off_a_deck_type_two_rivals_are_in():
 def test_bots_get_different_leans_that_fade_when_a_lane_is_taken():
     import random as _r
     from draftbot.personas import Persona, assign_leans, lean_choices, random_persona
-    names = ["Goblin Guide", "Monastery Swiftspear", "Eidolon of the Great Revel", "Thalia, Guardian of Thraben",
-             "Mother of Runes", "Giver of Runes", "Splinter Twin", "Pestermite"]
+    names = ["Goblin Guide", "Monastery Swiftspear", "Eidolon of the Great Revel", "Sulfuric Vortex", "Fireblast",
+             "Figure of Destiny", "Thalia, Guardian of Thraben", "Mother of Runes", "Giver of Runes", "Ocelot Pride",
+             "Guide of Souls", "Luminarch Aspirant", "Adeline, Resplendent Cathar", "Phelia, Exuberant Shepherd",
+             "Splinter Twin", "Pestermite"]
     choices = lean_choices(names)
     assert "red_aggro" in choices and "white_aggro" in choices and "twin" not in choices   # twin has only 2 keys
     ps = [random_persona(_r.Random(i)) for i in range(5)]
@@ -948,3 +950,61 @@ def test_committed_bot_takes_off_colour_cards_only_when_on_plan():
     rows = {c: (sc, i) for sc, c, i in score_pool(ctx)}
     assert rows["linked"][0] > rows["bomb"][0] * 2
     assert rows["linked"][1].get("on_plan") and not rows["bomb"][1].get("on_plan")
+
+
+def test_lean_needs_enough_key_cards_in_the_cube():
+    """A bot only leans towards a deck type the cube can really support: 4+ key cards (40% of a long list)."""
+    from draftbot.personas import lean_choices, lean_keys_needed
+    assert lean_keys_needed("white_aggro") == 8 and lean_keys_needed("lands") == 6
+    assert lean_keys_needed("painter") == 2 and lean_keys_needed("nadu") == 3
+    three_lands = ["Crucible of Worlds", "Fastbond", "Dark Depths"]
+    assert "lands" not in lean_choices(three_lands)
+    assert "lands" in lean_choices(three_lands + ["Thespian's Stage", "Life from the Loam", "Exploration"])
+    assert "painter" in lean_choices(["Painter's Servant", "Grindstone"])
+    assert "painter" not in lean_choices(["Painter's Servant"])
+
+
+def test_lean_fades_and_drops_once_the_bot_builds_something_else():
+    from draftbot.personas import lean_fade
+    assert lean_fade("", {"storm": 1.0}, 0.5) == 0.0
+    assert lean_fade("white_aggro", {}, 0.5) == 1.0                                  # nothing yet: full lean
+    assert lean_fade("white_aggro", {"white_aggro": 0.3, "tolarian": 0.2}, 0.5) == 1.0
+    assert 0 < lean_fade("white_aggro", {"tolarian": 0.3}, 0.5) < 1.0               # fading
+    assert lean_fade("white_aggro", {"tolarian": 0.6}, 0.5) == 0.0                  # in another deck type
+    assert lean_fade("white_aggro", {"white_aggro": 0.7, "tolarian": 0.6}, 0.5) == 1.0   # its own lane is deeper
+
+
+def _lean_cube():
+    return _aggro_cube() + [
+        card("vault", "Time Vault", "{2}", 2, "Artifact", "Time Vault enters tapped.", "", 1800),
+        card("vkey", "Voltaic Key", "{1}", 1, "Artifact", "Untap target artifact.", "", 1650),
+        card("mkey", "Manifold Key", "{1}", 1, "Artifact", "Untap another target artifact.", "", 1600),
+    ]
+
+
+def test_lean_is_dropped_in_both_engines_once_committed_elsewhere():
+    """A bot leaning white aggro that has drafted into Tolarian (Time Vault + both Keys) drafts like any bot
+    in Tolarian: its lean no longer adds anything to white aggro cards."""
+    from draftbot import engine2
+    cube = _lean_cube()
+    idx = build_card_index(cube)
+
+    def plan(mine, lean):          # engine 1: the plan part of Thalia's score
+        ctx = _two_seat_ctx(cube, [], mine, ["G0"], persona=Persona("steady", temperature=0.001, lean=lean),
+                            explain=True)
+        ctx.index = idx
+        return {c: i for _, c, i in score_pool(ctx)}["thalia"]["plan"]
+
+    def lean_w(mine, lean):        # engine 2: the lean's weight in the seat model
+        ctx = _two_seat_ctx(cube, [], mine, ["G0"], persona=Persona("steady", temperature=0.001, lean=lean))
+        ctx.index = idx
+        st = engine2.static_for(idx)
+        remaining = set(ctx.remaining)
+        me = engine2.SeatModel(ctx, st, 0, mine, [{}], engine2._table(ctx, remaining), me=True)
+        return me.lean_w
+
+    early, committed = ["U1"], ["vault", "vkey", "mkey"]
+    assert plan(early, "white_aggro") > plan(early, "")              # the lean steers the start
+    assert plan(committed, "white_aggro") == plan(committed, "")     # ...not a bot already in Tolarian
+    assert lean_w(early, "white_aggro") > 0
+    assert lean_w(committed, "white_aggro") == 0
