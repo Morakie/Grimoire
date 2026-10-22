@@ -9,11 +9,11 @@ joining the project, human or AI. Start with the [README](../../README.md) and [
 | [status.md](status.md) | Environments, how to ship, staging rules, what's live, owner decisions |
 | [bots.md](bots.md) | How the draft bots should draft (the owner's model), engine design, what reviews of real drafts found |
 | [bot-brain.md](bot-brain.md) | The Bot Brain / Bot Lab tuning tools: how they work, how to test bot changes |
-| [engine2.md](engine2.md) | Engine 2 (the new pick engine, in testing): design, where the bots' knowledge lives, how it's measured |
-| [bot-principles.md](bot-principles.md) | The drafting principles the bots must keep, each with its source and test |
+| [engine2.md](engine2.md) | Engine 2 (Bot Brain's new pick engine): design, where its knowledge lives, how it's measured, known gaps |
+| [bot-principles.md](bot-principles.md) | Drafting principles (P1-P22) and LSV's conditional rules (R1, R2), each with its source and test |
 | [roadmap.md](roadmap.md) | Open work and ideas, roughly in priority order |
 
-The engine itself is documented in [docs/DRAFT_BOTS.md](../DRAFT_BOTS.md) and deployment in
+Engine 1 (live tables) is documented in [docs/DRAFT_BOTS.md](../DRAFT_BOTS.md) and deployment in
 [docs/DEPLOYMENT.md](../DEPLOYMENT.md).
 
 ## Keeping these notes useful
