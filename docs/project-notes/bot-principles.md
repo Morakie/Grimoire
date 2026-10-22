@@ -42,3 +42,17 @@ The owner asked to work from scratch and let expert drafts override earlier inst
 - Card value follows people's pick order (P17) rather than CubeCobra Elo first.
 - Whose pick order: LSV's tables lead (P22). The owner's group and the VRD sheets fill in cards his drafts don't
   show; the owner rates his group below LSV's tables.
+
+## LSV's conditional rules (`backend/draftbot/rules.py`)
+
+"When X, do Y" rules on top of engine 2. A rule never forces a pick: when its condition holds it changes one number
+the engine already compares (colour fit, value, chance of being gone). Each has a Lab switch under "LSV rules"
+(`rule_<name>` in `TUNING2`, 0 = off) and a test named after its id.
+
+| Id | Rule | Source | Effect |
+|---|---|---|---|
+| R1 | Cheat targets ignore colour | LSV's combo article; owner (2026-10-21) | A seat holding Flash, Sneak Attack, Show and Tell, Oath, Natural Order or reanimation rates the creatures that enabler puts into play as on-colour. Worldspine Wurm, Emrakul and other self-shuffling fatties don't count reanimation as support. |
+
+Candidates (from the LSV notes): take the contested half of a combo and float the other; back off a colour pair with
+3+ drafters; deny the next seat's missing piece only when it's useful to you; a corner seat's double pick takes both
+halves of a contested combo; no four-drops without fast mana; stop collecting enablers once a cheat deck has enough.
