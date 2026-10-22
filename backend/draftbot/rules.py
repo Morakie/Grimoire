@@ -127,15 +127,16 @@ def deck_mix(deck: str) -> Dict[str, float]:
 def mix_factor(kind: str, counts: Dict[str, int], picks: int, deck: str, slack: float, cut: float,
                land_boost: float) -> float:
     """Multiplier on a card's value from the seat's deck budget. Over budget: `cut` per card beyond the usual
-    count for this point in the draft (+20%) plus `slack` (at most 60% off). Short of lands after 10 picks: `land_boost`
+    count (phased in between picks 10 and 25) for this point in the draft (+20%) plus `slack` (at most 60% off). Short of lands after 10 picks: `land_boost`
     per land short (at most +40%). Staples are never cut (see engine2)."""
     if kind == "other":
         return 1.0
     expected = deck_mix(deck).get(kind, 0.0) * min(1.0, picks / 40.0)
     have = counts.get(kind, 0)
     over = have - 1.2 * expected - slack          # 20% over the usual, plus `slack` cards
-    if over > 0 and kind != "land":
-        return max(0.4, 1.0 - cut * over)
+    ramp = min(1.0, max(0.0, (picks - 10) / 15.0))   # early picks are about value: the budget phases in by pick 25
+    if over > 0 and kind != "land" and ramp > 0:
+        return max(0.4, 1.0 - ramp * cut * over)
     if kind == "land" and picks >= 10:
         short = expected - have - slack
         if short > 0:
