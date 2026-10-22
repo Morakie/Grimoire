@@ -82,7 +82,7 @@ TUNING2: Dict[str, float] = {
     "lsv_source": 24.0, "vrd_source": 1.0, "group_source": 0.2,   # held-out benchmark sweep 2026-10-21
     # LSV's conditional rules (rules.py): 1 = on, 0 = off.
     "rule_cheat_colour": 1.0,
-    "rule_deck_mix": 1.0, "mix_slack": 1.0, "mix_cut": 0.15, "mix_land_boost": 0.06,
+    "rule_deck_mix": 1.0, "mix_slack": 1.0, "mix_cut": 0.3, "mix_land_boost": 0.12,
     "human_weight": 0.7,        # share of a card's quality that comes from how early people take it
     "human_top": 1.45, "human_floor": 0.2, "human_scale": 12.0,   # round 1 -> 1.45, round 10 -> ~0.8, never -> 0.2
 }
@@ -466,10 +466,6 @@ class SeatModel:
             d = k2(ctx, "fixing_damp")
             q *= d + (1 - d) * max(self.progress, min(1.0, 2 * self.t))
         q *= saturation_factor(card, self.role_counts, k2(ctx, "saturation_cut"))
-        if k2(ctx, "rule_deck_mix") and not (card.staple or card.bomb):
-            q *= R.mix_factor(R.card_kind(card), self.kind_counts, len(self.pool), self.main_deck,
-                              k2(ctx, "mix_slack"), k2(ctx, "mix_cut") * k2(ctx, "rule_deck_mix"),
-                              k2(ctx, "mix_land_boost") * k2(ctx, "rule_deck_mix"))
         if self.utility_glut and _is_utility_artifact(card):
             q *= 1.0 - k2(ctx, "utility_cut")
         if self.rock_glut and _is_rock(card) and card.cmc >= 2:
@@ -492,7 +488,15 @@ class SeatModel:
             completes = completes_combo(card, self.owned, ctx.combos, ctx.k("combo_max_pieces"))
         combo = k2(ctx, "combo_weight") * max(pv, min(cv, 1.0)) * (0.25 + 0.75 * lane)
         value = base + partners + combo
-        parts = {"quality": q, "colour": lane, "plan_fit": pf, "plan": plan, "base": base, "partners": partners,
+        # R2: deck-type budget on the whole value (combo and plan included), never on the piece that completes a
+        # combo (P3) or on Power-level cards.
+        mix = 1.0
+        if k2(ctx, "rule_deck_mix") and not (card.staple or card.bomb or completes):
+            mix = R.mix_factor(R.card_kind(card), self.kind_counts, len(self.pool), self.main_deck,
+                               k2(ctx, "mix_slack"), k2(ctx, "mix_cut") * k2(ctx, "rule_deck_mix"),
+                               k2(ctx, "mix_land_boost") * k2(ctx, "rule_deck_mix"))
+            value *= mix
+        parts = {"mix": mix, "quality": q, "colour": lane, "plan_fit": pf, "plan": plan, "base": base, "partners": partners,
                  "combo": combo, "completes": completes}
         out = (value, parts)
         self._desire[cid] = out
