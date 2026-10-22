@@ -51,8 +51,9 @@ the engine already compares (colour fit, value, chance of being gone). Each has 
 
 | Id | Rule | Source | Effect |
 |---|---|---|---|
+| R2 | Each deck type has a budget per kind of card | VRD sheets + owner's group (`knowledge.DECK_MIX`, 2026-10-22) | Past pick 10, a seat ahead of its deck type's usual count (+20%, +1) of creatures, big creatures, enablers, counters, removal... values more of that kind less (`mix_cut` 0.3 per card, phased in by pick 25, at most 60% off; never the piece that completes a combo). Short of lands, it values them more (`mix_land_boost`). |
 | R1 | Cheat targets ignore colour | LSV's combo article; owner (2026-10-21) | A seat holding Flash, Sneak Attack, Show and Tell, Oath, Natural Order or reanimation rates the creatures that enabler puts into play as on-colour. Worldspine Wurm, Emrakul and other self-shuffling fatties don't count reanimation as support. |
 
 Candidates (from the LSV notes): take the contested half of a combo and float the other; back off a colour pair with
 3+ drafters; deny the next seat's missing piece only when it's useful to you; a corner seat's double pick takes both
-halves of a contested combo; no four-drops without fast mana; stop collecting enablers once a cheat deck has enough.
+halves of a contested combo; no four-drops without fast mana.
