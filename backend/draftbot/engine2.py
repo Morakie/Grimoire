@@ -82,6 +82,7 @@ TUNING2: Dict[str, float] = {
     "lsv_source": 24.0, "vrd_source": 1.0, "group_source": 0.2,   # held-out benchmark sweep 2026-10-21
     # LSV's conditional rules (rules.py): 1 = on, 0 = off.
     "rule_cheat_colour": 1.0,
+    "rule_deck_mix": 1.0, "mix_slack": 2.0, "mix_cut": 0.15, "mix_land_boost": 0.06,
     "human_weight": 0.7,        # share of a card's quality that comes from how early people take it
     "human_top": 1.45, "human_floor": 0.2, "human_scale": 12.0,   # round 1 -> 1.45, round 10 -> ~0.8, never -> 0.2
 }
@@ -96,6 +97,7 @@ KNOBS2: List[tuple] = [
     ("Card value", "replace_weight", "Substitutes lower value", "How much a card loses to a substitute still likely to be there (Counterspell for Mana Drain).", 0, 0.8, 0.05),
     ("Deck plans", "plan_bonus", "Synergy with the bot's deck", "Extra value for cards of the deck types the bot is in.", 0, 1.5, 0.05),
     ("LSV rules", "rule_cheat_colour", "Cheat targets ignore colour", "R1: a seat with Flash, Sneak Attack, Show and Tell, Oath or reanimation rates the creatures it puts into play as on-colour (Worldspine Wurm for a blue-black Flash deck). 0 = off.", 0, 1, 1),
+    ("LSV rules", "rule_deck_mix", "Deck-type budgets", "R2: a seat ahead of what its deck type usually holds (creatures, enablers, removal...) values more of that kind less; short of lands, it values them more. 0 = off.", 0, 1, 0.25),
     ("Deck plans", "narrow_floor", "Narrow cards outside their deck", "Value Top, Baubles, Karakas keep for a committed bot not in a deck that uses them.", 0, 1, 0.05),
     ("Deck plans", "key_floor", "Key cards outside their deck", "Value Reanimate, Ajani keep for a committed bot outside their deck type.", 0, 1, 0.05),
     ("Deck plans", "crowd_cut", "Back off full lanes", "Plan value lost for a bot that would be one seat too many in a lane.", 0, 1, 0.05),
@@ -331,6 +333,12 @@ class SeatModel:
         self.utility_glut = art_plan < 0.5 and sum(1 for c in self.pool if _is_utility_artifact(c)) >= k2(ctx, "utility_limit")
         self.rock_glut = art_plan < 0.5 and sum(1 for c in self.pool if _is_rock(c)) >= k2(ctx, "rock_limit")
         self.cheat_kinds = R.cheat_kinds(c.name for c in self.pool) if k2(ctx, "rule_cheat_colour") else set()
+        self.kind_counts: Dict[str, int] = {}
+        for c in self.pool:
+            k = R.card_kind(c)
+            self.kind_counts[k] = self.kind_counts.get(k, 0) + 1
+        best = max(self.decks.items(), key=lambda kv: kv[1], default=("good_stuff", 0.0))
+        self.main_deck = best[0] if best[1] >= 0.5 else "good_stuff"
         self.cheat_plan = max(self.decks.get("reanimator", 0.0), self.decks.get("cheat", 0.0))
         self._desire: Dict[str, tuple] = {}
 
@@ -458,6 +466,10 @@ class SeatModel:
             d = k2(ctx, "fixing_damp")
             q *= d + (1 - d) * max(self.progress, min(1.0, 2 * self.t))
         q *= saturation_factor(card, self.role_counts, k2(ctx, "saturation_cut"))
+        if k2(ctx, "rule_deck_mix") and not (card.staple or card.bomb):
+            q *= R.mix_factor(R.card_kind(card), self.kind_counts, len(self.pool), self.main_deck,
+                              k2(ctx, "mix_slack"), k2(ctx, "mix_cut") * k2(ctx, "rule_deck_mix"),
+                              k2(ctx, "mix_land_boost") * k2(ctx, "rule_deck_mix"))
         if self.utility_glut and _is_utility_artifact(card):
             q *= 1.0 - k2(ctx, "utility_cut")
         if self.rock_glut and _is_rock(card) and card.cmc >= 2:

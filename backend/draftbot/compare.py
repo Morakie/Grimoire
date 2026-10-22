@@ -89,21 +89,7 @@ from . import engine2, rules as R
 from .benchmark import name_index, resolve
 
 
-def card_kind(c):
-    t, r = c.types, c.roles
-    if c.is_land: return "land"
-    if c.name in R.CHEAT_ENABLERS or r & {"reanimate", "cheat"}: return "enabler"
-    if "creature" in t: return "fatty" if "fatty" in r else "creature"
-    if "planeswalker" in t: return "walker"
-    if "counter" in r: return "counter"
-    if r & {"removal", "sweeper"}: return "removal"
-    if engine2._norm(c.name) in engine2._DISCARD: return "discard"
-    if "ritual" in r: return "ritual"
-    if "tutor" in r: return "tutor"
-    if r & {"draw", "cantrip"}: return "draw"
-    if "mana" in r: return "mana"
-    if "artifact" in t: return "artifact"
-    return "other"
+card_kind = R.card_kind
 
 def lane(IDX, ids):
     cnt = {}

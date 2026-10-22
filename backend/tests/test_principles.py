@@ -386,3 +386,22 @@ def test_R1_cheat_targets_ignore_colour_only_with_an_enabler():
     ctx.tuning = {"rule_cheat_colour": 0.0}
     off = scored(ctx)
     assert off["wurm"][1]["value"] < 0.6 * with_flash["wurm"][1]["value"]
+
+
+# ---------------------------------------------------------------- R2 (rules.py)
+def test_R2_each_deck_type_has_its_own_budget():
+    from draftbot import rules as R
+    t = engine2.TUNING2
+    f = lambda kind, counts, picks, deck: R.mix_factor(kind, counts, picks, deck, t["mix_slack"], t["mix_cut"],
+                                                       t["mix_land_boost"])
+    # Eight creatures by pick 20 is normal for white aggro, too many for a cheat deck.
+    assert f("creature", {"creature": 8}, 20, "white_aggro") == 1.0
+    assert f("creature", {"creature": 8}, 20, "cheat") < 0.6
+    # A cheat deck with five big creatures already doesn't want a sixth; with one, it does.
+    assert f("fatty", {"fatty": 5}, 20, "cheat") < 0.7
+    assert f("fatty", {"fatty": 1}, 20, "cheat") == 1.0
+    # A storm deck with no lands by pick 20 values them more; Academy with six doesn't.
+    assert f("land", {}, 20, "storm") > 1.1
+    assert f("land", {"land": 6}, 20, "tolarian") == 1.0
+    # Unknown deck types use the generic budget.
+    assert R.deck_mix("twin") == R.deck_mix("good_stuff")

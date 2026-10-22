@@ -27,6 +27,11 @@ RULES = [
          "A seat holding Flash, Sneak Attack, Show and Tell, Oath, Natural Order or a reanimation spell rates the "
          "creatures that enabler puts into play as on-colour: they are never cast. Without an enabler, nothing "
          "changes, and a target nobody else can use still floats."),
+    Rule("R2", "rule_deck_mix", "Each deck type has a budget per kind of card",
+         "VRD sheets and the owner's group's drafts (knowledge.DECK_MIX); owner (2026-10-22)",
+         "A seat ahead of what its deck type usually holds by this point (creatures for an aggro deck, enablers and "
+         "big creatures for a cheat deck, removal for Academy) values more of that kind less. A seat short of "
+         "lands past its first picks values them more: people take 7-12 nonbasic lands in 40 picks."),
 ]
 
 
@@ -79,3 +84,60 @@ def is_cheat_target(card, kinds: Set[str]) -> bool:
     if "grave" in kinds and name not in NOT_REANIMATABLE:
         return True
     return "green" in kinds and "G" in card.identity
+
+
+# ---------------------------------------------------------------- R2: deck mix
+_DISCARD = frozenset(key(n) for n in K.DISCARD)
+
+
+def card_kind(c) -> str:
+    """One kind per card, for deck budgets (knowledge.DECK_MIX)."""
+    t, r = c.types, c.roles
+    if c.is_land:
+        return "land"
+    if c.name in CHEAT_ENABLERS or r & {"reanimate", "cheat"}:
+        return "enabler"
+    if "creature" in t:
+        return "fatty" if "fatty" in r else "creature"
+    if "planeswalker" in t:
+        return "walker"
+    if "counter" in r:
+        return "counter"
+    if r & {"removal", "sweeper"}:
+        return "removal"
+    if key(c.name) in _DISCARD:
+        return "discard"
+    if "ritual" in r:
+        return "ritual"
+    if "tutor" in r:
+        return "tutor"
+    if r & {"draw", "cantrip"}:
+        return "draw"
+    if "mana" in r:
+        return "mana"
+    if "artifact" in t:
+        return "artifact"
+    return "other"
+
+
+def deck_mix(deck: str) -> Dict[str, float]:
+    return (K.DECK_MIX.get(deck) or K.DECK_MIX["good_stuff"])[1]
+
+
+def mix_factor(kind: str, counts: Dict[str, int], picks: int, deck: str, slack: float, cut: float,
+               land_boost: float) -> float:
+    """Multiplier on a card's value from the seat's deck budget. Over budget: `cut` per card beyond the usual
+    count for this point in the draft plus `slack` (at most 60% off). Short of lands after 10 picks: `land_boost`
+    per land short (at most +40%). Staples are never cut (see engine2)."""
+    if kind == "other":
+        return 1.0
+    expected = deck_mix(deck).get(kind, 0.0) * min(1.0, picks / 40.0)
+    have = counts.get(kind, 0)
+    over = have - expected - slack
+    if over > 0 and kind != "land":
+        return max(0.4, 1.0 - cut * over)
+    if kind == "land" and picks >= 10:
+        short = expected - have - slack
+        if short > 0:
+            return 1.0 + min(0.4, land_boost * short)
+    return 1.0
