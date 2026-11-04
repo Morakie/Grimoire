@@ -31,12 +31,12 @@
 
 ## What's live
 
-- Production (2026-10-20, PR #18): rotisserie cube drafts with bots, pack drafts, VRD, mirror tables, bot
+- Production (2026-11-04, PR #22): Cube Analysis page (`/cube-analysis`), see below. Earlier (2026-10-20, PR #18): rotisserie cube drafts with bots, pack drafts, VRD, mirror tables, bot
   report, Bot Lab in the draft room, commander tools, deck builder, saved cubes.
 - On `dev` / staging only: Bot Brain page (`/bots`) with saved pools, the bots running in the browser, live
   re-drafts, lanes table and synergy web; combined cubes ("A + B"); cube lists over 800 cards; Commander
   Spellbook combos for big cubes in batches. See [bot-brain.md](bot-brain.md).
-- On `dev` / staging only (2026-11-04): Cube Analysis page (`/cube-analysis`): a CubeCobra-style list of the whole
+- Live on production since 2026-11-04: Cube Analysis page (`/cube-analysis`): a CubeCobra-style list of the whole
   cube, every deck type it supports with a viability score and its cards (sortable by fit, CubeCobra play rate, Elo,
   name, type, mana value, colour), all combos with what they do, and an overview (colours, curve, colour pairs,
   interaction). Built from the same pool as Bot Brain (`/lab/source`, then `/lab/analysis`, `draftbot/analysis.py`).
