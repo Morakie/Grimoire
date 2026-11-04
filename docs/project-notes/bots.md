@@ -61,6 +61,13 @@ wildfire, painter, storm, reanimator, cheat (Sneak/Show/Breach/Flash/Channel), t
 Pod/Survival), blink, control, tempo (UR), white_aggro (white weenie / D&T), red_aggro (red aggro / burn), gruul
 (RG beats), pox, domain, ramp (green), lands. Boros is both aggro types.
 
+2026-11-04, owner's list: five more, 27 in all. doomsday (Doomsday piles with Oracle / Lab Maniac; Doomsday left storm's
+keys), boros (keyed by Boros gold cards only; Thalia, Ragavan and Inti stay keys of the mono aggro types and are core
+here), jund (B/R/G gold cards as keys; Goyf, Liliana of the Veil and Wrenn and Six are core so other decks still
+value them), infect, hoof (Natural Order / Craterhoof / Channel ramp combo; Craterhoof and Natural Order moved from
+ramp). Pox gained Nether Void and Bottomless Pit. Lane capacity: one seat each, jund two. Each deck type's goal and
+win conditions are in `frontend/src/lib/deckTypes.js` (DECK_ABOUT), shown on Cube Analysis.
+
 - KEYS are signature cards only. A key card is worth less (55%) to a bot outside its deck type, so generically
   strong cards must never be keys.
 - CORE lists strong coloured cards that belong to a deck type without defining it (Lightning Bolt in red aggro,

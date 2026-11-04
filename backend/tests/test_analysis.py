@@ -53,3 +53,19 @@ def test_combo_details_survive_a_round_trip():
     assert back == c
     old = combos_from_dicts([{"pieces": ["a", "b"], "weight": 0.7}])[0]   # pools saved before details existed
     assert old.produces == () and old.sid == ""
+
+
+def test_boros_counts_white_and_red_aggro_cards():
+    cube = synthetic_cube() + [
+        card("thalia", "Thalia, Guardian of Thraben", "{1}{W}", 2, "Legendary Creature — Human Soldier", "First strike", "W", 1600),
+        card("guide", "Goblin Guide", "{R}", 1, "Creature — Goblin Scout", "Haste", "R", 1550),
+        card("charm", "Boros Charm", "{R}{W}", 2, "Instant", "Choose one — Boros Charm deals 4 damage to target player.", "RW", 1500),
+        card("ent", "Entomb", "{B}", 1, "Instant", "Search your library for a card, put that card into your graveyard.", "B", 1600),
+    ]
+    index = build_card_index(cube)
+    out = cube_analysis(index, [], cube, meta={})
+    boros = {m["id"]: m for m in next(d for d in out["decks"] if d["type"] == "boros")["members"]}
+    assert boros["charm"]["role"] == "key" and boros["charm"]["fit"] == 1.0
+    assert boros["thalia"]["role"] == "key" and boros["thalia"]["fit"] == 0.8      # white aggro key, Boros colours
+    assert boros["guide"]["role"] == "key"
+    assert "ent" not in boros                                                        # black: not Boros

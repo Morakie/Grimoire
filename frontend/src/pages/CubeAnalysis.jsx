@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "@/lib/api";
 import { resolveCube, stepError } from "@/lib/cube";
-import { deckName, deckCol } from "@/lib/deckTypes";
+import { deckName, deckCol, DECK_ABOUT } from "@/lib/deckTypes";
 import { ManaCost } from "@/components/ManaCost";
 import { useAuth } from "@/context/AuthContext";
 import { Sparkles, Loader2, Library, RefreshCw, LayoutGrid, Layers, Zap, BarChart3, Search, X, ExternalLink, List as ListIcon, Image as ImageIcon } from "lucide-react";
@@ -251,6 +251,12 @@ function DecksView({ data, bind, onPick }) {
             <h2 className="font-display text-2xl font-bold" style={{ color: deckCol(deck.type) }}>{deckName(deck.type)}</h2>
             <span className={`text-sm px-2 py-0.5 rounded border ${LABEL_STYLE[deck.label]}`}>{deck.label} · {deck.score}/100</span>
           </div>
+          {DECK_ABOUT[deck.type] && (
+            <dl className="grid md:grid-cols-2 gap-x-6 gap-y-2 text-sm" data-testid="analysis-deck-about">
+              <div><dt className="text-[11px] uppercase tracking-wide text-slate-500">Goal</dt><dd className="text-slate-200">{DECK_ABOUT[deck.type][0]}</dd></div>
+              <div><dt className="text-[11px] uppercase tracking-wide text-slate-500">Wins with</dt><dd className="text-slate-200">{DECK_ABOUT[deck.type][1]}</dd></div>
+            </dl>
+          )}
           <dl className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3 text-sm">
             {[["Key cards", `${deck.keys}`], ["Deep cards", deck.depth], ["Combos", deck.combos.length], ["Avg Elo (best 23)", deck.avg_elo || "–"],
               ["Seats it can feed", deck.seats ? `about ${deck.seats}` : "under 1"], ["Colors", Object.keys(deck.colors).length ? <Pips colors={Object.keys(deck.colors).join("")} size={12} /> : "Any"]].map(([k, v]) => (
@@ -512,7 +518,7 @@ function OverviewView({ data, bind, onPick }) {
         <h3 className="font-display font-semibold mb-2">Deck types at a glance</h3>
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-2">
           {data.decks.filter((d) => d.keys > 0).map((d) => (
-            <div key={d.type} className="rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2">
+            <div key={d.type} className="rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2" title={DECK_ABOUT[d.type]?.[0]}>
               <div className="flex items-center justify-between gap-2"><span className="font-medium truncate" style={{ color: deckCol(d.type) }}>{deckName(d.type)}</span><span className={`text-[11px] px-1.5 py-0.5 rounded border ${LABEL_STYLE[d.label]}`}>{d.label}</span></div>
               <div className="mt-1.5"><Bar value={d.score} max={100} colour={deckCol(d.type)} /></div>
               <div className="mt-1 text-[11px] text-slate-500 tabular-nums">{d.keys} key · {d.depth} deep · {d.combos.length} combos</div>

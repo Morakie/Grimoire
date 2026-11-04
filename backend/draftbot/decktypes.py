@@ -61,8 +61,11 @@ KEYS: Dict[str, tuple] = {
     # ---------------------------------------------------------------- combo and cheating things into play
     "storm": (       # storm finishers and engines only: rituals and Yawgmoth's Will are core (any black deck plays them)
         "Tendrils of Agony", "Brain Freeze", "Grapeshot", "Mind's Desire", "Underworld Breach",
-        "Lion's Eye Diamond", "Doomsday", "Empty the Warrens", "Past in Flames", "Ad Nauseam", "High Tide",
+        "Lion's Eye Diamond", "Empty the Warrens", "Past in Flames", "Ad Nauseam", "High Tide",
         "Peer into the Abyss", "Aetherflux Reservoir",
+    ),
+    "doomsday": (    # Doomsday: build a five-card pile and win with Thassa's Oracle / Lab Maniac; cantrips and free cyclers
+        "Doomsday", "Laboratory Maniac", "Jace, Wielder of Mysteries", "Edge of Autumn", "Street Wraith",
     ),
     "reanimator": (
         "Entomb", "Reanimate", "Animate Dead", "Exhume", "Buried Alive", "Necromancy", "Unburial Rites",
@@ -109,12 +112,27 @@ KEYS: Dict[str, tuple] = {
         "Zurgo Bellstriker", "Inti, Seneschal of the Sun", "Figure of Destiny", "Ragavan, Nimble Pilferer",
         "Goblin Rabblemaster", "Laelia, the Blade Reforged", "Sanguine Evangelist", "Rampaging Ferocidon",
     ),
+    "boros": (        # RW aggro / tax-and-tempo: cheap threats, Thalia taxes, burn and Boros gold cards to close
+        # Boros gold cards only: Thalia, Ragavan and Inti already key the mono-colour aggro types and are core here
+        "Boros Charm", "Forth Eorlingas!", "Lightning Helix", "Showdown of the Skalds", "Figure of Destiny",
+        "Ajani Vengeant", "Boros Reckoner", "Zirda, the Dawnwaker", "Wear // Tear",
+    ),
     "gruul": (        # RG beats (strong gold cards like Minsc & Boo are core: their colours already limit them)
         "Burning-Tree Emissary", "Halana and Alena, Partners", "Escape to the Wilds", "Questing Beast",
     ),
     "pox": (          # mono-black disruption: symmetrical discard and land loss with recursive creatures
         "Pox", "Smallpox", "Sinkhole", "Braids, Cabal Minion", "Gravecrawler", "Phyrexian Obliterator",
-        "The Rack",
+        "The Rack", "Nether Void", "Bottomless Pit",
+    ),
+    "jund": (         # BRG midrange: discard, efficient removal and sticky value threats, winning a long game
+        # B/R/G gold cards: strong mono-colour cards (Goyf, Liliana, Wrenn and Six) are core, so other decks keep them
+        "Kolaghan's Command", "Kroxa, Titan of Death's Hunger", "Sire of Insanity", "Korvold, Fae-Cursed King",
+        "Huntmaster of the Fells", "Klothys, God of Destiny", "Grist, the Hunger Tide", "Assassin's Trophy",
+        "Abrupt Decay", "Maelstrom Pulse", "Bloodbraid Elf",
+    ),
+    "infect": (       # poison: evasive infect creatures and pump spells, ten counters wins
+        "Glistener Elf", "Blighted Agent", "Inkmoth Nexus", "Venerated Rotpriest", "Phyrexian Crusader",
+        "Skithiryx, the Blight Dragon", "Ichorclaw Myr", "Triumph of the Hordes", "Tyrranax Rex", "Plague Stinger",
     ),
     "domain": (       # five-colour zoo
         "Wild Nacatl", "Territorial Kavu", "Tribal Flames", "Leyline Binding", "Scion of Draco",
@@ -122,9 +140,12 @@ KEYS: Dict[str, tuple] = {
     ),
     # ---------------------------------------------------------------- ramp and lands
     "ramp": (         # green ramp into big threats
-        "Rofellos, Llanowar Emissary", "Gaea's Cradle", "Craterhoof Behemoth", "Utopia Sprawl",
+        "Rofellos, Llanowar Emissary", "Gaea's Cradle", "Utopia Sprawl",
         "Titan of Industry", "Primeval Titan", "Priest of Titania", "Elvish Archdruid", "Nyxbloom Ancient",
-        "Natural Order",
+    ),
+    "hoof": (         # Natural Order / Craterhoof: mana creatures into one explosive turn (Hoof, Eldrazi off Channel)
+        "Craterhoof Behemoth", "Natural Order", "Eldritch Evolution", "Finale of Devastation", "Neoform",
+        "Woodland Bellower", "Channel",
     ),
     "lands": (
         "Life from the Loam", "Crucible of Worlds", "Ramunap Excavator", "Azusa, Lost but Seeking",
@@ -147,7 +168,6 @@ CORE: Dict[str, tuple] = {
     "blink": ("Solitude", "Recruiter of the Guard", "Eternal Witness", "Venser, Shaper Savant", "Grief",
               "Fury", "Endurance", "Spellbook Seller"),
     "recursion": ("Eternal Witness", "Grief", "Fury", "Endurance", "Siege Rhino", "Bloodghast"),
-    "pox": ("Dark Confidant", "Bloodghast", "Hymn to Tourach", "Thoughtseize", "Duress"),
     "ramp": ("Llanowar Elves", "Elvish Mystic", "Fyndhorn Elves", "Birds of Paradise", "Noble Hierarch",
              "Sylvan Caryatid"),
     "wildfire": ("Grim Monolith", "Mana Vault", "Basalt Monolith", "Mind Stone", "Coalition Relic", "Hedron Archive",
@@ -155,6 +175,18 @@ CORE: Dict[str, tuple] = {
                  "Anger of the Gods", "Kozilek's Return", "Treasure Cruise"),
     "welder": ("Triplicate Titan", "Blightsteel Colossus", "Myr Battlesphere"),
     "gruul": ("Lightning Bolt", "Minsc & Boo, Timeless Heroes", "Bloodbraid Elf"),
+    "doomsday": ("Thassa's Oracle", "Brainstorm", "Ponder", "Preordain", "Dark Ritual", "Lion's Eye Diamond", "Lotus Petal",
+                 "Force of Will", "Demonic Consultation", "Tainted Pact", "Gitaxian Probe"),
+    "boros": ("Thalia, Guardian of Thraben", "Ragavan, Nimble Pilferer", "Inti, Seneschal of the Sun",
+              "Adeline, Resplendent Cathar", "Lightning Bolt", "Swords to Plowshares", "Chain Lightning",
+              "Bonecrusher Giant", "Fable of the Mirror-Breaker"),
+    "jund": ("Wrenn and Six", "Tarmogoyf", "Liliana of the Veil", "Thoughtseize", "Orcish Bowmasters",
+             "Minsc & Boo, Timeless Heroes", "Fable of the Mirror-Breaker", "Grief", "Lightning Bolt", "Hymn to Tourach",
+             "Dark Confidant"),
+    "hoof": ("Green Sun's Zenith", "Worldly Tutor", "Gaea's Cradle", "Llanowar Elves", "Elvish Mystic", "Fyndhorn Elves",
+             "Birds of Paradise", "Delighted Halfling", "Noble Hierarch"),
+    "infect": ("Invigorate", "Mutagenic Growth", "Become Immense", "Blossoming Defense"),
+    "pox": ("Dark Confidant", "Bloodghast", "Hymn to Tourach", "Thoughtseize", "Duress", "Dark Ritual", "Liliana of the Veil"),
 }
 # Only coloured cards and mana rocks belong here: a colourless spell with this membership would count as narrow.
 CORE_MEMBERSHIP = 0.6
