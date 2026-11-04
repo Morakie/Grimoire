@@ -39,6 +39,8 @@ PLAN_OF: Dict[str, tuple] = {
     "tolarian": ("U Artifacts", "Artifacts"), "workshop": ("Artifacts",), "artifacts": ("Artifacts",),
     "welder": ("R Artifacts", "Artifacts"), "white_aggro": ("mono W Aggro", "W Aggro", "Aggro"),
     "red_aggro": ("mono R Aggro", "R Aggro", "Aggro"), "gruul": ("RG Aggro", "Aggro"),
+    "boros": ("WR Aggro", "Aggro"), "jund": ("BRG Midrange", "BG Midrange", "BR Midrange", "Midrange"),
+    "hoof": ("mono G Ramp", "Ramp"), "doomsday": ("UB Storm", "Storm"),
 }
 
 # Roles worth counting on the overview (features.ROLE_PATTERNS), with display names.

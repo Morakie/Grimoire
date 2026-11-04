@@ -22,6 +22,7 @@ LANE_CAPACITY: Dict[str, int] = {
     "storm": 1, "reanimator": 1, "cheat": 1, "twin": 1, "nadu": 1, "recursion": 1, "blink": 1,
     "pox": 1, "domain": 1, "ramp": 1, "lands": 1,
     "control": 2, "tempo": 2, "white_aggro": 2, "red_aggro": 2, "gruul": 1,
+    "doomsday": 1, "boros": 1, "hoof": 1, "infect": 1, "jund": 2,     # added 2026-11-04 (owner's deck-type list)
 }
 # Artifact deck types compete for the same cheap artifacts (Moxen, Baubles, Opal): two of them at one table
 # behave like one crowded lane (LSV x6HSqjTfStE: two artifact neighbours both suffered; VRD sheets).
