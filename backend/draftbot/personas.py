@@ -19,12 +19,9 @@ _ARCHETYPES: Dict[str, Dict[str, float]] = {
     "control":   {"interaction": 1.12, "curve": 0.95},
 }
 
-_NAMES = [   # planeswalkers, first names only
+_NAMES = [   # the best-known planeswalkers, first names only (a table seats at most 11 bots)
     "Jace", "Liliana", "Garruk", "Ajani", "Chandra", "Nissa", "Gideon", "Sorin", "Teferi", "Karn", "Ugin",
-    "Nahiri", "Elspeth", "Tezzeret", "Vraska", "Kiora", "Sarkhan", "Ral", "Kaya", "Tamiyo", "Narset",
-    "Saheeli", "Domri", "Tibalt", "Ashiok", "Vivien", "Oko", "Wrenn", "Davriel", "Lukka", "Basri",
-    "Calix", "Niko", "Tyvar", "Kaito", "Rowan", "Will", "Dovin", "Huatli", "Samut", "Dack", "Venser",
-    "Koth", "Freyalise", "Aminatou", "Lolth", "Grist", "Quintorius", "Vronos",
+    "Elspeth", "Tezzeret", "Vraska", "Tamiyo", "Narset", "Saheeli", "Vivien", "Oko", "Venser", "Koth",
 ]
 
 
