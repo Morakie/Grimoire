@@ -76,3 +76,70 @@ def run_metrics(index, combos, engine: str, seeds: List[int], seats: int = 8, pi
     agg["undrafted"] = [n for n, v in when.items() if len(v) < len(seeds)]
     agg["main_types"] = [x["main"] for x in per_seed]
     return agg
+
+
+# ---------------------------------------------------------------- deck mix: what each deck type holds
+# How many creatures, enablers, counters... a seat's first 40 picks hold, by its main deck type: human draft sheets
+# against all-bot drafts. Cards outside the pool are skipped (and the rest scaled up to 40).
+import csv
+import io
+from statistics import median
+
+from . import engine2, rules as R
+from .benchmark import name_index, resolve
+
+
+card_kind = R.card_kind
+
+def lane(IDX, ids):
+    cnt = {}
+    for c in ids:
+        for d in IDX[c].key_of: cnt[d] = cnt.get(d, 0) + 1
+    best = max(cnt.items(), key=lambda kv: kv[1], default=(None, 0))
+    return best[0] if best[1] >= 2 else "good_stuff"
+
+def seat_rows(IDX, pools, limit=40):
+    NAMES = name_index(IDX)
+    rows = []
+    for names in pools:
+        ids = [c for c in (resolve(NAMES, n) for n in names[:limit]) if c]
+        if len(ids) < 0.6 * min(limit, len(names)): continue   # too many cards outside this pool
+        mix = {}
+        for c in ids: k = card_kind(IDX[c]); mix[k] = mix.get(k, 0) + 1
+        scale = limit / len(ids)
+        rows.append((lane(IDX, ids), {k: v * scale for k, v in mix.items()}))
+    return rows
+
+def sheet_pools(text):
+    rows = list(csv.reader(io.StringIO(text)))
+    n = len([x for x in rows[0][2:] if x.strip()])
+    pools = [[] for _ in range(n)]
+    for r in rows[1:]:
+        if r and r[0].strip().isdigit():
+            for k in range(n):
+                if k + 2 < len(r) and r[k + 2].strip(): pools[k].append(r[k + 2].strip())
+    return pools
+
+def human_rows(IDX, sheets):
+    """Deck mix of every seat in draft sheets (CSV text of each sheet's draft tab)."""
+    out = []
+    for t in sheets: out += seat_rows(IDX, sheet_pools(t))
+    return out
+
+def bot_rows(IDX, combos, seeds, engine="engine2"):
+    out = []
+    for seed in seeds:
+        r = simulate(IDX, combos, 8, 45, seed=seed, personas=True, engine=engine)
+        pools = {}
+        for p in r["picks"]: pools.setdefault(p["seat_index"], []).append(IDX[p["card_id"]].name)
+        out += seat_rows(IDX, list(pools.values()))
+    return out
+
+KINDS = ["creature", "fatty", "enabler", "counter", "removal", "discard", "ritual", "tutor", "draw", "mana",
+        "artifact", "walker", "land", "other"]
+
+def mix_table(rows):
+    """Median count of each kind of card per deck type (first 40 picks)."""
+    by = {}
+    for l, m in rows: by.setdefault(l, []).append(m)
+    return {l: {"n": len(ms), **{k: round(median(m.get(k, 0) for m in ms), 1) for k in KINDS}} for l, ms in by.items()}
