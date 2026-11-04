@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import api from "@/lib/api";
 import BotReport from "@/components/BotReport";
@@ -11,7 +11,7 @@ import { buildExport } from "@/components/ExportDialog";
 import { useAuth } from "@/context/AuthContext";
 import { getBasics } from "@/lib/mtg";
 import PackDraftView from "@/components/PackDraftView";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, ArrowRight, Megaphone, Shuffle, ListOrdered, UserX, EyeOff, FlaskConical, Maximize2 } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, ArrowRight, Megaphone, Shuffle, ListOrdered, UserX, EyeOff, FlaskConical, Maximize2, Minus } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -153,6 +153,13 @@ export default function DraftRoom() {
   const [deckSeat, setDeckSeat] = useState(null);
   const [showMiniTable, setShowMiniTable] = useState(false);
   const [wholeTable, setWholeTable] = useState(false);   // every seat and every pick on one screen (for screenshots)
+  const [wholeFont, setWholeFont] = useState(12);        // its text size: the largest that fits the screen...
+  const [wholeAdj, setWholeAdj] = useState(0);           // ...plus what the viewer added with the - / + buttons
+  const [wholeView, setWholeView] = useState("names");   // names (the pick table) or cards (cascading images per seat)
+  const [cascade, setCascade] = useState(0);             // cards view: how much of each card shows (- / + buttons)
+  const wholeBoxRef = useRef(null);
+  const wholeHeadRef = useRef(null);
+  const wholeWrapRef = useRef(null);
   const [showReport, setShowReport] = useState(false);     // the bot report pop-up
   const [showLab, setShowLab] = useState(false);           // the Bot Lab pop-up
   const labFetch = useCallback((body) => api.post(`/drafts/${shareId}/bot-lab`, body, { timeout: 60000 }), [shareId]);
@@ -382,6 +389,29 @@ export default function DraftRoom() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [wholeTable]);
+  // Whole table: find the largest text size at which every column (sized to its card names) and every row fit
+  // the screen, so a screenshot shows the whole draft as big as possible. Re-fitted on resize and new picks.
+  const wholePicks = state?.picks?.length || 0;
+  useLayoutEffect(() => {
+    if (!wholeTable) return undefined;
+    const fit = () => {
+      const box = wholeBoxRef.current, wrap = wholeWrapRef.current, head = wholeHeadRef.current;
+      if (!box || !wrap || wholeView !== "names") return;
+      const cs = getComputedStyle(box);
+      const availW = box.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      const availH = box.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - (head ? head.offsetHeight + 8 : 0);
+      let best = 9;
+      for (let f = 24; f >= 9; f -= 0.5) {
+        wrap.style.fontSize = `${f}px`;
+        if (wrap.scrollWidth <= availW + 1 && wrap.scrollHeight <= availH + 1) { best = f; break; }
+      }
+      wrap.style.fontSize = "";
+      setWholeFont(best);
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, [wholeTable, wholePicks, wholeView]);
 
   // Host changes (swap, undo, changed pick) arrive as table messages: pop them up for everyone except
   // the host who made them. Only changes since this browser last looked are shown.
@@ -899,7 +929,7 @@ export default function DraftRoom() {
     const perSeat = seatsSorted.map((s) => (state.picks || []).filter((p) => p.seat_index === s.index).sort((a, b) => a.order - b.order));
     const maxRows = perSeat.reduce((m, a) => Math.max(m, a.length), 0);
     const dense = compact || (fit && seatsSorted.length > 4);
-    const cell = whole ? "px-1 py-px text-[11px] leading-tight" : compact ? "px-1.5 py-0.5 text-[10px]" : dense ? "px-1.5 py-1 text-xs" : "px-2 sm:px-3 py-1.5 text-xs sm:text-sm";
+    const cell = whole ? "px-[0.4em] py-px leading-tight whitespace-nowrap overflow-hidden text-ellipsis" : compact ? "px-1.5 py-0.5 text-[10px]" : dense ? "px-1.5 py-1 text-xs" : "px-2 sm:px-3 py-1.5 text-xs sm:text-sm";
     return (
       <>
       {swapFrom && (
@@ -909,15 +939,17 @@ export default function DraftRoom() {
           <button type="button" data-testid="swap-cancel" onClick={() => setSwapFrom(null)} className="px-2.5 py-1 rounded-full border border-slate-600 text-slate-200 hover:border-amber-400/60">Cancel</button>
         </div>
       )}
-      <div className={`${whole ? "" : compact ? "max-h-[44vh] overflow-auto" : "max-h-[70vh] lg:max-h-[calc(100vh-240px)] overflow-auto"} rounded-xl border border-slate-800`} data-testid={whole ? "whole-draft-table" : compact ? "mini-draft-table" : "draft-table"}>
-        <table className={`w-full border-collapse ${fit ? "table-fixed" : ""}`}>
-          {fit && <colgroup><col className="w-8" /><col className="w-5" />{seatsSorted.map((s) => <col key={s.index} />)}</colgroup>}
+      <div ref={whole ? wholeWrapRef : undefined} style={whole ? { fontSize: `${Math.max(8, wholeFont + wholeAdj)}px` } : undefined}
+        className={`${whole ? "" : compact ? "max-h-[44vh] overflow-auto" : "max-h-[70vh] lg:max-h-[calc(100vh-240px)] overflow-auto"} rounded-xl border border-slate-800`} data-testid={whole ? "whole-draft-table" : compact ? "mini-draft-table" : "draft-table"}>
+        {/* The whole table sizes each column to its card names (auto layout); the peek gives every seat equal width. */}
+        <table className={`w-full border-collapse ${fit && !whole ? "table-fixed" : ""}`}>
+          {fit && !whole && <colgroup><col className="w-8" /><col className="w-5" />{seatsSorted.map((s) => <col key={s.index} />)}</colgroup>}
           <thead className="sticky top-0 z-10">
             <tr className="bg-[#0b111e]">
-              <th className="px-2 py-1.5 text-left text-slate-500 w-8 text-xs sticky left-0 z-10 bg-[#0b111e]">#</th>
+              <th className={`px-2 py-1.5 text-left text-slate-500 w-8 ${whole ? "text-[0.85em]" : "text-xs"} sticky left-0 z-10 bg-[#0b111e]`}>#</th>
               <th className="w-6 bg-[#0b111e]"></th>
               {seatsSorted.map((s) => (
-                <th key={s.index} title={s.player_name || ""} className={`${dense ? "px-1.5" : "px-3"} py-1.5 text-left font-display text-slate-100 border-l border-slate-800 truncate ${dense ? "text-[11px]" : "text-xs sm:text-sm min-w-[112px] sm:min-w-[160px]"} ${compact ? "min-w-[96px]" : ""}`}>
+                <th key={s.index} title={s.player_name || ""} className={`${dense ? "px-1.5" : "px-3"} py-1.5 text-left font-display text-slate-100 border-l border-slate-800 truncate ${whole ? "text-[1em]" : dense ? "text-[11px]" : "text-xs sm:text-sm min-w-[112px] sm:min-w-[160px]"} ${compact ? "min-w-[96px]" : ""}`}>
                   <span className="flex items-center gap-1 min-w-0"><SeatIcon bot={isBotSeat(s.index)} /><span className="truncate">{s.player_name || "—"}</span></span><div className="text-[10px] text-slate-500 font-normal">Seat {s.index + 1}</div>
                 </th>
               ))}
@@ -928,8 +960,8 @@ export default function DraftRoom() {
               <tr><td colSpan={seatsSorted.length + 2} className="px-4 py-6 text-center text-sm text-slate-500">No picks yet.</td></tr>
             ) : Array.from({ length: maxRows }).map((_, r) => (
               <tr key={r} className="border-t border-slate-800/60">
-                <td className="px-2 py-0.5 text-slate-500 tabular-nums text-xs sticky left-0 bg-[#0b111e]">{r + 1}</td>
-                <td className="px-1 text-slate-600 text-center text-xs">{r % 2 === 0 ? "→" : "←"}</td>
+                <td className={`px-2 py-0.5 text-slate-500 tabular-nums ${whole ? "text-[0.85em]" : "text-xs"} sticky left-0 bg-[#0b111e]`}>{r + 1}</td>
+                <td className={`px-1 text-slate-600 text-center ${whole ? "text-[0.85em]" : "text-xs"}`}>{r % 2 === 0 ? "→" : "←"}</td>
                 {seatsSorted.map((s, ci) => {
                   const pk = perSeat[ci][r];
                   const card = pk ? cubeById[pk.card_id] : null;
@@ -939,11 +971,11 @@ export default function DraftRoom() {
                     : swapFrom ? () => (chosen ? setSwapFrom(null) : swapFrom.seat_index === s.index ? toast.error("Pick a card from a different seat") : doSwap(swapFrom, here))
                     : () => setReassignPick(here);
                   return (
-                    <td key={s.index} className="p-0.5 border-l border-slate-800/60">
+                    <td key={s.index} className={`${whole ? "p-px" : "p-0.5"} border-l border-slate-800/60`} style={whole ? { maxWidth: "19em" } : undefined}>
                       {card ? (
                         <div data-testid={compact ? undefined : `table-cell-${s.index}-${r}`} onMouseEnter={hoverIn(card)} onMouseLeave={hoverOut(card)}
                           onClick={onCell}
-                          title={card.name} className={`rounded truncate ${cell} ${colorClass(card)} ${chosen ? "ring-2 ring-amber-300" : ""} ${hostToken ? "cursor-pointer hover:ring-2 hover:ring-amber-300" : "cursor-default"}`}>{card.name}</div>
+                          title={card.name} className={`rounded truncate ${cell} ${colorClass(card)} ${chosen ? "ring-2 ring-amber-300" : ""} ${hostToken ? "cursor-pointer hover:ring-2 hover:ring-amber-300" : "cursor-default"}`}>{whole ? card.name.split(" // ")[0] : card.name}</div>
                       ) : <div className={`${cell} text-slate-700`}>·</div>}
                     </td>
                   );
@@ -954,6 +986,43 @@ export default function DraftRoom() {
         </table>
       </div>
       </>
+    );
+  };
+
+  // Whole table, cards view: every seat's picks as a cascading column of card images in pick order. Each card
+  // shows its title bar; hovering one lifts it to full size (and the big preview follows the mouse).
+  const renderWholeCards = () => {
+    const strip = Math.min(0.6, Math.max(0.07, 0.12 + 0.03 * cascade));   // share of a card's height left showing
+    return (
+      <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${seatsSorted.length}, minmax(0, 1fr))` }} data-testid="whole-cards">
+        {seatsSorted.map((s) => {
+          const picks = (state.picks || []).filter((p) => p.seat_index === s.index).sort((a, b) => a.order - b.order);
+          return (
+            <div key={s.index} className="min-w-0">
+              <div className="flex items-center gap-1 text-sm font-display text-slate-100 truncate px-0.5"><SeatIcon bot={isBotSeat(s.index)} /><span className="truncate">{s.player_name || `Seat ${s.index + 1}`}</span></div>
+              <div className="text-[10px] text-slate-500 px-0.5 mb-1">Seat {s.index + 1} · {picks.length} picks</div>
+              <div>
+                {picks.map((pk, i) => {
+                  const card = cubeById[pk.card_id];
+                  if (!card) return null;
+                  const img = card.image || card.art_crop;
+                  return (
+                    <div key={pk.order} onMouseEnter={hoverIn(card)} onMouseLeave={hoverOut(card)} onClick={tapPreview(card)} title={`${i + 1}. ${card.name}`}
+                      className="relative z-[var(--z)] hover:z-[60] cursor-default"
+                      style={{ "--z": i, marginTop: i ? `${-(1.396 - 1.396 * strip) * 100}%` : 0 }} data-testid={`whole-card-${s.index}-${i}`}>
+                      {/* A card-shaped box of its own, so the column keeps its height while images load. */}
+                      <div className={`w-full aspect-[488/680] rounded-[4.5%/3.2%] overflow-hidden border border-black/60 shadow-md ${img ? "bg-slate-800" : colorClass(card)}`}>
+                        {img ? <img src={img} alt={card.name} loading="lazy" className="w-full h-full object-cover block" />
+                          : <span className="block p-1.5 text-xs">{card.name}</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     );
   };
 
@@ -1442,13 +1511,25 @@ export default function DraftRoom() {
       )}
 
       {wholeTable && state.status !== "lobby" && state.mode !== "packs" && (
-        <div className="fixed inset-0 z-50 bg-[#060a14] overflow-auto p-3 sm:p-4" data-testid="whole-table" role="dialog" aria-modal="true" aria-label="Whole draft table"
+        <div ref={wholeBoxRef} className="fixed inset-0 z-50 bg-[#060a14] overflow-auto p-3 sm:p-4" data-testid="whole-table" role="dialog" aria-modal="true" aria-label="Whole draft table"
           onMouseMove={(e) => placeMiniPreview(e.clientX, e.clientY)}>
-          <div className="flex items-center justify-between gap-3 mb-2">
+          <div ref={wholeHeadRef} className="flex items-center justify-between gap-3 mb-2">
             <span className="font-display font-semibold flex items-center gap-2 min-w-0"><Table2 className="w-4 h-4 text-amber-400 shrink-0" /><span className="truncate">{state.name}</span><span className="text-xs text-slate-500 font-normal shrink-0">{state.pick_index}/{state.order_len} picks</span></span>
+            <span className="ml-auto flex items-center gap-1 text-xs text-slate-400 shrink-0">
+              <span className="inline-flex rounded-full border border-slate-700 overflow-hidden mr-2">
+                {[["names", "Names", Table2], ["cards", "Cards", LayoutGrid]].map(([k, l, Icon]) => (
+                  <button key={k} type="button" data-testid={`whole-view-${k}`} aria-pressed={wholeView === k} onClick={() => setWholeView(k)}
+                    className={`px-2.5 py-1 flex items-center gap-1 ${wholeView === k ? "bg-amber-400 text-stone-900 font-semibold" : "hover:text-amber-300"}`}><Icon className="w-3.5 h-3.5" /> {l}</button>
+                ))}
+              </span>
+              {wholeView === "names" ? "Text" : "Overlap"}
+              <button type="button" data-testid="whole-table-smaller" onClick={() => (wholeView === "names" ? setWholeAdj((a) => a - 1) : setCascade((a) => a - 1))} aria-label={wholeView === "names" ? "Smaller text" : "Show less of each card"} className="p-1.5 rounded-full border border-slate-700 hover:text-amber-300"><Minus className="w-3 h-3" /></button>
+              <button type="button" data-testid="whole-table-larger" onClick={() => (wholeView === "names" ? setWholeAdj((a) => a + 1) : setCascade((a) => a + 1))} aria-label={wholeView === "names" ? "Larger text" : "Show more of each card"} className="p-1.5 rounded-full border border-slate-700 hover:text-amber-300"><Plus className="w-3 h-3" /></button>
+              {wholeView === "names" && wholeAdj !== 0 && <button type="button" data-testid="whole-table-fit" onClick={() => setWholeAdj(0)} className="px-2 py-1 rounded-full border border-slate-700 hover:text-amber-300">Fit to screen</button>}
+            </span>
             <button type="button" data-testid="whole-table-close" onClick={() => setWholeTable(false)} className="text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-white flex items-center gap-1.5 shrink-0"><X className="w-3.5 h-3.5" /> Close</button>
           </div>
-          {renderDraftTable(false, true, true)}
+          {wholeView === "cards" ? renderWholeCards() : renderDraftTable(false, true, true)}
           {hoverCard && (hoverCard.image || hoverCard.art_crop) && (
             <img ref={miniPreviewRef} src={hoverCard.image || hoverCard.art_crop} alt={hoverCard.name}
               className="pointer-events-none fixed z-[55] w-60 rounded-xl shadow-2xl border border-slate-700 hidden md:block"
