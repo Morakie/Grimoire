@@ -479,7 +479,7 @@ function OverviewView({ data, bind, onPick }) {
 
         <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
           <h3 className="font-display font-semibold mb-1">Color pairs</h3>
-          <p className="text-xs text-slate-500 mb-3">What a two-color deck could play: its colors' cards and colorless ones. Best-23 Elo is the average Elo of its 23 strongest non-land cards.</p>
+          <p className="text-xs text-slate-500 mb-3">What a two-color deck could play: its colors' cards and colorless ones. Best-23 Elo is the average Elo of its 23 strongest colored non-land cards (colorless cards are in every pair, so they're left out).</p>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="text-[11px] uppercase tracking-wide text-slate-500"><tr><th className="text-left font-medium pb-1">Pair</th><th className="text-right font-medium pb-1">Playable</th><th className="text-right font-medium pb-1">Gold</th><th className="text-right font-medium pb-1">Fixing</th><th className="text-right font-medium pb-1">Best-23 Elo</th></tr></thead>

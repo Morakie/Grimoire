@@ -207,12 +207,12 @@ def _overview(rows) -> dict:
     # Fixing: lands and mana sources that make two or more colours, per colour pair.
     fixing = {p: sum(1 for c in cards if c.is_fixing and set(p) <= set(c.produces)) for p in PAIRS}
     # Colour pairs: the cards a two-colour deck could play (its colours' cards and colourless ones), and how
-    # strong its best 23 non-land cards are.
+    # strong its best 23 coloured non-land cards are.
     pairs = []
     for p in PAIRS:
         ok = [c for c in cards if not c.is_land and set(c.need) <= set(p)]
         gold = sum(1 for c in ok if set(c.need) == set(p))
-        best = sorted(ok, key=lambda c: -c.elo)[:DECK_SIZE]
+        best = sorted((c for c in ok if c.need), key=lambda c: -c.elo)[:DECK_SIZE]   # coloured: Power is in every pair
         pairs.append({"pair": p, "name": PAIR_NAMES[p], "playable": len(ok), "gold": gold, "fixing": fixing[p],
                       "top_elo": round(sum(c.elo for c in best) / len(best)) if best else 0})
     pairs.sort(key=lambda r: -r["top_elo"])
