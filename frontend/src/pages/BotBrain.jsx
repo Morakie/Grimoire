@@ -752,7 +752,7 @@ export default function BotBrain() {
       <header className="border-b border-slate-800">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-4">
           <Link to="/" className="flex items-center gap-2"><Sparkles className="w-5 h-5 text-amber-400" /><span className="font-display text-lg font-bold">Grimoire</span></Link>
-          <div className="flex items-center gap-4 text-sm"><Link to="/draft" className="text-slate-400 hover:text-white">Cube Draft</Link><Link to="/dashboard" className="text-slate-400 hover:text-white">My Decks</Link></div>
+          <div className="flex items-center gap-4 text-sm"><Link to="/draft" className="text-slate-400 hover:text-white">Cube Draft</Link><Link to="/cube-analysis" className="text-slate-400 hover:text-white" data-testid="nav-cube-analysis">Cube Analysis</Link><Link to="/dashboard" className="text-slate-400 hover:text-white">My Decks</Link></div>
         </div>
       </header>
 

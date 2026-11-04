@@ -23,13 +23,21 @@ SPELLBOOK_URL = "https://backend.commanderspellbook.com/find-my-combos"
 class Combo:
     pieces: Tuple[str, ...]   # card ids
     weight: float             # 0.6..1.0, from Spellbook popularity
+    produces: Tuple[str, ...] = ()   # what it does ("Infinite mana"), from Spellbook; shown on the cube analysis page
+    sid: str = ""                    # Spellbook variant id (commanderspellbook.com/combo/<sid>)
 
     def to_dict(self) -> dict:
-        return {"pieces": list(self.pieces), "weight": round(self.weight, 3)}
+        d = {"pieces": list(self.pieces), "weight": round(self.weight, 3)}
+        if self.produces:
+            d["produces"] = list(self.produces)
+        if self.sid:
+            d["sid"] = self.sid
+        return d
 
 
 def combos_from_dicts(rows: Iterable[dict]) -> List[Combo]:
-    return [Combo(tuple(r["pieces"]), float(r.get("weight", 0.8))) for r in rows]
+    return [Combo(tuple(r["pieces"]), float(r.get("weight", 0.8)), tuple(r.get("produces") or ()), str(r.get("sid") or ""))
+            for r in rows]
 
 
 async def fetch_combos(index: Dict[str, CardInfo], timeout: float = 20.0) -> List[Combo]:
@@ -101,7 +109,7 @@ async def _spellbook_combos(index: Dict[str, CardInfo], timeout: float) -> List[
 def _to_combos(variants: List[dict], index: Dict[str, CardInfo]) -> List[Combo]:
     by_name = lookup_by_name(index)
     seen = set()
-    raw: List[Tuple[Tuple[str, ...], int]] = []
+    raw: List[Tuple[Tuple[str, ...], int, Tuple[str, ...], str]] = []
     for v in variants:
         if v.get("requires"):  # needs an unspecified "any X" card: too vague to draft around
             continue
@@ -118,11 +126,13 @@ def _to_combos(variants: List[dict], index: Dict[str, CardInfo]) -> List[Combo]:
             key = tuple(sorted(ids))
             if len(key) >= 2 and key not in seen:
                 seen.add(key)
-                raw.append((key, int(v.get("popularity") or 0)))
+                produces = tuple(n for n in (((p.get("feature") or {}).get("name") or "").strip()
+                                             for p in v.get("produces") or []) if n)
+                raw.append((key, int(v.get("popularity") or 0), produces[:6], str(v.get("id") or "")))
     if not raw:
         return []
-    top = max(math.log1p(p) for _, p in raw) or 1.0
-    return [Combo(pieces, 0.6 + 0.4 * math.log1p(pop) / top) for pieces, pop in raw]
+    top = max(math.log1p(r[1]) for r in raw) or 1.0
+    return [Combo(pieces, 0.6 + 0.4 * math.log1p(pop) / top, produces, sid) for pieces, pop, produces, sid in raw]
 
 
 _LIFE = re.compile(r"\blife\b|lifegain|life gain")

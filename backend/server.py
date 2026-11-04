@@ -36,6 +36,7 @@ from draftbot.personas import Persona, assign_leans, lean_choices
 from draftbot.engine import score_pool, suggest_picks
 from draftbot.lab import card_dossier, clean_tuning, knob_list, lab_view, pick_slot, simulate, source_payload
 from draftbot.deckbuild import suggest_deck
+from draftbot.analysis import cube_analysis
 from draftbot.packbot import choose_from_pack, rank_pack
 import packdraft as pd
 import vrd
@@ -2661,6 +2662,30 @@ async def lab_card(body: LabCardInput):
         raise HTTPException(status_code=404, detail="Card not found in this pool")
     attach_combos(src["index"], src["combos"])
     return fast_json(card_dossier(src["index"], src["combos"], body.card))
+
+
+class LabAnalysisInput(BaseModel):
+    source: str = Field(max_length=80)
+
+
+_ANALYSIS_CACHE: Dict[str, dict] = {}
+
+
+@api_router.post("/lab/analysis")
+async def lab_analysis(body: LabAnalysisInput):
+    """Cube Analysis page: the whole breakdown of a loaded pool (cards, deck types, combos, overview).
+    Load the pool with /lab/source first. Cached per pool build."""
+    src = _lab_source(body.source)
+    key = f"{body.source}:{src.get('built_at', '')}"
+    if key not in _ANALYSIS_CACHE:
+        attach_combos(src["index"], src["combos"])
+        out = await run_in_threadpool(cube_analysis, src["index"], src["combos"], src["cards"])
+        out["combo_details"] = any(r["produces"] for r in out["combos"]) or not out["combos"]
+        if len(_ANALYSIS_CACHE) > 8:
+            _ANALYSIS_CACHE.clear()
+        _ANALYSIS_CACHE[key] = out
+    return fast_json({"source": body.source, "label": src.get("label", ""), "built_at": src.get("built_at", ""),
+                      "partial": src.get("partial", False), **_ANALYSIS_CACHE[key]})
 
 
 @api_router.post("/lab/simulate")
