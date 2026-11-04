@@ -1010,8 +1010,11 @@ export default function DraftRoom() {
                     <div key={pk.order} onMouseEnter={hoverIn(card)} onMouseLeave={hoverOut(card)} onClick={tapPreview(card)} title={`${i + 1}. ${card.name}`}
                       className="relative z-[var(--z)] hover:z-[60] cursor-default"
                       style={{ "--z": i, marginTop: i ? `${-(1.396 - 1.396 * strip) * 100}%` : 0 }} data-testid={`whole-card-${s.index}-${i}`}>
-                      {img ? <img src={img} alt={card.name} loading="lazy" className="w-full rounded-[4.5%] border border-black/60 shadow-md block" />
-                        : <div className={`w-full aspect-[488/680] rounded-lg border border-slate-700 p-1.5 text-xs ${colorClass(card)}`}>{card.name}</div>}
+                      {/* A card-shaped box of its own, so the column keeps its height while images load. */}
+                      <div className={`w-full aspect-[488/680] rounded-[4.5%/3.2%] overflow-hidden border border-black/60 shadow-md ${img ? "bg-slate-800" : colorClass(card)}`}>
+                        {img ? <img src={img} alt={card.name} loading="lazy" className="w-full h-full object-cover block" />
+                          : <span className="block p-1.5 text-xs">{card.name}</span>}
+                      </div>
                     </div>
                   );
                 })}
