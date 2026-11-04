@@ -25,6 +25,7 @@ const PublicDeck = lazyPage(() => import("@/pages/PublicDeck"));
 const DraftSetup = lazyPage(() => import("@/pages/DraftSetup"));
 const DraftRoom = lazyPage(() => import("@/pages/DraftRoom"));
 const BotBrain = lazyPage(() => import("@/pages/BotBrain"));
+const CubeAnalysis = lazyPage(() => import("@/pages/CubeAnalysis"));
 
 const PageLoading = () => (
   <div className="h-screen flex items-center justify-center bg-[#060a14]"><Loader2 className="w-8 h-8 text-amber-400 animate-spin" /></div>
@@ -47,6 +48,7 @@ function App() {
               <Route path="/draft" element={<DraftSetup />} />
               <Route path="/draft/:shareId" element={<DraftRoom />} />
               <Route path="/bots" element={<BotBrain />} />
+              <Route path="/cube-analysis" element={<CubeAnalysis />} />
             </Routes>
           </Suspense>
         </BrowserRouter>
