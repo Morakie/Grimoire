@@ -75,8 +75,32 @@ def _type_group(c: CardInfo) -> str:
     return "other"
 
 
-def _fit(c: CardInfo, t: str) -> float:
+# Deck types built from others' cards: a Boros deck is mostly white weenie and red aggro cards (its own keys are
+# only the Boros gold cards), so on this page their cards in those colours count towards it too.
+DERIVED: Dict[str, tuple] = {"boros": (("white_aggro", "red_aggro"), "WR")}
+DERIVED_FIT = 0.8      # a parent deck type's card fits the derived one a little less than its own cards
+
+
+def _own_fit(c: CardInfo, t: str) -> float:
     return 1.0 if t in c.key_of else float(c.deck.get(t, 0.0))
+
+
+def _fit(c: CardInfo, t: str) -> float:
+    fit = _own_fit(c, t)
+    if t in DERIVED:
+        parents, cols = DERIVED[t]
+        if set(c.need) <= set(cols):
+            fit = max(fit, DERIVED_FIT * max(_own_fit(c, p) for p in parents))
+    return fit
+
+
+def _is_key(c: CardInfo, t: str) -> bool:
+    if t in c.key_of:
+        return True
+    if t in DERIVED:
+        parents, cols = DERIVED[t]
+        return bool(c.need) and set(c.need) <= set(cols) and any(p in c.key_of for p in parents)
+    return False
 
 
 def _plan_rows(t: str, meta: dict) -> tuple:
@@ -153,7 +177,7 @@ def cube_analysis(index: Dict[str, CardInfo], combos: List[Combo], cards: Sequen
             played = _played(played_rows, c)
             if fit < FIT_MIN and not (played and played[1] >= 1.3):
                 continue
-            role = ("key" if t in c.key_of else "core" if c.name.lower() in core_names[t] or c.name.split(" // ")[0].lower() in core_names[t]
+            role = ("key" if _is_key(c, t) else "core" if c.name.lower() in core_names[t] or c.name.split(" // ")[0].lower() in core_names[t]
                     else "fits" if fit >= FIT_MIN else "played")
             members.append({"id": c.id, "fit": round(fit, 2), "role": role,
                             "rate": played[0] if played else None, "lift": played[1] if played else None})
