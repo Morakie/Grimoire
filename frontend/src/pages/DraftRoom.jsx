@@ -11,7 +11,7 @@ import { buildExport } from "@/components/ExportDialog";
 import { useAuth } from "@/context/AuthContext";
 import { getBasics } from "@/lib/mtg";
 import PackDraftView from "@/components/PackDraftView";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, ArrowRight, Megaphone, Shuffle, ListOrdered, UserX, EyeOff, FlaskConical } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, ArrowRight, Megaphone, Shuffle, ListOrdered, UserX, EyeOff, FlaskConical, Maximize2 } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -152,6 +152,7 @@ export default function DraftRoom() {
   const [view, setView] = useState("pick");
   const [deckSeat, setDeckSeat] = useState(null);
   const [showMiniTable, setShowMiniTable] = useState(false);
+  const [wholeTable, setWholeTable] = useState(false);   // every seat and every pick on one screen (for screenshots)
   const [showReport, setShowReport] = useState(false);     // the bot report pop-up
   const [showLab, setShowLab] = useState(false);           // the Bot Lab pop-up
   const labFetch = useCallback((body) => api.post(`/drafts/${shareId}/bot-lab`, body, { timeout: 60000 }), [shareId]);
@@ -374,6 +375,13 @@ export default function DraftRoom() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [suggestOpen]);
+  // Escape closes the whole-table view.
+  useEffect(() => {
+    if (!wholeTable) return;
+    const onKey = (e) => { if (e.key === "Escape") setWholeTable(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [wholeTable]);
 
   // Host changes (swap, undo, changed pick) arrive as table messages: pop them up for everyone except
   // the host who made them. Only changes since this browser last looked are shown.
@@ -885,12 +893,13 @@ export default function DraftRoom() {
   );
 
   // fit=true squeezes every seat into the available width (Table Peek popout); the main view keeps
-  // readable columns and scrolls sideways instead.
-  const renderDraftTable = (compact = false, fit = false) => {
+  // readable columns and scrolls sideways instead. whole=true also drops the height limit and shrinks the rows,
+  // so the whole draft (every seat, every pick) is on one screen for a screenshot.
+  const renderDraftTable = (compact = false, fit = false, whole = false) => {
     const perSeat = seatsSorted.map((s) => (state.picks || []).filter((p) => p.seat_index === s.index).sort((a, b) => a.order - b.order));
     const maxRows = perSeat.reduce((m, a) => Math.max(m, a.length), 0);
     const dense = compact || (fit && seatsSorted.length > 4);
-    const cell = compact ? "px-1.5 py-0.5 text-[10px]" : dense ? "px-1.5 py-1 text-xs" : "px-2 sm:px-3 py-1.5 text-xs sm:text-sm";
+    const cell = whole ? "px-1 py-px text-[11px] leading-tight" : compact ? "px-1.5 py-0.5 text-[10px]" : dense ? "px-1.5 py-1 text-xs" : "px-2 sm:px-3 py-1.5 text-xs sm:text-sm";
     return (
       <>
       {swapFrom && (
@@ -900,7 +909,7 @@ export default function DraftRoom() {
           <button type="button" data-testid="swap-cancel" onClick={() => setSwapFrom(null)} className="px-2.5 py-1 rounded-full border border-slate-600 text-slate-200 hover:border-amber-400/60">Cancel</button>
         </div>
       )}
-      <div className={`${compact ? "max-h-[44vh]" : "max-h-[70vh] lg:max-h-[calc(100vh-240px)]"} overflow-auto rounded-xl border border-slate-800`} data-testid={compact ? "mini-draft-table" : "draft-table"}>
+      <div className={`${whole ? "" : compact ? "max-h-[44vh] overflow-auto" : "max-h-[70vh] lg:max-h-[calc(100vh-240px)] overflow-auto"} rounded-xl border border-slate-800`} data-testid={whole ? "whole-draft-table" : compact ? "mini-draft-table" : "draft-table"}>
         <table className={`w-full border-collapse ${fit ? "table-fixed" : ""}`}>
           {fit && <colgroup><col className="w-8" /><col className="w-5" />{seatsSorted.map((s) => <col key={s.index} />)}</colgroup>}
           <thead className="sticky top-0 z-10">
@@ -1303,6 +1312,7 @@ export default function DraftRoom() {
                   </div>
                   {viewTabs([["pick", "Pick", LayoutGrid], ["table", "Draft Table", Table2], ["decks", "Decks", Eye]])}
                   <button data-testid="toggle-mini-table" onClick={() => setShowMiniTable((v) => !v)} className="hidden lg:flex text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 items-center gap-1.5"><Table2 className="w-3.5 h-3.5" /> {showMiniTable ? "Hide peek" : "Table peek"}</button>
+                  {state.mode !== "packs" && <button type="button" data-testid="open-whole-table" onClick={() => { setShowMiniTable(false); setWholeTable(true); }} className="hidden lg:flex text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 items-center gap-1.5"><Maximize2 className="w-3.5 h-3.5" /> Whole table</button>}
                   {state.mode !== "packs" && state.pool !== "vintage" && state.pick_index >= 20 && (
                     <>
                     <button type="button" data-testid="open-bot-report" onClick={() => setShowReport(true)} className="text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 flex items-center gap-1.5"><Bot className="w-3.5 h-3.5" /> Bot report</button>
@@ -1324,6 +1334,7 @@ export default function DraftRoom() {
                     : [["pick", "Results", ListChecks], ["table", "Draft Table", Table2], ["decks", "Decks", Eye]])}
                   {state.mode !== "packs" && state.pool !== "vintage" && (
                     <>
+                    <button type="button" data-testid="open-whole-table-complete" onClick={() => setWholeTable(true)} className="text-xs px-3 py-1.5 rounded-full border border-amber-400/50 text-amber-200 hover:text-amber-100 flex items-center gap-1.5"><Maximize2 className="w-3.5 h-3.5" /> Whole table</button>
                     <button type="button" data-testid="open-bot-report-complete" onClick={() => setShowReport(true)} className="text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 flex items-center gap-1.5"><Bot className="w-3.5 h-3.5" /> Bot report</button>
                     <button type="button" data-testid="open-bot-lab-complete" onClick={() => setShowLab(true)} className="text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 flex items-center gap-1.5"><FlaskConical className="w-3.5 h-3.5" /> Bot Lab</button>
                     </>
@@ -1430,12 +1441,29 @@ export default function DraftRoom() {
         <BotReport shareId={shareId} cubeById={cubeById} seats={state.seats} pickCount={state.pick_index} onClose={() => setShowReport(false)} />
       )}
 
+      {wholeTable && state.status !== "lobby" && state.mode !== "packs" && (
+        <div className="fixed inset-0 z-50 bg-[#060a14] overflow-auto p-3 sm:p-4" data-testid="whole-table" role="dialog" aria-modal="true" aria-label="Whole draft table"
+          onMouseMove={(e) => placeMiniPreview(e.clientX, e.clientY)}>
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <span className="font-display font-semibold flex items-center gap-2 min-w-0"><Table2 className="w-4 h-4 text-amber-400 shrink-0" /><span className="truncate">{state.name}</span><span className="text-xs text-slate-500 font-normal shrink-0">{state.pick_index}/{state.order_len} picks</span></span>
+            <button type="button" data-testid="whole-table-close" onClick={() => setWholeTable(false)} className="text-xs px-3 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-white flex items-center gap-1.5 shrink-0"><X className="w-3.5 h-3.5" /> Close</button>
+          </div>
+          {renderDraftTable(false, true, true)}
+          {hoverCard && (hoverCard.image || hoverCard.art_crop) && (
+            <img ref={miniPreviewRef} src={hoverCard.image || hoverCard.art_crop} alt={hoverCard.name}
+              className="pointer-events-none fixed z-[55] w-60 rounded-xl shadow-2xl border border-slate-700 hidden md:block"
+              style={{ left: miniMouseRef.current.left, top: miniMouseRef.current.top }} />
+          )}
+        </div>
+      )}
+
       {showMiniTable && state.status !== "lobby" && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center p-4 pt-20" data-testid="mini-table" onClick={() => setShowMiniTable(false)}
           onMouseMove={(e) => placeMiniPreview(e.clientX, e.clientY)}>
           <div className="w-[min(98vw,1400px)] max-h-[86vh] bg-[#0b111e] border border-amber-400/40 rounded-xl shadow-2xl overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800 shrink-0">
               <span className="text-sm font-display font-semibold flex items-center gap-2"><Table2 className="w-4 h-4 text-amber-400" /> Draft table — quick glance</span>
+              {state.mode !== "packs" && <button type="button" data-testid="mini-table-whole" onClick={() => { setShowMiniTable(false); setWholeTable(true); }} className="ml-auto mr-3 text-xs px-2.5 py-1 rounded-full border border-slate-700 text-slate-300 hover:text-amber-300 flex items-center gap-1.5"><Maximize2 className="w-3.5 h-3.5" /> Whole table</button>}
               <button data-testid="mini-table-close" onClick={() => setShowMiniTable(false)} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
             </div>
             <div className="overflow-auto p-3">{renderDraftTable(false, window.innerWidth >= 768)}</div>
