@@ -24,6 +24,17 @@ export default function CardSearchBar({ onAdd, target, setTarget, targets }) {
   const sugTimer = useRef(null);
   const skipSug = useRef(false);
   const wrapRef = useRef(null);
+  // Only the newest request may change the screen: an older reply that arrives late is dropped
+  // (and cancelled where possible), so it can't replace newer results or reopen suggestions.
+  const sugReq = useRef({ seq: 0, ctrl: null });
+  const searchReq = useRef({ seq: 0, ctrl: null });
+  const nextReq = (ref) => {
+    if (ref.current.ctrl) ref.current.ctrl.abort();
+    const ctrl = new AbortController();
+    ref.current = { seq: ref.current.seq + 1, ctrl };
+    return { seq: ref.current.seq, signal: ctrl.signal };
+  };
+  const isLatest = (ref, seq) => ref.current.seq === seq;
 
   const toggleColor = (c) => setColors((p) => (p.includes(c) ? p.filter((x) => x !== c) : [...p, c]));
   const targetLabel = (targets.find((t) => t.key === target) || {}).label || "Mainboard";
@@ -31,13 +42,16 @@ export default function CardSearchBar({ onAdd, target, setTarget, targets }) {
   useEffect(() => {
     if (skipSug.current) { skipSug.current = false; return; }
     if (sugTimer.current) clearTimeout(sugTimer.current);
-    if (query.trim().length < 2 || open) { setSuggestions([]); setShowSug(false); return; }
+    nextReq(sugReq);    // the query changed: a reply for the old text must not show up now
+    if (query.trim().length < 2 || open) { nextReq(sugReq); setSuggestions([]); setShowSug(false); return; }
     sugTimer.current = setTimeout(async () => {
+      const { seq, signal } = nextReq(sugReq);
       try {
-        const { data } = await api.get("/cards/autocomplete", { params: { q: query } });
+        const { data } = await api.get("/cards/autocomplete", { params: { q: query }, signal });
+        if (!isLatest(sugReq, seq)) return;
         setSuggestions(data.suggestions || []);
         setShowSug((data.suggestions || []).length > 0);
-      } catch { setSuggestions([]); }
+      } catch { if (isLatest(sugReq, seq)) setSuggestions([]); }
     }, 220);
     return () => sugTimer.current && clearTimeout(sugTimer.current);
   }, [query, open]);
@@ -53,15 +67,20 @@ export default function CardSearchBar({ onAdd, target, setTarget, targets }) {
   const runSearch = async (term) => {
     const q = term !== undefined ? term : query;
     if (!q.trim() && !colors.length && !type) { toast.error("Enter a search term or pick a filter"); return; }
+    nextReq(sugReq);    // a pending suggestion reply must not pop up over the results
     setShowSug(false);
     setLoading(true);
     setOpen(true);
+    const { seq, signal } = nextReq(searchReq);
     try {
-      const { data } = await api.get("/cards/search", { params: { q, colors: colors.join(""), type } });
+      const { data } = await api.get("/cards/search", { params: { q, colors: colors.join(""), type }, signal });
+      if (!isLatest(searchReq, seq)) return;
       setResults(data.cards);
       if (!data.cards.length) toast("No cards found");
-    } catch { toast.error("Search failed. Try a different query."); setResults([]); }
-    finally { setLoading(false); }
+    } catch {
+      if (!isLatest(searchReq, seq)) return;
+      toast.error("Search failed. Try a different query."); setResults([]);
+    } finally { if (isLatest(searchReq, seq)) setLoading(false); }
   };
 
   const addCard = (card) => {
@@ -73,9 +92,12 @@ export default function CardSearchBar({ onAdd, target, setTarget, targets }) {
   // If the exact lookup fails for any reason, fall back to showing normal search results.
   const pickSuggestion = async (name) => {
     skipSug.current = true;
+    nextReq(sugReq);
     setShowSug(false);
+    const searchSeq = searchReq.current.seq;   // a search started meanwhile wins over this lookup
     try {
       const { data } = await api.get("/cards/search", { params: { q: `!"${name}"` } });
+      if (searchReq.current.seq !== searchSeq) return;
       if (data.cards && data.cards.length) {
         addCard(data.cards[0]);
         skipSug.current = true;
@@ -83,6 +105,7 @@ export default function CardSearchBar({ onAdd, target, setTarget, targets }) {
         return;
       }
     } catch { /* fall through to a normal search */ }
+    if (searchReq.current.seq !== searchSeq) return;
     setQuery(name);
     runSearch(name);
   };
@@ -100,7 +123,7 @@ export default function CardSearchBar({ onAdd, target, setTarget, targets }) {
             placeholder={`Find and add cards to ${targetLabel.toLowerCase()}...`}
             className="pl-9 pr-10 h-9 bg-slate-900 border-slate-700 focus-visible:ring-amber-400 text-slate-100"
           />
-          <button type="button" data-testid="toggle-filters" onClick={() => setShowFilters((s) => !s)}
+          <button type="button" data-testid="toggle-filters" onClick={() => setShowFilters((s) => !s)} aria-label="Filters" title="Filters" aria-pressed={showFilters}
             className={`absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded ${showFilters ? "text-amber-400" : "text-slate-500 hover:text-slate-300"}`}>
             <SlidersHorizontal className="w-4 h-4" />
           </button>

@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 
 CARD_URL = "https://cubecobra.com/tool/card/{}"
 MAX_AGE = timedelta(days=30)
+MISSING_MAX_AGE = timedelta(days=3)   # a card CubeCobra doesn't know: ask again after a few days
 _PROPS = re.compile(r"window\.reactProps\s*=\s*(\{.*?\});\s*</script>", re.S)
 
 SYNERGY_STRENGTH = 1.0   # "synergistic" partner
@@ -53,16 +54,22 @@ def parse_card_page(html: str) -> Optional[dict]:
     }
 
 
-async def _fetch_one(hc, name: str) -> Optional[dict]:
+async def _fetch_one(hc, name: str) -> tuple:
+    """-> ("ok", stats), ("missing", None) when CubeCobra has no such card, or ("error", None) for a
+    timeout, server error or rate limit. Errors aren't cached, so the card is tried again next time."""
     from urllib.parse import quote
     try:
         r = await hc.get(CARD_URL.format(quote(name, safe="")))
-        if r.status_code != 200 or r.url.path.endswith("/404"):
-            return None
-        return parse_card_page(r.text)
-    except Exception as exc:  # network trouble: just skip this card
+    except Exception as exc:  # network trouble: try again another time
         log.info("CubeCobra stats for %s failed: %s", name, exc)
-        return None
+        return "error", None
+    if r.status_code == 404 or r.url.path.endswith("/404"):
+        return "missing", None
+    if r.status_code != 200:
+        log.info("CubeCobra stats for %s: HTTP %s", name, r.status_code)
+        return "error", None
+    stats = parse_card_page(r.text)
+    return ("ok", stats) if stats else ("missing", None)
 
 
 _IN_FLIGHT: set = set()
@@ -76,9 +83,11 @@ async def ensure_stats(db, names: Iterable[str], budget_s: float = 10.0, concurr
     names = list(dict.fromkeys(n for n in names if n))
     now = datetime.now(timezone.utc)
     fresh = set()
-    async for doc in db.card_stats.find({"key": {"$in": [n.lower() for n in names]}}, {"key": 1, "fetched_at": 1}):
+    async for doc in db.card_stats.find({"key": {"$in": [n.lower() for n in names]}},
+                                        {"key": 1, "fetched_at": 1, "missing": 1, "lookup_failed": 1}):
         try:
-            if now - datetime.fromisoformat(doc["fetched_at"]) < MAX_AGE:
+            short = doc.get("missing") or doc.get("lookup_failed")
+            if now - datetime.fromisoformat(doc["fetched_at"]) < (MISSING_MAX_AGE if short else MAX_AGE):
                 fresh.add(doc["key"])
         except (KeyError, ValueError):
             pass
@@ -95,11 +104,22 @@ async def ensure_stats(db, names: Iterable[str], budget_s: float = 10.0, concurr
             async with sem:
                 if asyncio.get_event_loop().time() > deadline:
                     return
-                stats = await _fetch_one(hc, name)
+                status, stats = await _fetch_one(hc, name)
                 await asyncio.sleep(0.1)   # be polite
+            if status == "error":
+                return   # keep whatever we had (good stats stay usable); try again next time
             doc = {"key": name.lower(), "fetched_at": datetime.now(timezone.utc).isoformat()}
-            doc.update(stats or {"name": name, "missing": True})
-            await db.card_stats.update_one({"key": doc["key"]}, {"$set": doc}, upsert=True)
+            if status == "ok":
+                doc.update(stats, missing=False, lookup_failed=False)
+                await db.card_stats.update_one({"key": doc["key"]}, {"$set": doc}, upsert=True)
+            else:
+                # Not on CubeCobra. Don't overwrite stats we already have (a renamed page shouldn't wipe them).
+                doc.update(name=name, missing=True)
+                # Keep the stats we have, and ask again after a few days rather than a month.
+                await db.card_stats.update_one({"key": doc["key"], "elo": {"$exists": True}},
+                                               {"$set": {"fetched_at": doc["fetched_at"], "lookup_failed": True}})
+                await db.card_stats.update_one({"key": doc["key"], "elo": {"$exists": False}}, {"$set": doc})
+                await db.card_stats.update_one({"key": doc["key"]}, {"$setOnInsert": doc}, upsert=True)
         finally:
             _IN_FLIGHT.discard(name.lower())
 

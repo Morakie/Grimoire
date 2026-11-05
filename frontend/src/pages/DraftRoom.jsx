@@ -11,7 +11,7 @@ import { buildExport } from "@/components/ExportDialog";
 import { useAuth } from "@/context/AuthContext";
 import { getBasics } from "@/lib/mtg";
 import PackDraftView from "@/components/PackDraftView";
-import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, ArrowRight, Megaphone, Shuffle, ListOrdered, UserX, EyeOff, FlaskConical, Maximize2, Minus } from "lucide-react";
+import { Sparkles, Loader2, Copy, Check, ListChecks, MessageSquare, X, LayoutGrid, Table2, Eye, Volume2, VolumeX, Bookmark, BookmarkPlus, BookmarkCheck, ArrowUp, ArrowDown, Undo2, Bot, Plus, PartyPopper, Lightbulb, Lock, Search, ArrowDownWideNarrow, Users, User, ArrowLeftRight, ArrowRight, Megaphone, Shuffle, ListOrdered, UserX, EyeOff, FlaskConical, Maximize2, Minus, KeyRound } from "lucide-react";
 import { toast } from "sonner";
 
 const GUEST_KEY = "grimoire_guest_deck";
@@ -132,6 +132,12 @@ export default function DraftRoom() {
   };
   const [me, setMe] = useState(() => { try { return JSON.parse(localStorage.getItem(storeKey(shareId))) || null; } catch { return null; } });
   const [claimName, setClaimName] = useState("");
+  // A new identity (claimed a seat, switched player) sees a different private view: forget the known
+  // version so the next poll returns that view instead of "unchanged".
+  useEffect(() => { versionRef.current = null; }, [me?.player_token]);
+  const [hostPwPrompt, setHostPwPrompt] = useState(null);   // { name }: asking the host for the host password
+  const [hostPwInput, setHostPwInput] = useState("");
+  const [hostPwEdit, setHostPwEdit] = useState(false);      // host: set / change the host password
   const [rejoinHidden, setRejoinHidden] = useState(false);   // spectator dismissed the "rejoin" box
   const [claimTarget, setClaimTarget] = useState(null);      // a joined player this browser wants to become (confirm first)
   const [query, setQuery] = useState("");
@@ -474,24 +480,40 @@ export default function DraftRoom() {
   );
 
   // Join as a new player (typed name), or claim a player who already joined (picked from the list).
-  const claim = async (asName) => {
+  const claim = async (asName, hostPassword) => {
     const name = (asName ?? claimName).trim();
     if (!name) { toast.error("Enter a name"); return; }
     // Typed the name of someone already at the table: confirm it's them rather than taking their seat silently.
     const existing = asName ? null : (state?.players || []).find((p) => !p.is_bot && p.name.toLowerCase() === name.toLowerCase());
     if (existing) { setClaimTarget(existing); return; }
     try {
-      const { data: { host_token: newHost, ...data } } = await api.post(`/drafts/${shareId}/claim`,
-        { name, player_token: me?.player_token, host_token: hostToken || undefined });
+      const { data: { host_token: newHost, host_password_required: pwNeeded, host_locked: locked, ...data } } = await api.post(`/drafts/${shareId}/claim`,
+        { name, player_token: me?.player_token, host_token: hostToken || undefined, host_password: hostPassword || undefined });
+      if (!data.player_token) {         // mirror table opened from another browser: needs the host password
+        setHostPwInput(""); setHostPwPrompt({ name, mirror: true }); return;
+      }
       localStorage.setItem(storeKey(shareId), JSON.stringify(data));
       setMe(data);
+      setHostPwPrompt(null);
       if (newHost && newHost !== hostToken) {
         try { localStorage.setItem(`grim_draft_host_${shareId}`, newHost); } catch { /* storage blocked */ }
         setHostToken(newHost);
         toast.success("Welcome back, host: your host controls are back");
       }
       toast.success(state?.status === "lobby" ? `Claimed seat(s): ${data.seats.map((s) => s + 1).join(", ")}` : `Back in your seat(s): ${data.seats.map((s) => s + 1).join(", ")}`);
+      if (locked && !newHost) {
+        if (pwNeeded) { setHostPwInput(""); setHostPwPrompt({ name }); }
+        else toast("Host controls stay in the browser that created this table (no host password was set).", { duration: 7000 });
+      }
     } catch (e) { toast.error(e.response?.data?.detail || "Could not claim"); }
+  };
+  const saveHostPassword = async (password) => {
+    try {
+      const { data } = await api.post(`/drafts/${shareId}/host-password`, { host_token: hostToken, password });
+      setState((st) => ({ ...st, host_password_set: data.host_password_set }));
+      setHostPwEdit(false); setHostPwInput("");
+      toast.success(data.host_password_set ? "Host password saved" : "Host password removed");
+    } catch (e) { toast.error(e.response?.data?.detail || "Couldn't save the host password"); }
   };
   // Watching a table you're part of (new browser, cleared storage)? Rejoin with the name you used.
   const humans = (state.players || []).filter((p) => !p.is_bot);
@@ -531,6 +553,30 @@ export default function DraftRoom() {
     </div>
   ) : null;
 
+  const hostPwDialog = (hostPwPrompt || hostPwEdit) ? (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4" data-testid="host-password-dialog"
+      onClick={() => { setHostPwPrompt(null); setHostPwEdit(false); }}>
+      <form className="bg-[#0b111e] border border-slate-700 rounded-2xl p-5 max-w-xs w-full text-center" onClick={(e) => e.stopPropagation()}
+        onSubmit={(e) => { e.preventDefault(); if (hostPwEdit) saveHostPassword(hostPwInput.trim()); else if (hostPwInput.trim()) claim(hostPwPrompt.name, hostPwInput.trim()); }}>
+        <KeyRound className="w-8 h-8 text-amber-400 mx-auto mb-2" />
+        <h3 className="font-display text-lg font-bold">{hostPwEdit ? "Host password" : "Are you the host?"}</h3>
+        <p className="text-sm text-slate-400 mt-1 mb-3">{hostPwEdit
+          ? (state.host_password_set ? "Change it, or leave it blank and save to remove it." : "Set a password to get host controls back from another browser or device.")
+          : hostPwPrompt.mirror ? "This mirror table opens in another browser only with the host password."
+          : "You're back in your seat. Enter the host password to get the host controls back too."}</p>
+        <Input autoFocus type="password" autoComplete={hostPwEdit ? "new-password" : "current-password"} data-testid="host-password-input"
+          value={hostPwInput} onChange={(e) => setHostPwInput(e.target.value)} maxLength={64} placeholder="Host password"
+          className="mb-4 bg-slate-950 border-slate-700 text-slate-100" />
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" data-testid="host-password-cancel" onClick={() => { setHostPwPrompt(null); setHostPwEdit(false); }}
+            className="flex-1 bg-slate-900 border-slate-700 text-slate-200">{hostPwEdit || hostPwPrompt?.mirror ? "Cancel" : "Skip"}</Button>
+          <Button type="submit" data-testid="host-password-submit" className="flex-1 bg-amber-400 hover:bg-amber-500 text-stone-900 font-semibold">
+            {hostPwEdit ? "Save" : "Unlock"}</Button>
+        </div>
+      </form>
+    </div>
+  ) : null;
+
   if (draft.mode === "packs" && state.status === "drafting") {
     const closeTable = async () => {
       if (!window.confirm("Close this table for everyone? This cannot be undone.")) return;
@@ -544,6 +590,7 @@ export default function DraftRoom() {
           onBeep={playBeep} onCancel={closeTable} shareUrl={`${window.location.origin}/draft/${shareId}`} />
         {rejoinBar}
         {claimDialog}
+        {hostPwDialog}
       </>
     );
   }
@@ -1172,6 +1219,11 @@ export default function DraftRoom() {
               <Button size="sm" variant="outline" data-testid="undo-pick" onClick={undoPick} title="Undo last pick (host)" className="bg-slate-900 border-amber-400/40 text-amber-300 hover:bg-amber-400/10"><Undo2 className="w-4 h-4 sm:mr-1.5" /><span className="hidden sm:inline">Undo pick</span></Button>
             )}
             {hostToken && state.status !== "complete" && (
+              <Button size="sm" variant="outline" data-testid="host-password-btn" onClick={() => { setHostPwInput(""); setHostPwEdit(true); }}
+                aria-label={state.host_password_set ? "Change host password" : "Set host password"} title={state.host_password_set ? "Change host password" : "Set host password"}
+                className="bg-slate-900 border-slate-700 text-slate-300"><KeyRound className="w-4 h-4" /></Button>
+            )}
+            {hostToken && state.status !== "complete" && (
               <Button size="sm" variant="outline" data-testid="close-table" onClick={cancelTable} className="bg-slate-900 border-red-500/40 text-red-300 hover:bg-red-500/10"><X className="w-4 h-4 sm:mr-1.5" /><span className="hidden sm:inline">Close table</span></Button>
             )}
           </div>
@@ -1484,6 +1536,7 @@ export default function DraftRoom() {
 
       {rejoinBar}
       {claimDialog}
+      {hostPwDialog}
 
       {previewCard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6" data-testid="card-preview-dialog" onClick={() => setPreviewCard(null)}>

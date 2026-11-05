@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import MyCubes from "@/components/MyCubes";
 import api from "@/lib/api";
@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Sparkles, Plus, MoreVertical, Copy, Trash2, Share2, Loader2, LogOut, Layers, Library, Upload } from "lucide-react";
+import { Sparkles, Plus, MoreVertical, Copy, Trash2, Share2, Loader2, LogOut, Layers, Library, Upload, AlertTriangle, RefreshCw } from "lucide-react";
 import { FORMATS, formatLabel, totalCount, MANA_COLORS } from "@/lib/mtg";
 import { toast } from "sonner";
 
@@ -35,11 +35,18 @@ export default function Dashboard() {
   const [importOpen, setImportOpen] = useState(false);
   const [cubeCount, setCubeCount] = useState(null);
 
+  const [loadError, setLoadError] = useState(false);
+  const loadSeq = useRef(0);
+  // A failed load keeps what's already on screen and says so; it never shows "No decks yet".
+  // Only the newest load may update the list (a slow older one can't bring back a deleted deck).
   const load = async () => {
+    const seq = ++loadSeq.current;
     try {
       const { data } = await api.get("/decks");
+      if (seq !== loadSeq.current) return;
       setDecks(data);
-    } catch { setDecks([]); }
+      setLoadError(false);
+    } catch { if (seq === loadSeq.current) setLoadError(true); }
   };
   useEffect(() => { load(); }, []);
 
@@ -63,9 +70,11 @@ export default function Dashboard() {
 
   const confirmDelete = async () => {
     try {
-      await api.delete(`/decks/${deleteId}`);
+      const gone = deleteId;
+      await api.delete(`/decks/${gone}`);
       toast.success("Deck deleted");
       setDeleteId(null);
+      setDecks((list) => (list || []).filter((dk) => dk.id !== gone));
       load();
     } catch { toast.error("Delete failed"); }
   };
@@ -99,7 +108,7 @@ export default function Dashboard() {
             <p className="text-sm text-slate-400 mt-1">
               {tab === "cubes"
                 ? (cubeCount == null ? "Loading..." : `${cubeCount} cube${cubeCount === 1 ? "" : "s"}`)
-                : (decks ? `${decks.length} deck${decks.length === 1 ? "" : "s"}` : "Loading...")}
+                : (decks ? `${decks.length} deck${decks.length === 1 ? "" : "s"}` : (loadError ? "" : "Loading..."))}
             </p>
           </div>
           {tab === "cubes" ? (
@@ -136,8 +145,13 @@ export default function Dashboard() {
           <MyCubes importOpen={importOpen} setImportOpen={setImportOpen} onCount={setCubeCount} />
         ) : <>
 
+        {loadError && <div className="rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 mb-4 flex items-center gap-3 text-sm text-red-200" data-testid="decks-load-error">
+            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+            <span className="flex-1">Couldn't load your decks. Check your connection and try again.</span>
+            <Button size="sm" variant="outline" data-testid="decks-load-error-retry" onClick={load} className="bg-slate-900 border-slate-700 text-slate-200"><RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Retry</Button>
+          </div>}
         {decks === null ? (
-          <div className="flex justify-center py-20"><Loader2 className="w-8 h-8 text-amber-400 animate-spin" /></div>
+          !loadError && <div className="flex justify-center py-20"><Loader2 className="w-8 h-8 text-amber-400 animate-spin" /></div>
         ) : decks.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-800 py-20 flex flex-col items-center gap-3 text-slate-500" data-testid="empty-decks">
             <Layers className="w-12 h-12 text-slate-700" />

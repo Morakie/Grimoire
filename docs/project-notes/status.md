@@ -54,9 +54,18 @@
 - Mirror tables copy a draft running elsewhere, pick by pick, for analysis only (nobody drafts live there), so
   production merges don't need to wait for them. The host picks for every seat; suggestions only for their own.
 - Hosting may move to DigitalOcean or similar later if online play (XMage) goes ahead.
+- Host password (2026-11-04): rejoining a table by name gives you your seat, but host controls (and a mirror
+  table, which holds every seat) come back in another browser only with the host password, set on the host form
+  or later from the key button in the room. No password: host controls stay with the browser that made the
+  table. Tables created before this keep the old name-only recovery.
+- Cube Analysis / Bot Brain pools built from a saved cube are private to that account (listed, opened and
+  exported only for the owner). Pools from CubeCobra lists stay shared.
 
 ## Limits of an AI working in a cloud sandbox
 
 Cloud sessions often can't reach staging, production, CubeCobra or Scryfall from their shell. Pure-Python bot
 tests run without dependencies (`backend/tests/test_draftbot.py`); frontend syntax can be checked with esbuild.
+The API tests can run against a local server on an in-memory Mongo (`mongomock-motor`, in requirements-dev) with
+Scryfall lookups stubbed; only the tests that need live Scryfall (search, printings, autocomplete) fail then.
+API tests must read seats from the state after Start (Start shuffles seats), never from the claim reply.
 End-to-end checks happen in a browser on the owner's computer.

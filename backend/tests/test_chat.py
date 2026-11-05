@@ -106,7 +106,8 @@ class TestChatEndpoint:
         # Make one pick
         st = session.get(f"{API}/drafts/{sid}/state").json()
         seat = st["current_seat_index"]
-        owner = a if seat in a["seats"] else b
+        a_seats = next(p["seats"] for p in st["players"] if p["id"] == a["player_id"])   # seats shuffled at start
+        owner = a if seat in a_seats else b
         full = session.get(f"{API}/drafts/{sid}").json()
         card_id = full["cube"][0]["id"]
         session.post(f"{API}/drafts/{sid}/pick", json={

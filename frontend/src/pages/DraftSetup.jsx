@@ -42,6 +42,7 @@ export default function DraftSetup() {
   const [mirror, setMirror] = useState(false);
   const [seatNamesText, setSeatNamesText] = useState("");
   const [mySeat, setMySeat] = useState(0);
+  const [hostPassword, setHostPassword] = useState("");   // optional: gets host controls back in another browser
   const mirrorMode = mode === "rotisserie" && mirror;
   const seatNames = seatNamesText.split("\n").map((n) => n.trim()).filter(Boolean);
   const [cubeText, setCubeText] = useState("");
@@ -155,6 +156,7 @@ export default function DraftSetup() {
         private: isPrivate,
         mode,
         pool: vrdMode ? "vintage" : "cube",
+        ...(hostPassword.trim() ? { host_password: hostPassword.trim() } : {}),
         ...(mirrorMode ? { mirror: true, seat_names: seatNames, my_seat: Math.min(mySeat, seatNames.length - 1), num_players: 1, num_bots: 0, num_seats: seatNames.length, private: true } : {}),
         ...(mode === "packs" ? { pack_count: Number(packCount) || 3, pack_size: Number(packSize) || 15, timer: timerOn ? "shrinking" : "off" } : {}),
         cube: [...customs, ...col.cards],
@@ -457,6 +459,16 @@ export default function DraftSetup() {
                   <span className="block text-xs text-slate-500 mt-0.5">Hidden from Open tables and Drafting now. Players join with the invite link or the table code.</span>
                 </span>
               </label>}
+
+              <div data-testid="draft-host-password">
+                <Label htmlFor="draft-host-password-input" className="text-slate-300 flex items-center gap-1.5"><KeyRound className="w-3.5 h-3.5 text-amber-400" /> Host password (optional)</Label>
+                <Input id="draft-host-password-input" data-testid="draft-host-password-input" type="password" autoComplete="new-password" value={hostPassword}
+                  onChange={(e) => setHostPassword(e.target.value)} maxLength={64} placeholder="Leave blank to skip"
+                  className="mt-1.5 h-9 max-w-xs bg-slate-950 border-slate-700 text-slate-100" />
+                <p className="text-xs text-slate-500 mt-1">{mirrorMode
+                  ? "Lets you open this mirror table from another browser or device. Without one, it opens only in this browser."
+                  : "Lets you get host controls back from another browser or device. Without one, they stay in this browser. Rejoining by name still gives you your seat."}</p>
+              </div>
 
               {!vrdMode && <div data-testid="custom-cards">
                 <Label className="text-slate-300">Custom cards (optional)</Label>

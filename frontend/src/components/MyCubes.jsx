@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "@/lib/api";
 import { resolveCube, readTextFile } from "@/lib/cube";
@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Library, Loader2, MoreVertical, Pencil, RefreshCw, Shuffle, Trash2, Download, Upload, ImagePlus } from "lucide-react";
+import { Library, Loader2, MoreVertical, Pencil, RefreshCw, Shuffle, Trash2, Download, Upload, ImagePlus, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 
 const when = (iso) => {
@@ -26,12 +26,19 @@ export default function MyCubes({ importOpen, setImportOpen, onCount }) {
   const [deleting, setDeleting] = useState(null);
   const [customsFor, setCustomsFor] = useState(null); // { id, name, list }
 
+  const [loadError, setLoadError] = useState(false);
+  const loadSeq = useRef(0);
+  // A failed load keeps what's already on screen and says so; it never shows an empty cube list.
+  // Only the newest load may update the list (a slow older one can't bring back a deleted cube).
   const load = async () => {
+    const seq = ++loadSeq.current;
     try {
       const { data } = await api.get("/cubes");
+      if (seq !== loadSeq.current) return;
       setCubes(data.cubes || []);
       onCount?.((data.cubes || []).length);
-    } catch { setCubes([]); }
+      setLoadError(false);
+    } catch { if (seq === loadSeq.current) setLoadError(true); }
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, []);
@@ -62,7 +69,13 @@ export default function MyCubes({ importOpen, setImportOpen, onCount }) {
   };
 
   const remove = async () => {
-    try { await api.delete(`/cubes/${deleting}`); toast.success("Cube deleted"); setDeleting(null); load(); }
+    try {
+      const gone = deleting;
+      await api.delete(`/cubes/${gone}`);
+      toast.success("Cube deleted"); setDeleting(null);
+      setCubes((list) => (list || []).filter((c) => c.id !== gone));
+      load();
+    }
     catch { toast.error("Delete failed"); }
   };
 
@@ -96,8 +109,15 @@ export default function MyCubes({ importOpen, setImportOpen, onCount }) {
 
   return (
     <>
+      {loadError && (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 mb-4 flex items-center gap-3 text-sm text-red-200" data-testid="cubes-load-error">
+          <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+          <span className="flex-1">Couldn't load your cubes. Check your connection and try again.</span>
+          <Button size="sm" variant="outline" data-testid="cubes-load-error-retry" onClick={load} className="bg-slate-900 border-slate-700 text-slate-200"><RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Retry</Button>
+        </div>
+      )}
       {cubes === null ? (
-        <div className="flex justify-center py-20"><Loader2 className="w-8 h-8 text-amber-400 animate-spin" /></div>
+        !loadError && <div className="flex justify-center py-20"><Loader2 className="w-8 h-8 text-amber-400 animate-spin" /></div>
       ) : cubes.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-slate-800 py-16 px-6 flex flex-col items-center gap-3 text-center text-slate-500" data-testid="empty-cubes">
           <Library className="w-12 h-12 text-slate-700" />
