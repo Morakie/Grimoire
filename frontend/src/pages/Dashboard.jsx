@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import MyCubes from "@/components/MyCubes";
 import api from "@/lib/api";
@@ -36,13 +36,17 @@ export default function Dashboard() {
   const [cubeCount, setCubeCount] = useState(null);
 
   const [loadError, setLoadError] = useState(false);
+  const loadSeq = useRef(0);
   // A failed load keeps what's already on screen and says so; it never shows "No decks yet".
+  // Only the newest load may update the list (a slow older one can't bring back a deleted deck).
   const load = async () => {
+    const seq = ++loadSeq.current;
     try {
       const { data } = await api.get("/decks");
+      if (seq !== loadSeq.current) return;
       setDecks(data);
       setLoadError(false);
-    } catch { setLoadError(true); }
+    } catch { if (seq === loadSeq.current) setLoadError(true); }
   };
   useEffect(() => { load(); }, []);
 
@@ -66,9 +70,11 @@ export default function Dashboard() {
 
   const confirmDelete = async () => {
     try {
-      await api.delete(`/decks/${deleteId}`);
+      const gone = deleteId;
+      await api.delete(`/decks/${gone}`);
       toast.success("Deck deleted");
       setDeleteId(null);
+      setDecks((list) => (list || []).filter((dk) => dk.id !== gone));
       load();
     } catch { toast.error("Delete failed"); }
   };

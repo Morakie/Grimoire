@@ -42,6 +42,7 @@ export default function CardSearchBar({ onAdd, target, setTarget, targets }) {
   useEffect(() => {
     if (skipSug.current) { skipSug.current = false; return; }
     if (sugTimer.current) clearTimeout(sugTimer.current);
+    nextReq(sugReq);    // the query changed: a reply for the old text must not show up now
     if (query.trim().length < 2 || open) { nextReq(sugReq); setSuggestions([]); setShowSug(false); return; }
     sugTimer.current = setTimeout(async () => {
       const { seq, signal } = nextReq(sugReq);
@@ -93,8 +94,10 @@ export default function CardSearchBar({ onAdd, target, setTarget, targets }) {
     skipSug.current = true;
     nextReq(sugReq);
     setShowSug(false);
+    const searchSeq = searchReq.current.seq;   // a search started meanwhile wins over this lookup
     try {
       const { data } = await api.get("/cards/search", { params: { q: `!"${name}"` } });
+      if (searchReq.current.seq !== searchSeq) return;
       if (data.cards && data.cards.length) {
         addCard(data.cards[0]);
         skipSug.current = true;
@@ -102,6 +105,7 @@ export default function CardSearchBar({ onAdd, target, setTarget, targets }) {
         return;
       }
     } catch { /* fall through to a normal search */ }
+    if (searchReq.current.seq !== searchSeq) return;
     setQuery(name);
     runSearch(name);
   };

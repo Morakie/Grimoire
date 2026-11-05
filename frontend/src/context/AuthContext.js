@@ -13,11 +13,12 @@ export function AuthProvider({ children }) {
     // Only a definite "not signed in" (401/403) logs you out. A server restart, an outage or no network
     // keeps the saved token and tries again for about a minute; after that the page treats you as
     // signed out for now, and the next page load tries again.
-    const waits = [2000, 4000, 8000, 15000, 30000];
+    // Worst case: 5 tries x 8 s timeout + 29 s of waits, about 70 s.
+    const waits = [2000, 4000, 8000, 15000];
     const check = async (attempt = 0) => {
       if (!token) { setUser(false); return; }
       try {
-        const { data } = await api.get("/auth/me", { timeout: 15000 });
+        const { data } = await api.get("/auth/me", { timeout: 8000 });
         if (active) setUser(data);
       } catch (e) {
         if (!active) return;

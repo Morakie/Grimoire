@@ -117,7 +117,8 @@ export default function DeckBuilder() {
       try {
         const token = localStorage.getItem("grimoire_token");
         fetch(`${API}/decks/${deckId}`, { method: "PUT", keepalive: true, body: JSON.stringify(deckBody(d)),
-          headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
+          headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) } })
+          .catch(() => { /* the page is closing; nothing more we can do */ });
       } catch { /* nothing more we can do while the page closes */ }
     };
     window.addEventListener("pagehide", flushOnUnload);
@@ -126,7 +127,12 @@ export default function DeckBuilder() {
       if (saveTimer.current) clearTimeout(saveTimer.current);
       const d = pendingRef.current;
       pendingRef.current = null;
-      if (d) api.put(`/decks/${deckId}`, deckBody(d)).catch(() => toast.error("Your last deck change couldn't be saved"));
+      if (!d) return;
+      // After any save already on its way, so this newer edit lands last.
+      (async () => {
+        while (inFlightRef.current) await inFlightRef.current.catch(() => {});
+        await api.put(`/decks/${deckId}`, deckBody(d));
+      })().catch(() => toast.error("Your last deck change couldn't be saved"));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);

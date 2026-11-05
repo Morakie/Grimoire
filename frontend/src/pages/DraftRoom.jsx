@@ -590,7 +590,6 @@ export default function DraftRoom() {
           onBeep={playBeep} onCancel={closeTable} shareUrl={`${window.location.origin}/draft/${shareId}`} />
         {rejoinBar}
         {claimDialog}
-      {hostPwDialog}
         {hostPwDialog}
       </>
     );
@@ -1537,6 +1536,7 @@ export default function DraftRoom() {
 
       {rejoinBar}
       {claimDialog}
+      {hostPwDialog}
 
       {previewCard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6" data-testid="card-preview-dialog" onClick={() => setPreviewCard(null)}>

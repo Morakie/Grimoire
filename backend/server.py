@@ -1459,18 +1459,32 @@ def _claim_reply(d: dict, p: dict, host_ok: bool = True) -> dict:
     return out
 
 
-async def _host_ok(d: dict, p: dict, data: "ClaimInput", by_token: bool) -> bool:
-    """May this claim of the host player's seat carry the host key? Always for the same browser (player
-    or host key) and for old tables; otherwise only with the right host password."""
+_HOST_PW_FAILS: Dict[str, List[float]] = {}   # share_id -> times of recent wrong host passwords
+_HOST_PW_MAX_FAILS, _HOST_PW_WINDOW_S = 10, 900
+
+
+async def _host_ok(d: dict, p: dict, data: "ClaimInput") -> bool:
+    """May this claim of the host player's seat carry the host key? With the host key itself (the browser
+    that made the table, or one it was handed to), on old tables, or with the right host password. A
+    player token is NOT enough: rejoining by name hands that out to anyone."""
     if d.get("host_player_id") != p["id"]:
         return False
-    if by_token or not d.get("host_lock") or (data.host_token and data.host_token == d.get("host_token")):
+    if not d.get("host_lock") or (data.host_token and data.host_token == d.get("host_token")):
         return True
     pw, hashed = (data.host_password or "").strip(), d.get("host_password_hash")
     if not pw:
         return False
+    now = time.time()
+    fails = [t for t in _HOST_PW_FAILS.get(d["share_id"], []) if now - t < _HOST_PW_WINDOW_S]
+    if len(fails) >= _HOST_PW_MAX_FAILS:
+        raise HTTPException(status_code=429, detail="Too many wrong host passwords. Try again in 15 minutes.")
     if not hashed or not await run_in_threadpool(verify_password, pw, hashed):
+        fails.append(now)
+        _HOST_PW_FAILS[d["share_id"]] = fails
+        if len(_HOST_PW_FAILS) > 500:
+            _HOST_PW_FAILS.pop(next(iter(_HOST_PW_FAILS)), None)
         raise HTTPException(status_code=403, detail="Wrong host password")
+    _HOST_PW_FAILS.pop(d["share_id"], None)
     return True
 
 
@@ -1495,7 +1509,7 @@ async def claim_seats(share_id: str, data: ClaimInput):
         if not p:
             raise HTTPException(status_code=403, detail="This is a mirror table: only its host picks")
         # The mirror player holds every seat, so taking it over by name needs the host password too.
-        if not await _host_ok(d, p, data, bool(by_token)):
+        if not await _host_ok(d, p, data):
             if d.get("host_password_hash"):
                 return {"host_password_required": True, "host_locked": True, "name": p["name"]}
             raise HTTPException(status_code=403, detail="Only the browser that created this mirror table can open it")
@@ -1509,7 +1523,7 @@ async def claim_seats(share_id: str, data: ClaimInput):
         by_token = bool(data.player_token and p["token"] == data.player_token)
         if by_token or p["name"].lower() == name.lower():
             await _set_host_player(d, p, data.host_token)
-            return _claim_reply(d, p, await _host_ok(d, p, data, by_token))
+            return _claim_reply(d, p, await _host_ok(d, p, data))
     if d["status"] != "lobby":
         raise HTTPException(status_code=400, detail="The draft has started: claim with the name you joined with")
     if len(d["players"]) >= d["num_players"]:
@@ -1528,7 +1542,7 @@ async def claim_seats(share_id: str, data: ClaimInput):
     d["players"].append(player)
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": d["players"], "updated_at": datetime.now(timezone.utc).isoformat()}})
     await _set_host_player(d, player, data.host_token)
-    return _claim_reply(d, player, await _host_ok(d, player, data, True))
+    return _claim_reply(d, player, await _host_ok(d, player, data))
 
 
 @api_router.post("/drafts/{share_id}/host-password")

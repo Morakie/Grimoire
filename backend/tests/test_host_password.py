@@ -47,8 +47,23 @@ def test_wrong_password_is_refused_and_right_one_restores_host():
 
 def test_same_browser_keeps_host_without_password():
     d, host = _table("hunter2")
-    out = _claim(d["share_id"], player_token=host["player_token"]).json()
+    out = _claim(d["share_id"], player_token=host["player_token"], host_token=d["host_token"]).json()
     assert out["host_token"] == d["host_token"]
+
+
+def test_player_token_from_a_name_claim_does_not_unlock_host():
+    """Rejoining by name hands out the seat's player token; replaying it must not give host controls."""
+    d, _ = _table("hunter2")
+    first = _claim(d["share_id"]).json()
+    again = _claim(d["share_id"], player_token=first["player_token"]).json()
+    assert "host_token" not in again and again["host_password_required"] is True
+
+
+def test_wrong_passwords_are_capped():
+    d, _ = _table("hunter2")
+    codes = [_claim(d["share_id"], host_password=f"guess{i}").status_code for i in range(11)]
+    assert codes[:10] == [403] * 10 and codes[10] == 429
+    assert _claim(d["share_id"], host_password="hunter2").status_code == 429   # locked out for a while
 
 
 def test_no_password_means_host_stays_with_its_browser():
@@ -67,8 +82,10 @@ def test_host_can_set_and_remove_password():
     assert r.status_code == 200 and r.json()["host_password_set"] is True
     assert requests.get(f"{API}/drafts/{sid}/state", timeout=20).json()["host_password_set"] is True
     assert _claim(sid, host_password="pw1").json()["host_token"] == d["host_token"]
-    requests.post(f"{API}/drafts/{sid}/host-password", json={"host_token": d["host_token"], "password": ""}, timeout=20)
+    r = requests.post(f"{API}/drafts/{sid}/host-password", json={"host_token": d["host_token"], "password": ""}, timeout=20)
+    assert r.status_code == 200 and r.json()["host_password_set"] is False
     assert "host_token" not in _claim(sid).json()
+    assert _claim(sid, host_password="pw1").status_code == 403      # the old password no longer works
 
 
 def test_other_players_never_get_host_controls():

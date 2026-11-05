@@ -57,6 +57,11 @@ def test_refresh_failure_keeps_good_stats():
     _run(db, [_Resp(404)])
     doc = _doc(db)
     assert doc["elo"] == 1700 and not doc.get("missing")
+    _run(db, [])            # just checked: no request
+    due = (datetime.now(timezone.utc) - cardstats.MISSING_MAX_AGE - timedelta(hours=1)).isoformat()
+    asyncio.run(db.card_stats.update_one({"key": "sol ring"}, {"$set": {"fetched_at": due}}))
+    _run(db, [_Resp(200, _page("Sol Ring", 1750))])   # asked again after a few days, not a month
+    assert _doc(db)["elo"] == 1750 and not _doc(db)["lookup_failed"]
 
 
 def test_missing_card_is_retried_after_a_few_days():

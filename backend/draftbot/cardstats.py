@@ -83,9 +83,11 @@ async def ensure_stats(db, names: Iterable[str], budget_s: float = 10.0, concurr
     names = list(dict.fromkeys(n for n in names if n))
     now = datetime.now(timezone.utc)
     fresh = set()
-    async for doc in db.card_stats.find({"key": {"$in": [n.lower() for n in names]}}, {"key": 1, "fetched_at": 1, "missing": 1}):
+    async for doc in db.card_stats.find({"key": {"$in": [n.lower() for n in names]}},
+                                        {"key": 1, "fetched_at": 1, "missing": 1, "lookup_failed": 1}):
         try:
-            if now - datetime.fromisoformat(doc["fetched_at"]) < (MISSING_MAX_AGE if doc.get("missing") else MAX_AGE):
+            short = doc.get("missing") or doc.get("lookup_failed")
+            if now - datetime.fromisoformat(doc["fetched_at"]) < (MISSING_MAX_AGE if short else MAX_AGE):
                 fresh.add(doc["key"])
         except (KeyError, ValueError):
             pass
@@ -108,12 +110,14 @@ async def ensure_stats(db, names: Iterable[str], budget_s: float = 10.0, concurr
                 return   # keep whatever we had (good stats stay usable); try again next time
             doc = {"key": name.lower(), "fetched_at": datetime.now(timezone.utc).isoformat()}
             if status == "ok":
-                doc.update(stats, missing=False)
+                doc.update(stats, missing=False, lookup_failed=False)
                 await db.card_stats.update_one({"key": doc["key"]}, {"$set": doc}, upsert=True)
             else:
                 # Not on CubeCobra. Don't overwrite stats we already have (a renamed page shouldn't wipe them).
                 doc.update(name=name, missing=True)
-                await db.card_stats.update_one({"key": doc["key"], "elo": {"$exists": True}}, {"$set": {"fetched_at": doc["fetched_at"]}})
+                # Keep the stats we have, and ask again after a few days rather than a month.
+                await db.card_stats.update_one({"key": doc["key"], "elo": {"$exists": True}},
+                                               {"$set": {"fetched_at": doc["fetched_at"], "lookup_failed": True}})
                 await db.card_stats.update_one({"key": doc["key"], "elo": {"$exists": False}}, {"$set": doc})
                 await db.card_stats.update_one({"key": doc["key"]}, {"$setOnInsert": doc}, upsert=True)
         finally:

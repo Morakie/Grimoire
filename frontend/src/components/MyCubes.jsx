@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "@/lib/api";
 import { resolveCube, readTextFile } from "@/lib/cube";
@@ -27,14 +27,18 @@ export default function MyCubes({ importOpen, setImportOpen, onCount }) {
   const [customsFor, setCustomsFor] = useState(null); // { id, name, list }
 
   const [loadError, setLoadError] = useState(false);
+  const loadSeq = useRef(0);
   // A failed load keeps what's already on screen and says so; it never shows an empty cube list.
+  // Only the newest load may update the list (a slow older one can't bring back a deleted cube).
   const load = async () => {
+    const seq = ++loadSeq.current;
     try {
       const { data } = await api.get("/cubes");
+      if (seq !== loadSeq.current) return;
       setCubes(data.cubes || []);
       onCount?.((data.cubes || []).length);
       setLoadError(false);
-    } catch { setLoadError(true); }
+    } catch { if (seq === loadSeq.current) setLoadError(true); }
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, []);
@@ -65,7 +69,13 @@ export default function MyCubes({ importOpen, setImportOpen, onCount }) {
   };
 
   const remove = async () => {
-    try { await api.delete(`/cubes/${deleting}`); toast.success("Cube deleted"); setDeleting(null); load(); }
+    try {
+      const gone = deleting;
+      await api.delete(`/cubes/${gone}`);
+      toast.success("Cube deleted"); setDeleting(null);
+      setCubes((list) => (list || []).filter((c) => c.id !== gone));
+      load();
+    }
     catch { toast.error("Delete failed"); }
   };
 

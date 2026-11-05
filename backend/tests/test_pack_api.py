@@ -73,13 +73,15 @@ def test_pick_from_wrong_pack_rejected():
 def test_claiming_a_seat_gets_packs_even_when_nothing_changed():
     """A watcher (anonymous view cached) claims their seat: the next poll with the same known version must
     return their packs, not "unchanged"."""
-    d = create().json()
+    # Two people, no bots, no timer: nothing changes the draft between the polls below.
+    d = create(num_bots=0, timer="off").json()
     sid = d["share_id"]
     me = requests.post(f"{API}/drafts/{sid}/claim", json={"name": "Human"}, timeout=20).json()
+    requests.post(f"{API}/drafts/{sid}/claim", json={"name": "Other"}, timeout=20)
     requests.post(f"{API}/drafts/{sid}/start", timeout=60)
     anon = requests.get(f"{API}/drafts/{sid}/state", timeout=20).json()
     same = requests.get(f"{API}/drafts/{sid}/state", headers={"X-Known-Version": anon["version"]}, timeout=20).json()
-    assert same.get("unchanged") or same["version"] == anon["version"]
+    assert same.get("unchanged") is True
     mine = requests.get(f"{API}/drafts/{sid}/state", timeout=20,
                         headers={"X-Known-Version": anon["version"], "X-Player-Token": me["player_token"]}).json()
     assert not mine.get("unchanged") and "my" in mine
