@@ -70,7 +70,7 @@ function BoardCard({ card, category, view, format, index, readOnly, onQty, onRem
             )}
             <button data-testid={`inc-${card.id}`} onClick={() => onQty(category, card.id, 1)} disabled={atMax} className="w-6 h-6 rounded bg-black/80 text-white hover:bg-amber-500 hover:text-stone-900 flex items-center justify-center disabled:opacity-30"><Plus className="w-3.5 h-3.5" /></button>
             <button data-testid={`dec-${card.id}`} onClick={() => onQty(category, card.id, -1)} className="w-6 h-6 rounded bg-black/80 text-white hover:bg-slate-600 flex items-center justify-center"><Minus className="w-3.5 h-3.5" /></button>
-            <button data-testid={`printings-${card.id}`} onClick={() => onPrintings(card)} className="w-6 h-6 rounded bg-black/80 text-white hover:bg-amber-500 hover:text-stone-900 flex items-center justify-center"><Images className="w-3.5 h-3.5" /></button>
+            <button data-testid={`printings-${card.id}`} onClick={() => onPrintings(card, category)} className="w-6 h-6 rounded bg-black/80 text-white hover:bg-amber-500 hover:text-stone-900 flex items-center justify-center"><Images className="w-3.5 h-3.5" /></button>
             <button data-testid={`remove-${card.id}`} onClick={() => onRemove(category, card.id)} className="w-6 h-6 rounded bg-black/80 text-white hover:bg-red-500 flex items-center justify-center"><X className="w-3.5 h-3.5" /></button>
           </div>
         )}
@@ -105,7 +105,7 @@ function BoardCard({ card, category, view, format, index, readOnly, onQty, onRem
           {canToggleCommander && (
             <button data-testid={`commander-toggle-${card.id}`} onClick={toggleCommander} title={commanderTitle} className="p-1 text-slate-400 hover:text-amber-400"><CommanderIcon className="w-3.5 h-3.5" /></button>
           )}
-          <button data-testid={`printings-${card.id}`} onClick={() => onPrintings(card)} title="Change art/printing" className="p-1 text-slate-400 hover:text-amber-400"><Images className="w-3.5 h-3.5" /></button>
+          <button data-testid={`printings-${card.id}`} onClick={() => onPrintings(card, category)} title="Change art/printing" className="p-1 text-slate-400 hover:text-amber-400"><Images className="w-3.5 h-3.5" /></button>
           <button data-testid={`dec-${card.id}`} onClick={() => onQty(category, card.id, -1)} title="Remove one" className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-700"><Minus className="w-3.5 h-3.5" /></button>
           <button data-testid={`inc-${card.id}`} onClick={() => onQty(category, card.id, 1)} disabled={atMax} title="Add one" className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-700 disabled:opacity-30"><Plus className="w-3.5 h-3.5" /></button>
           <button data-testid={`remove-${card.id}`} onClick={() => onRemove(category, card.id)} title="Remove card" className="p-1 text-slate-500 hover:text-red-400"><X className="w-3.5 h-3.5" /></button>
@@ -144,7 +144,7 @@ function CommandZoneCard({ card, index, readOnly, handlers }) {
         <div className="absolute top-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
           <button data-testid={`commander-toggle-${card.id}`} onClick={() => handlers.onMove("commander", card.id, "mainboard")} title="Move to mainboard"
             className="w-7 h-7 rounded bg-black/80 text-white hover:bg-amber-500 hover:text-stone-900 flex items-center justify-center"><ArrowDownToLine className="w-4 h-4" /></button>
-          <button data-testid={`printings-${card.id}`} onClick={() => handlers.onPrintings(card)} title="Change art/printing"
+          <button data-testid={`printings-${card.id}`} onClick={() => handlers.onPrintings(card, "commander")} title="Change art/printing"
             className="w-7 h-7 rounded bg-black/80 text-white hover:bg-amber-500 hover:text-stone-900 flex items-center justify-center"><Images className="w-4 h-4" /></button>
           <button data-testid={`remove-${card.id}`} onClick={() => handlers.onRemove("commander", card.id)} title="Remove card"
             className="w-7 h-7 rounded bg-black/80 text-white hover:bg-red-500 flex items-center justify-center"><X className="w-4 h-4" /></button>

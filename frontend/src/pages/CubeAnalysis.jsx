@@ -589,15 +589,15 @@ export default function CubeAnalysis() {
       if (mine) {
         setStep("Loading your saved cube…");
         const { data: c } = await api.get(`/cubes/${mine}`);
-        cardsRef.current = { cards: c.cards, label: c.name };
+        cardsRef.current = { cards: c.cards, label: c.name, private: true };   // stays your own, like the cube
       } else if (refresh && cardsRef.current) {
         // rebuild what's loaded
       } else {
         const res = await resolveCube({ cubeCobra: id, onStep: setStep });
-        cardsRef.current = { cards: res.cards, label: id.trim() };
+        cardsRef.current = { cards: res.cards, label: id.trim(), private: false };
         save(STORE, { ...load(STORE, {}), cubeId: id.trim() });
       }
-      await analyse({ cards: cardsRef.current.cards, label: cardsRef.current.label, refresh }, cardsRef.current.label);
+      await analyse({ cards: cardsRef.current.cards, label: cardsRef.current.label, refresh, private: !!cardsRef.current.private }, cardsRef.current.label);
       api.get("/lab/pools").then(({ data: d }) => setPools((d.pools || []).filter((p) => !p.vrd))).catch(() => {});
     } catch (e) {
       setError(e.message && !e.response ? e.message : stepError("Couldn't analyze the cube", e));

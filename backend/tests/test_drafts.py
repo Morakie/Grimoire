@@ -163,8 +163,10 @@ class TestFullDraft:
         sid = r["share_id"]
         a = session.post(f"{API}/drafts/{sid}/claim", json={"name": "A"}).json()
         b = session.post(f"{API}/drafts/{sid}/claim", json={"name": "B"}).json()
-        session.post(f"{API}/drafts/{sid}/start")
-        players = [a, b]
+        st0 = session.post(f"{API}/drafts/{sid}/start").json()
+        # Start shuffles the seats: use each player's seats from the post-start state.
+        seats_of = {p["id"]: p["seats"] for p in st0["players"]}
+        players = [{**x, "seats": seats_of[x["player_id"]]} for x in (a, b)]
 
         picked = set()
         for _ in range(num_seats * pick_cap):
@@ -206,8 +208,9 @@ class TestFullDraft:
         session.post(f"{API}/drafts/{sid}/start")
         st = session.get(f"{API}/drafts/{sid}/state").json()
         seat = st["current_seat_index"]
-        # whoever does NOT control this seat tries to pick -> 403
-        offender = b if seat in a["seats"] else a
+        # whoever does NOT control this seat tries to pick -> 403 (seats are shuffled at start)
+        a_seats = next(p["seats"] for p in st["players"] if p["id"] == a["player_id"])
+        offender = b if seat in a_seats else a
         full = session.get(f"{API}/drafts/{sid}").json()
         card_id = full["cube"][0]["id"]
         bad = session.post(f"{API}/drafts/{sid}/pick", json={

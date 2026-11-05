@@ -123,6 +123,13 @@ async def get_current_user(request: Request) -> dict:
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+async def get_optional_user(request: Request) -> Optional[dict]:
+    """The signed-in user, or None for a guest (or a bad/expired token)."""
+    try:
+        return await get_current_user(request)
+    except HTTPException:
+        return None
+
 # ----------------------- Models -----------------------
 
 class RegisterInput(BaseModel):
@@ -907,6 +914,9 @@ class DraftCreate(BaseModel):
     mirror: bool = False
     seat_names: List[str] = []
     my_seat: int = 0
+    # Optional: needed to get host controls back from another browser. Without one, host controls stay
+    # with the browser that created the table (and whoever it hands the host key to).
+    host_password: Optional[str] = Field(default=None, max_length=64)
 
 class MirrorImportInput(BaseModel):
     host_token: str
@@ -917,6 +927,11 @@ class ClaimInput(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     player_token: Optional[str] = None
     host_token: Optional[str] = None   # sent by the browser that created the table: this player becomes the host
+    host_password: Optional[str] = Field(default=None, max_length=64)   # restores host controls from another browser
+
+class HostPasswordInput(BaseModel):
+    host_token: str
+    password: str = Field(default="", max_length=64)   # empty = remove the password
 
 class PickInput(BaseModel):
     player_token: str
@@ -1012,6 +1027,7 @@ def draft_state(d: dict, light: bool = False) -> dict:
         "bot_ignore": d.get("bot_ignore", []),
         "seating": d.get("seating", "random"),
         "my_seat": d.get("my_seat"),
+        "host_password_set": bool(d.get("host_password_hash")),
         "rev": d.get("rev", 0),
         "version": f'{d.get("rev", 0)}|{d.get("updated_at")}',   # changes on every write (picks, chat, seats)
     }
@@ -1147,10 +1163,16 @@ async def create_draft(data: DraftCreate):
         "picks": [],
         "messages": [],
         "host_token": str(uuid.uuid4()),
-        "host_player_id": None,      # set when the host claims a seat (claiming it again restores host controls)
+        "host_player_id": None,      # set when the host claims a seat
+        # Host controls come back by name only with the host password (tables made before this flag
+        # existed keep the old name-only recovery).
+        "host_lock": True,
+        "host_password_hash": None,
         "created_at": now,
         "updated_at": now,
     }
+    if data.host_password and data.host_password.strip():
+        draft["host_password_hash"] = await run_in_threadpool(hash_password, data.host_password.strip())
     if data.num_bots:
         rng = random.Random()
         for _ in range(data.num_bots):
@@ -1236,7 +1258,7 @@ async def get_draft_state(share_id: str, x_player_token: Optional[str] = Header(
     if x_known_version:
         probe = await db.drafts.find_one({"share_id": share_id}, _STATE_PROBE)
         if probe and probe.get("status") in ("lobby", "drafting", "complete") \
-                and f'{probe.get("rev", 0)}|{probe.get("updated_at")}' == x_known_version \
+                and f'{probe.get("rev", 0)}|{probe.get("updated_at")}' + (f'|{_viewer_tag(x_player_token)}' if probe.get("mode") == "packs" else "") == x_known_version \
                 and not (_pack_action_due(probe) if probe.get("mode") == "packs" else _probe_bot_up(probe)):
             if probe.get("status") == "drafting" and probe.get("mode") != "packs":
                 _warm_cards(share_id)
@@ -1302,10 +1324,17 @@ def _player_by_token(d: dict, token: Optional[str]) -> Optional[dict]:
     return next((p for p in d.get("players", []) if p.get("token") == token and not p.get("is_bot")), None)
 
 
+def _viewer_tag(token: Optional[str]) -> str:
+    """Short, non-secret tag for who is asking, so a pack table's "unchanged" reply is per viewer (a
+    watcher who claims a seat must get their packs at once, not the anonymous view they already have)."""
+    return hashlib.sha1(token.encode()).hexdigest()[:10] if token else "anon"
+
+
 def _pack_state(d: dict, token: Optional[str]) -> dict:
     """Light state plus, for a seated player, the packs in front of their own seats and their picks."""
     out = draft_state(d, light=True)
     out["server_time"] = datetime.now(timezone.utc).isoformat()   # lets clients correct their clock for timers
+    out["version"] = f'{out["version"]}|{_viewer_tag(token)}'
     player = _player_by_token(d, token)
     if player and d.get("packs"):
         out["my"] = pd.private_view(d, player["seats"])
@@ -1417,13 +1446,32 @@ async def _pack_pick(share_id: str, data: "PickInput") -> dict:
             return fast_json(_pack_state(d, data.player_token))
     raise HTTPException(status_code=409, detail="Busy, try again")
 
-def _claim_reply(d: dict, p: dict) -> dict:
-    """What a player's browser keeps. The host's own seat also gets the host key back, so claiming that
-    seat in a new browser (by name) restores the host controls."""
+def _claim_reply(d: dict, p: dict, host_ok: bool = True) -> dict:
+    """What a player's browser keeps. The host's own seat also gets the host key back when `host_ok`
+    (same browser, the host key, or the host password), so host controls can move to a new browser."""
     out = {"player_token": p["token"], "player_id": p["id"], "name": p["name"], "seats": p["seats"]}
     if d.get("host_player_id") == p["id"]:
-        out["host_token"] = d["host_token"]
+        if host_ok:
+            out["host_token"] = d["host_token"]
+        else:
+            out["host_password_required"] = bool(d.get("host_password_hash"))
+            out["host_locked"] = True
     return out
+
+
+async def _host_ok(d: dict, p: dict, data: "ClaimInput", by_token: bool) -> bool:
+    """May this claim of the host player's seat carry the host key? Always for the same browser (player
+    or host key) and for old tables; otherwise only with the right host password."""
+    if d.get("host_player_id") != p["id"]:
+        return False
+    if by_token or not d.get("host_lock") or (data.host_token and data.host_token == d.get("host_token")):
+        return True
+    pw, hashed = (data.host_password or "").strip(), d.get("host_password_hash")
+    if not pw:
+        return False
+    if not hashed or not await run_in_threadpool(verify_password, pw, hashed):
+        raise HTTPException(status_code=403, detail="Wrong host password")
+    return True
 
 
 async def _set_host_player(d: dict, p: dict, host_token: Optional[str]) -> None:
@@ -1442,10 +1490,15 @@ async def claim_seats(share_id: str, data: ClaimInput):
         raise HTTPException(status_code=400, detail="This table was closed")
     name = data.name.strip()
     if d.get("mirror"):
-        p = next((p for p in d["players"] if (data.player_token and p["token"] == data.player_token)
-                  or p["name"].lower() == name.lower()), None)
+        by_token = next((p for p in d["players"] if data.player_token and p["token"] == data.player_token), None)
+        p = by_token or next((p for p in d["players"] if p["name"].lower() == name.lower()), None)
         if not p:
             raise HTTPException(status_code=403, detail="This is a mirror table: only its host picks")
+        # The mirror player holds every seat, so taking it over by name needs the host password too.
+        if not await _host_ok(d, p, data, bool(by_token)):
+            if d.get("host_password_hash"):
+                return {"host_password_required": True, "host_locked": True, "name": p["name"]}
+            raise HTTPException(status_code=403, detail="Only the browser that created this mirror table can open it")
         return _claim_reply(d, p)
     # Reattach by token or by existing name (also once the draft has started, e.g. from a new browser)
     for p in d["players"]:
@@ -1453,9 +1506,10 @@ async def claim_seats(share_id: str, data: ClaimInput):
             if _display_name(p["name"]).lower() == name.lower():
                 raise HTTPException(status_code=400, detail="A bot at this table has that name; pick another")
             continue
-        if (data.player_token and p["token"] == data.player_token) or p["name"].lower() == name.lower():
+        by_token = bool(data.player_token and p["token"] == data.player_token)
+        if by_token or p["name"].lower() == name.lower():
             await _set_host_player(d, p, data.host_token)
-            return _claim_reply(d, p)
+            return _claim_reply(d, p, await _host_ok(d, p, data, by_token))
     if d["status"] != "lobby":
         raise HTTPException(status_code=400, detail="The draft has started: claim with the name you joined with")
     if len(d["players"]) >= d["num_players"]:
@@ -1474,7 +1528,22 @@ async def claim_seats(share_id: str, data: ClaimInput):
     d["players"].append(player)
     await db.drafts.update_one({"share_id": share_id}, {"$set": {"seats": d["seats"], "players": d["players"], "updated_at": datetime.now(timezone.utc).isoformat()}})
     await _set_host_player(d, player, data.host_token)
-    return _claim_reply(d, player)
+    return _claim_reply(d, player, await _host_ok(d, player, data, True))
+
+
+@api_router.post("/drafts/{share_id}/host-password")
+async def set_host_password(share_id: str, data: HostPasswordInput):
+    """Host: set, change or remove the password that restores host controls in another browser."""
+    d = await _draft(share_id)
+    if not d:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if d.get("host_token") != data.host_token:
+        raise HTTPException(status_code=403, detail="Only the host can set the host password")
+    pw = data.password.strip()
+    hashed = await run_in_threadpool(hash_password, pw) if pw else None
+    await db.drafts.update_one({"share_id": share_id}, {"$set": {"host_password_hash": hashed, "host_lock": True,
+                                                                "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True, "host_password_set": bool(hashed)}
 
 def _seat_in_order(d: dict, players: List[dict]) -> None:
     """Give players their seats in this order (player j gets every seat with index % num_players == j,
@@ -2017,6 +2086,8 @@ def _forget_suggestions(share_id: str) -> None:
     """Cached pick suggestions are keyed by pick number; after the host rewrites picks they're stale."""
     for k in [k for k in _SUGGEST_CACHE if k[0] == share_id]:
         _SUGGEST_CACHE.pop(k, None)
+    for k in [k for k in _REPORT_CACHE if k[0] == share_id]:
+        _REPORT_CACHE.pop(k, None)
 
 
 def _host_note(text: str, kind: str, cards: List[dict]) -> dict:
@@ -2345,7 +2416,10 @@ async def bot_report(share_id: str):
     if d.get("mode") == "packs" or d.get("pool") == "vintage":
         raise HTTPException(status_code=400, detail="The bot report is for rotisserie cube drafts")
     picks = d.get("picks", [])
-    key = (share_id, len(picks), tuple(sorted(d.get("bot_ignore", []))))
+    # Keyed by the picks themselves, not just how many: an undo + new pick, a swap or a change-pick keeps
+    # the count but changes the history.
+    history = hashlib.sha1("|".join(f'{p.get("seat_index")}:{p.get("card_id")}' for p in picks).encode()).hexdigest()
+    key = (share_id, len(picks), history, tuple(sorted(d.get("bot_ignore", []))))
     if key not in _REPORT_CACHE:
         cards = await _cards(share_id)
         rep = await run_in_threadpool(build_report, cards["index"], cards["combos"], d["order"], picks,
@@ -2436,6 +2510,9 @@ class LabSourceInput(BaseModel):
     pool: Optional[str] = Field(None, max_length=80)     # a saved pool's key: load it as saved
     label: str = Field("", max_length=120)               # name to save the pool under (e.g. the CubeCobra id)
     refresh: bool = False                                # rebuild from CubeCobra / Spellbook even if saved
+    # One of your saved (private) cubes: the pool is kept for your account only (not listed, opened or
+    # exported for anyone else), like the cube itself.
+    private: bool = False
 
 
 class LabCardInput(BaseModel):
@@ -2468,6 +2545,11 @@ class LabViewInput(BaseModel):
     engine: str = ""
 
 
+def _lab_visible(owner: Optional[str], user: Optional[dict]) -> bool:
+    """Pools built from a private cube belong to that account; every other pool is shared."""
+    return not owner or bool(user and user.get("id") == owner)
+
+
 def _lab_source(key: str) -> dict:
     src = _LAB_SOURCES.get(key)
     if not src:
@@ -2498,7 +2580,7 @@ async def _lab_pool_save(key: str, src: dict) -> None:
         if len(blob) > 12_000_000:
             return
         await db.lab_pools.update_one({"key": key}, {"$set": {
-            "key": key, "label": src["label"], "vrd": src["vrd"], "cards": len(src["cards"]),
+            "key": key, "label": src["label"], "vrd": src["vrd"], "cards": len(src["cards"]), "owner": src.get("owner"),
             "partial": src["partial"], "built_at": src["built_at"], "size": len(blob), "blob": blob}}, upsert=True)
         extra = await db.lab_pools.find({}, {"_id": 0, "key": 1}).sort("built_at", -1).skip(_LAB_POOLS_KEPT).to_list(50)
         if extra:
@@ -2520,23 +2602,28 @@ async def _lab_pool_load(key: str) -> Optional[dict]:
     data, index, combos = await run_in_threadpool(unpack)
     return {"index": index, "combos": combos, "cards": data["cards"], "stats": data.get("stats"),
             "combo_dicts": data.get("combos") or [], "partial": bool(doc.get("partial")), "vrd": bool(doc.get("vrd")),
-            "label": doc.get("label") or "", "built_at": doc.get("built_at") or "", "at": time.time()}
+            "label": doc.get("label") or "", "built_at": doc.get("built_at") or "", "at": time.time(),
+            "owner": doc.get("owner")}
 
 
 @api_router.get("/lab/pools")
-async def lab_pools():
-    """Card pools already built for Bot Brain, newest first (no card data: that's loaded per pool)."""
-    rows = await db.lab_pools.find({}, {"_id": 0, "blob": 0}).sort("built_at", -1).to_list(_LAB_POOLS_KEPT)
+async def lab_pools(user: Optional[dict] = Depends(get_optional_user)):
+    """Card pools already built for Bot Brain, newest first (no card data: that's loaded per pool). Pools from
+    private cubes are listed only for their owner."""
+    query = {"$or": [{"owner": None}, {"owner": user["id"]}]} if user else {"owner": None}
+    rows = await db.lab_pools.find(query, {"_id": 0, "blob": 0, "owner": 0}).sort("built_at", -1).to_list(_LAB_POOLS_KEPT)
     return fast_json({"pools": rows})
 
 
 @api_router.post("/lab/source")
-async def lab_source(body: LabSourceInput):
+async def lab_source(body: LabSourceInput, user: Optional[dict] = Depends(get_optional_user)):
     """Load a card pool for the Bot Brain page: a saved pool (`pool`), the VRD pool, or a cube's cards (as
     resolved for a draft). Returns its key, the cards (light fields) and an overview of how the bots see it."""
     if body.pool:
         key = body.pool
         src = _LAB_SOURCES.get(key) or await _lab_pool_load(key)
+        if src and not _lab_visible(src.get("owner"), user):
+            src = None
         if not src:
             raise HTTPException(status_code=404, detail="That saved pool is gone; load the cube again")
         _lab_remember(key, src)
@@ -2571,7 +2658,16 @@ async def lab_source(body: LabSourceInput):
         cube = [{k: c[k] for k in _LAB_FIELDS if k in c} for c in body.cards if not c.get("is_custom") and c.get("id")]
         if len(cube) < 10:
             raise HTTPException(status_code=400, detail="Load a cube of at least 10 cards")
-        key = "cube:" + hashlib.sha1("\n".join(sorted(c["id"] for c in cube)).encode()).hexdigest()[:16]
+        ids = "\n".join(sorted(c["id"] for c in cube))
+        owner = None
+        if body.private:
+            if not user:
+                raise HTTPException(status_code=401, detail="Sign in to analyze one of your saved cubes")
+            owner = user["id"]
+            # Its own pool, under a key nobody else can work out from the card list.
+            key = "mine:" + hashlib.sha1(f'{owner}\n{ids}'.encode()).hexdigest()[:20]
+        else:
+            key = "cube:" + hashlib.sha1(ids.encode()).hexdigest()[:16]
         src = None if body.refresh else (_LAB_SOURCES.get(key) or await _lab_pool_load(key))
         if not src:
             names = _cube_names(cube)
@@ -2606,7 +2702,7 @@ async def lab_source(body: LabSourceInput):
             if partial:      # keep fetching CubeCobra pages in the background; "Rebuild" picks them up later
                 _warm_card_stats(cube)
             src = {"index": index, "combos": combos, "cards": cube, "stats": st, "combo_dicts": combo_dicts or [],
-                   "partial": partial, "vrd": False, "label": label,
+                   "partial": partial, "vrd": False, "label": label, "owner": owner,
                    "at": time.time(), "built_at": datetime.now(timezone.utc).isoformat()}
             await _lab_pool_save(key, src)
         elif body.label.strip() and body.label.strip() != src.get("label"):
@@ -2620,10 +2716,12 @@ async def lab_source(body: LabSourceInput):
 
 
 @api_router.get("/lab/pool-export")
-async def lab_pool_export(key: str):
+async def lab_pool_export(key: str, user: Optional[dict] = Depends(get_optional_user)):
     """A saved pool as one gzip'd JSON file ({cards, stats, combos}) for the Bot Brain page to keep in the
     browser and run the bots locally. One Mongo read; the page asks again only when the pool is rebuilt."""
-    doc = await db.lab_pools.find_one({"key": key}, {"_id": 0, "blob": 1, "built_at": 1, "label": 1})
+    doc = await db.lab_pools.find_one({"key": key}, {"_id": 0, "blob": 1, "built_at": 1, "label": 1, "owner": 1})
+    if (doc and not _lab_visible(doc.get("owner"), user)) or not _lab_visible((_LAB_SOURCES.get(key) or {}).get("owner"), user):
+        raise HTTPException(status_code=404, detail="That saved pool is gone; load the cube again")
     blob = doc.get("blob") if doc else None
     built_at = (doc or {}).get("built_at", "")
     if not blob:
@@ -2688,15 +2786,28 @@ async def lab_analysis(body: LabAnalysisInput):
                       "partial": src.get("partial", False), **_ANALYSIS_CACHE[key]})
 
 
+# Simulations are CPU-heavy and the page is public: run at most a couple at once so live tables (picks,
+# polls, logins) never wait behind a queue of them. Extra requests wait briefly, then get a "busy" reply.
+_LAB_SIM_SLOTS = asyncio.Semaphore(max(1, int(os.environ.get("LAB_SIM_CONCURRENCY", "2"))))
+_LAB_SIM_WAIT_S = 30
+
+
 @api_router.post("/lab/simulate")
 async def lab_simulate(body: LabSimInput):
     """An all-bot rotisserie draft of the pool with the given weights (nothing is saved). With `start`, the
     first picks are kept and the bots re-draft from there (a rewind)."""
     src = _lab_source(body.source)
-    attach_combos(src["index"], src["combos"])
-    started = time.time()
-    out = await run_in_threadpool(simulate, src["index"], src["combos"], body.seats, body.picks, body.seed,
-                                  clean_tuning(body.tuning, body.engine), body.start, body.tuned_seats, body.stop, body.personas, body.engine)
+    try:
+        await asyncio.wait_for(_LAB_SIM_SLOTS.acquire(), timeout=_LAB_SIM_WAIT_S)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=429, detail="The bot simulator is busy. Try again in a minute.")
+    try:
+        attach_combos(src["index"], src["combos"])
+        started = time.time()
+        out = await run_in_threadpool(simulate, src["index"], src["combos"], body.seats, body.picks, body.seed,
+                                      clean_tuning(body.tuning, body.engine), body.start, body.tuned_seats, body.stop, body.personas, body.engine)
+    finally:
+        _LAB_SIM_SLOTS.release()
     out["seconds"] = round(time.time() - started, 2)
     return fast_json(out)
 

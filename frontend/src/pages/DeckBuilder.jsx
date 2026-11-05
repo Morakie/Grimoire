@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import api from "@/lib/api";
+import api, { API } from "@/lib/api";
 import CardSearchBar from "@/components/CardSearchBar";
 import DeckBoard from "@/components/DeckBoard";
 import DeckStats from "@/components/DeckStats";
@@ -57,14 +57,22 @@ export default function DeckBuilder() {
   const sidebarRef = useRef(null);
   const skipSave = useRef(true);
   const saveTimer = useRef(null);
+  const pendingRef = useRef(null);    // account decks: the latest edit not yet sent to the server
+  const inFlightRef = useRef(null);   // the save request on its way (saves go one at a time, newest last)
 
   useEffect(() => {
     if (!id) {
-      const saved = localStorage.getItem(GUEST_KEY);
-      const base = saved
-        ? JSON.parse(saved)
-        : { id: null, name: "Untitled Deck", format: "standard", description: "", mainboard: [], sideboard: [], commander: [], share_id: null };
-      setDeck(base);
+      const blank = { id: null, name: "Untitled Deck", format: "standard", description: "", mainboard: [], sideboard: [], commander: [], share_id: null };
+      let saved = null;
+      try {
+        saved = JSON.parse(localStorage.getItem(GUEST_KEY) || "null");
+      } catch {
+        // Damaged local copy: keep it aside (not erased) and start fresh.
+        try { localStorage.setItem(`${GUEST_KEY}_damaged`, localStorage.getItem(GUEST_KEY) || ""); } catch { /* storage blocked */ }
+        toast.error("Your local draft deck couldn't be read, so a new one was started");
+      }
+      const ok = saved && typeof saved === "object";
+      setDeck(ok ? { ...blank, ...saved, mainboard: saved.mainboard || [], sideboard: saved.sideboard || [], commander: saved.commander || [] } : blank);
       skipSave.current = true;
       return;
     }
@@ -81,32 +89,78 @@ export default function DeckBuilder() {
     else setStatsOpen(true);
   };
 
-  // Autosave
+  // Autosave. Guest decks are written to this browser straight away; account decks wait for a pause in
+  // editing (1.2 s), and anything still waiting is sent when you leave the page.
   useEffect(() => {
     if (!deck) return;
     if (skipSave.current) { skipSave.current = false; return; }
+    if (guest) { persist(deck, true); return; }
+    pendingRef.current = deck;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => persist(deck, true), 1200);
-    return () => saveTimer.current && clearTimeout(saveTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deck]);
 
+  const deckBody = (d) => ({
+    name: d.name, format: d.format, description: d.description || "",
+    mainboard: d.mainboard, sideboard: d.sideboard, commander: d.commander,
+  });
+
+  // Leaving the builder (Back, another page, another deck) with an edit still waiting: send it now.
+  // Closing the tab: send it with a keepalive request, which the browser finishes after the page is gone.
+  useEffect(() => {
+    if (!id) return undefined;
+    const deckId = id;
+    const flushOnUnload = () => {
+      const d = pendingRef.current;
+      if (!d) return;
+      try {
+        const token = localStorage.getItem("grimoire_token");
+        fetch(`${API}/decks/${deckId}`, { method: "PUT", keepalive: true, body: JSON.stringify(deckBody(d)),
+          headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
+      } catch { /* nothing more we can do while the page closes */ }
+    };
+    window.addEventListener("pagehide", flushOnUnload);
+    return () => {
+      window.removeEventListener("pagehide", flushOnUnload);
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      const d = pendingRef.current;
+      pendingRef.current = null;
+      if (d) api.put(`/decks/${deckId}`, deckBody(d)).catch(() => toast.error("Your last deck change couldn't be saved"));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
   const persist = async (d, silent = false) => {
     if (guest) {
-      localStorage.setItem(GUEST_KEY, JSON.stringify(d));
-      setSavedAt(Date.now());
+      try {
+        localStorage.setItem(GUEST_KEY, JSON.stringify(d));
+        setSavedAt(Date.now());
+      } catch {
+        if (!silent) toast.error("This browser wouldn't store the deck (storage full or blocked). Export it to keep a copy.");
+      }
       return;
     }
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    pendingRef.current = d;
+    // One save at a time: an older request can't land after a newer one and undo it.
+    while (inFlightRef.current) await inFlightRef.current.catch(() => {});
+    if (pendingRef.current !== d) return;   // a newer edit arrived meanwhile and will be sent instead
+    pendingRef.current = null;
     setSaving(true);
+    const req = api.put(`/decks/${id}`, deckBody(d));
+    inFlightRef.current = req;
     try {
-      await api.put(`/decks/${id}`, {
-        name: d.name, format: d.format, description: d.description || "",
-        mainboard: d.mainboard, sideboard: d.sideboard, commander: d.commander,
-      });
-      setSavedAt(Date.now());
+      await req;
+      if (!pendingRef.current) setSavedAt(Date.now());
       if (!silent) toast.success("Deck saved");
-    } catch { toast.error("Save failed"); }
-    finally { setSaving(false); }
+    } catch {
+      if (!pendingRef.current) pendingRef.current = d;   // keep it for the next save or for leaving the page
+      toast.error("Save failed");
+    } finally {
+      if (inFlightRef.current === req) inFlightRef.current = null;
+      setSaving(false);
+    }
   };
 
   const createFromGuest = async () => {
@@ -208,7 +262,9 @@ export default function DeckBuilder() {
     const { category, card } = printingCtx;
     setDeck((prev) => ({
       ...prev,
-      [category]: prev[category].map((c) => (c.id === card.id ? { ...newCard, quantity: c.quantity } : c)),
+      // Swap the printing's card data; keep what belongs to the deck row (quantity, custom group placement).
+      [category]: prev[category].map((c) => (c.id === card.id
+        ? { ...newCard, quantity: c.quantity, ...(c.group_overrides ? { group_overrides: c.group_overrides } : {}) } : c)),
     }));
   };
 
@@ -219,7 +275,7 @@ export default function DeckBuilder() {
     return "mainboard";
   };
 
-  const openPrintings = (card) => setPrintingCtx({ category: findCategoryOf(card.id), card });
+  const openPrintings = (card, category) => setPrintingCtx({ category: category || findCategoryOf(card.id), card });
 
   if (!deck) {
     return <div className="h-screen flex items-center justify-center bg-[#060a14]"><Loader2 className="w-8 h-8 text-amber-400 animate-spin" /></div>;

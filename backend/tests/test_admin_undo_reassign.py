@@ -38,14 +38,17 @@ def _make_active_draft(session, cube, num_players=2, num_seats=2, pick_cap=3):
     sid = data["share_id"]
     host_token = data["host_token"]
 
-    tokens = []
-    for i in range(num_seats):
-        rc = session.post(f"{API}/drafts/{sid}/claim", json={"name": f"TEST_P{i}", "seat_index": i})
+    by_player = {}
+    for i in range(num_players):
+        rc = session.post(f"{API}/drafts/{sid}/claim", json={"name": f"TEST_P{i}"})
         assert rc.status_code == 200, rc.text
-        tokens.append(rc.json()["player_token"])
+        by_player[rc.json()["player_id"]] = rc.json()["player_token"]
 
     rs = session.post(f"{API}/drafts/{sid}/start")
     assert rs.status_code == 200, rs.text
+    # Start shuffles the seats: map each seat to its owner's token from the post-start state.
+    seats = session.get(f"{API}/drafts/{sid}").json()["seats"]
+    tokens = [by_player[s["player_id"]] for s in sorted(seats, key=lambda s: s["index"])]
     return sid, host_token, tokens
 
 

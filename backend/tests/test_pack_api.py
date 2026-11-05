@@ -33,7 +33,7 @@ def test_pack_draft_flow():
     # Without a token you see no pack contents and no picks.
     anon = requests.get(f"{API}/drafts/{sid}/state", timeout=20).json()
     assert "my" not in anon and anon["picks"] == []
-    seat = me["seats"][0]
+    seat = next(p["seats"][0] for p in anon["players"] if p["id"] == me["player_id"])   # seats are shuffled at start
     # The other seat's player can't build from (or peek at) this seat's picks mid-draft.
     assert requests.get(f"{API}/drafts/{sid}/build", params={"seat": 1 - seat}, timeout=20).status_code == 403
 
@@ -62,8 +62,24 @@ def test_pick_from_wrong_pack_rejected():
     me = requests.post(f"{API}/drafts/{sid}/claim", json={"name": "Human"}, timeout=20).json()
     requests.post(f"{API}/drafts/{sid}/start", timeout=60)
     st = requests.get(f"{API}/drafts/{sid}/state", headers={"X-Player-Token": me["player_token"]}, timeout=20).json()
-    mine = set(st["my"][str(me["seats"][0])]["pack"])
+    seat = next(p["seats"][0] for p in st["players"] if p["id"] == me["player_id"])   # seats are shuffled at start
+    mine = set(st["my"][str(seat)]["pack"])
     other = next(c["id"] for c in CUBE if c["id"] not in mine)
-    r = requests.post(f"{API}/drafts/{sid}/pick", json={"player_token": me["player_token"], "seat_index": me["seats"][0],
+    r = requests.post(f"{API}/drafts/{sid}/pick", json={"player_token": me["player_token"], "seat_index": seat,
                                                         "card_id": other}, timeout=20)
     assert r.status_code == 409
+
+
+def test_claiming_a_seat_gets_packs_even_when_nothing_changed():
+    """A watcher (anonymous view cached) claims their seat: the next poll with the same known version must
+    return their packs, not "unchanged"."""
+    d = create().json()
+    sid = d["share_id"]
+    me = requests.post(f"{API}/drafts/{sid}/claim", json={"name": "Human"}, timeout=20).json()
+    requests.post(f"{API}/drafts/{sid}/start", timeout=60)
+    anon = requests.get(f"{API}/drafts/{sid}/state", timeout=20).json()
+    same = requests.get(f"{API}/drafts/{sid}/state", headers={"X-Known-Version": anon["version"]}, timeout=20).json()
+    assert same.get("unchanged") or same["version"] == anon["version"]
+    mine = requests.get(f"{API}/drafts/{sid}/state", timeout=20,
+                        headers={"X-Known-Version": anon["version"], "X-Player-Token": me["player_token"]}).json()
+    assert not mine.get("unchanged") and "my" in mine
