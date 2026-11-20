@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<meta name="referrer" content="no-referrer">
+<title>Next Listen: Progression & Epic Fantasy</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#14110f;--panel:#1d1916;--card:#231e1a;--line:#3a322b;--ink:#efe6da;--mute:#a8998a;--amber:#e3a548;--amber2:#f5c87a;--teal:#6fb7a8;--rose:#d4826f;
+--S:#f0b44c;--A:#8fc79a;--B:#7fa8d6;--C:#9b8f84}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 Inter,system-ui,sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 20px 64px}
+h1{font-family:Fraunces,serif;font-size:clamp(30px,5vw,46px);margin:0 0 6px;letter-spacing:-.5px}
+h2{font-family:Fraunces,serif;font-size:24px;margin:40px 0 8px}
+.sub{color:var(--mute);margin:0 0 22px;max-width:780px}
+.profile{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:26px}
+.pbox{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.pbox b{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--amber);margin-bottom:6px}
+.pbox p{margin:0;font-size:14px}
+.tabs{display:flex;gap:6px;border-bottom:1px solid var(--line);margin-bottom:18px;flex-wrap:wrap}
+.tab{background:none;border:0;color:var(--mute);font:600 14px Inter;padding:10px 14px;cursor:pointer;border-bottom:2px solid transparent}
+.tab.on{color:var(--ink);border-color:var(--amber)}
+.controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+.row{display:flex;flex-wrap:wrap;gap:8px}
+.chip{background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:999px;padding:6px 12px;font:500 13px Inter;cursor:pointer}
+.chip.on{background:var(--amber);color:#1a140c;border-color:var(--amber)}
+.lbl{font-size:12px;color:var(--mute);text-transform:uppercase;letter-spacing:.08em;min-width:70px}
+.toggle{display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:6px 12px}
+.toggle input{accent-color:var(--amber)}
+input[type=search],select{background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:999px;padding:7px 14px;font:14px Inter}
+input[type=search]{min-width:220px}
+.weight{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-size:13px;flex-wrap:wrap}
+.weight input{accent-color:var(--amber);width:200px}
+.weight .wv{color:var(--amber2);font-weight:600;min-width:150px}
+.count{color:var(--mute);font-size:13px;margin:10px 0 14px}
+.tierhead{display:flex;align-items:baseline;gap:12px;margin:26px 0 12px}
+.tierhead .big{font:700 30px Fraunces,serif}
+.tierhead span{color:var(--mute);font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(330px,100%),1fr));gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--tc);border-radius:14px;padding:16px 18px;display:flex;flex-direction:column;gap:8px;position:relative}
+.card.dim{opacity:.4}
+.badge{position:absolute;top:14px;right:14px;display:flex;flex-direction:column;align-items:center;line-height:1}
+.badge b{font:700 22px Fraunces,serif;color:var(--tc)}
+.badge small{font-size:11px;color:var(--mute);margin-top:3px}
+.card h3{font-family:Fraunces,serif;font-size:19px;margin:0;line-height:1.25;padding-right:54px}
+.by{color:var(--mute);font-size:13px;margin-top:-4px}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12.5px;background:var(--panel);border-radius:10px;padding:9px 12px}
+.stats div{color:var(--mute)}.stats div b{color:var(--ink);font-weight:600}
+.stars{color:var(--amber2);letter-spacing:1px}
+.kn{color:var(--teal)!important}
+.bars{display:flex;flex-direction:column;gap:4px;font-size:11.5px;color:var(--mute)}
+.bar{display:flex;align-items:center;gap:8px}.bar i{flex:1;height:5px;background:var(--line);border-radius:3px;overflow:hidden;display:block}
+.bar i::after{content:"";display:block;height:100%;width:var(--w);background:var(--bc)}
+.bar span{width:84px}.bar em{width:28px;text-align:right;font-style:normal;color:var(--ink)}
+.why{font-size:14px;margin:2px 0}
+.like{font-size:12.5px;color:var(--amber2)}.like b{font-weight:600}
+details{font-size:13.5px;color:var(--ink)}
+details summary{cursor:pointer;color:var(--amber2);font-weight:600;font-size:13px}
+details p{margin:8px 0 0;color:#d9cdbf}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tag{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--mute)}
+.tag.new{border-color:var(--teal);color:var(--teal)}
+.tag.push{border-color:var(--rose);color:var(--rose)}
+.tag.done{border-color:var(--A);color:var(--A)}
+.tag.warn{border-color:var(--rose);color:var(--rose)}
+.actions{display:flex;gap:8px;margin-top:2px;flex-wrap:wrap}
+.btn{font:600 12px Inter;padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:none;color:var(--ink);cursor:pointer;text-decoration:none}
+.btn.go{background:var(--amber);color:#1a140c;border-color:var(--amber)}
+.btn.on{border-color:var(--teal);color:var(--teal)}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);font-size:14px;vertical-align:top}
+th{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--mute);background:var(--panel)}
+td a{color:var(--amber2)}
+.note{color:var(--mute);font-size:13px}
+.caught{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.caught span{font-size:13px;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:5px 11px;color:var(--mute)}
+.how{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;font-size:13.5px;color:var(--mute);margin-top:14px}
+.how b{color:var(--ink)}
+.hidden{display:none}
+footer{margin-top:48px;color:var(--mute);font-size:12px}
+@media (max-width:600px){.wrap{padding:22px 14px 48px}.card{padding:14px}.stats{grid-template-columns:1fr}.weight input{width:100%;order:5}.weight .wv{min-width:0}input[type=search]{min-width:0;width:100%}.lbl{min-width:0;width:100%}th,td{padding:9px 10px;font-size:13px}.tab{padding:10px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Your Next Listen</h1>
+<p class="sub">Series-first audiobook recommendations for fans of long progression and epic fantasy, ranked into tiers. Standalones are left out on purpose. These are all worlds you can live in for a while.</p>
+
+<div class="profile">
+ <div class="pbox"><b>Built for fans of</b><p>HWFWM, Stormlight, Kingkiller, Primal Hunter, Dungeon Crawler Carl. <span style="color:var(--mute)">Close behind: Cradle, Spellmonger, Lightbringer.</span></p></div>
+ <div class="pbox"><b>What lands well</b><p>Underdogs who outthink problems, warmth and humor, big payoffs. Travis Baldree, Heath Miller, Nick Podehl and Kate Reading are the narrators to look for.</p></div>
+ <div class="pbox"><b>What misses</b><p>Grimdark cynicism (First Law, 2★), hard SF (Dune 1★), one-and-done standalones, and long series that start to drag.</p></div>
+</div>
+
+<div class="tabs">
+ <button class="tab on" data-v="recs">Tier list</button>
+ <button class="tab" data-v="catch">Keep going</button>
+ <button class="tab" data-v="saved">Saved <span id="savedN"></span></button>
+</div>
+
+<section id="v-recs">
+ <div class="weight">
+  <span class="lbl" style="min-width:0">Ranking</span>
+  <span>Taste fit</span><input type="range" id="w" min="0" max="100" value="30"><span>Listener ratings</span>
+  <span class="wv" id="wv"></span>
+ </div>
+ <div class="controls" style="margin-top:12px"><span class="lbl">More like</span><div id="anchors" class="row"></div></div>
+ <div class="controls"><span class="lbl">Subgenre</span><div id="genres" class="row"></div></div>
+ <div class="controls"><span class="lbl">Vibe</span><div id="vibes" class="row"></div></div>
+ <div class="controls"><span class="lbl">Filter</span>
+  <label class="toggle"><input type="checkbox" id="fDone"> Complete series only</label>
+  <label class="toggle"><input type="checkbox" id="fNew"> New (2025–26)</label>
+  <label class="toggle"><input type="checkbox" id="fPush"> Hide what Audible already pushes</label>
+  <label class="toggle"><input type="checkbox" id="fDis"> Hide dismissed</label>
+  <input type="search" id="q" placeholder="Search title, author, narrator…">
+ </div>
+ <div class="count" id="count"></div>
+ <div id="tiers"></div>
+ <div class="how"><b>How the score works:</b> <b>Fit</b> is how close a series is to the anchor five (HWFWM, Stormlight, Kingkiller, Primal Hunter, DCC), weighted for series length and status, tone and narrator. <b>Listeners</b> is the Audible star rating for book 1, scaled so 3.9★ = 0 and 4.9★ = 100. Below roughly 1,000 ratings, a series gets pulled toward the middle, so a 4.7 with 40 votes doesn't outrank a 4.6 with 16,000. Move the slider to trust me or the crowd more. Tiers: <b style="color:var(--S)">S</b> 82+ · <b style="color:var(--A)">A</b> 74+ · <b style="color:var(--B)">B</b> 64+ · <b style="color:var(--C)">C</b> below.</div>
+</section>
+
+<section id="v-catch" class="hidden">
+ <p class="sub">Series fans of the anchor five have often started. Here's what's out now, as of Nov 2026.</p>
+ <table><thead><tr><th>Series</th><th>What's out</th><th></th></tr></thead><tbody id="ctable"></tbody></table>
+ <h2>Latest audio installments</h2>
+ <div class="caught" id="caught"></div>
+</section>
+
+<section id="v-saved" class="hidden">
+ <p class="sub">Saved picks stay on this device and browser only.</p>
+ <div class="grid" id="sgrid"></div>
+</section>
+
+<footer>Ratings, lengths and narrators come from Audible US for book 1 of each series, checked Nov 19, 2026. Links open an Audible or Goodreads search.</footer>
+</div>
+<script>
+const D={"recs": [{"t": "The Captain", "s": "The Last Horizon", "a": "Will Wight", "nar": "Travis Baldree", "len": "11h 24m", "books": "Ongoing", "st": "ongoing", "r": 4.6, "c": 2797, "y": 2023, "g": ["Sci-Fi", "Progression / Cultivation"], "vibe": "funny", "fit": 86, "p": 1, "why": "Will Wight's series after Cradle, again narrated by Baldree. For anyone who finished Cradle, this is the obvious next one.", "prem": "A powerful old-world wizard and a ragtag crew go after the Last Horizon, a legendary ship that can only be claimed by a full crew of 'champions', while something ancient tries to devour the galaxy. It has Cradle's pacing in a space opera.", "kn": "Cradle, Primal Hunter", "like": ["Cradle"]}, {"t": "Beware of Chicken", "s": "Beware of Chicken", "a": "Casualfarmer", "nar": "Travis Baldree", "len": "12h 35m", "books": "5+ books", "st": "ongoing", "r": 4.8, "c": 9096, "y": 2022, "g": ["Progression / Cultivation", "Cozy & Funny"], "vibe": "cozy", "fit": 82, "why": "Cultivation with HWFWM-style humor and heart, minus DotF's grind. Baldree narrates, and listeners rate it higher than almost anything in the genre.", "prem": "A man reincarnated in a cutthroat xianxia world decides he'd rather farm. He accidentally makes his chicken, his ox and his rice paddies absurdly powerful, and sect drama keeps finding him anyway.", "kn": "Cradle, Primal Hunter", "like": ["Cradle", "HWFWM"]}, {"t": "Ascend Online", "s": "Ascend Online", "a": "Luke Chmilenko", "nar": "Luke Daniels", "len": "17h 56m", "books": "5 books", "st": "ongoing", "r": 4.7, "c": 15843, "y": 2017, "g": ["LitRPG"], "vibe": "epic", "fit": 84, "why": "A party-driven VR LitRPG that grows into kingdom building and war, the way Spellmonger turns one wizard into a whole realm. It's the other classic from The Land's era.", "prem": "A group of friends enter a new full-dive VR game and end up defending a frontier village from an orc horde. The series grows into a town-building and war campaign with a strong party dynamic.", "kn": "", "like": ["HWFWM", "Spellmonger"]}, {"t": "Furies of Calderon", "s": "Codex Alera", "a": "Jim Butcher", "nar": "Kate Reading", "len": "19h 58m", "books": "6 books", "st": "complete", "r": 4.5, "c": 16202, "y": 2004, "g": ["Epic Fantasy"], "vibe": "epic", "fit": 85, "why": "Jim Butcher's epic fantasy, a big step up from Dresden for epic-fantasy fans. It's complete, and Kate Reading (Wheel of Time) narrates.", "prem": "In a Roman-legion-style empire, everyone bonds elemental 'furies' except Tavi, a shepherd boy with none. He survives by outthinking everyone, and over six books he goes from farm boy to the empire's key player.", "kn": "Wheel of Time", "like": ["Stormlight", "Lightbringer"]}, {"t": "Dissonance", "s": "Unbound", "a": "Nicoli Gonnella", "nar": "Travis Baldree", "len": "26h 44m", "books": "12+ books", "st": "ongoing", "r": 4.6, "c": 5361, "y": 2022, "g": ["LitRPG", "Progression / Cultivation"], "vibe": "epic", "fit": 89, "p": 1, "why": "The closest thing to early Primal Hunter: a lone, stubborn hero levelling to survive a monster-filled world, narrated by Baldree. There are a dozen books to binge.", "prem": "Felix falls into a monster-filled pocket world and spends book one surviving alone, levelling skills through sheer stubbornness. It then opens into a huge world with kingdoms, a System with secrets, and a found family.", "kn": "Cradle, Primal Hunter", "like": ["Primal Hunter", "HWFWM"]}, {"t": "Bastion", "s": "Immortal Great Souls", "a": "Phil Tucker", "nar": "Nick Podehl", "len": "38h 23m", "books": "4 books", "st": "ongoing", "r": 4.7, "c": 3610, "y": 2022, "g": ["Progression / Cultivation", "Epic Fantasy"], "vibe": "epic", "fit": 86, "p": 1, "why": "A big, heroic progression epic narrated by Nick Podehl (Arcane Ascension). It's the best 'legend reborn' story in the genre.", "prem": "A legendary warrior dies and is reborn centuries later, weak, into a world that has changed. He has to rebuild his power while a new generation of heroes forms around him.", "kn": "Arcane Ascension", "like": ["Stormlight", "Primal Hunter"]}, {"t": "Heretical Fishing", "s": "Heretical Fishing", "a": "Haylock Jobson", "nar": "Heath Miller", "len": "23h 56m", "books": "5 books", "st": "ongoing", "r": 4.7, "c": 6122, "y": 2024, "g": ["Progression / Cultivation", "Cozy & Funny"], "vibe": "cozy", "fit": 82, "why": "Heath Miller, the HWFWM voice, narrates. The hero has Jason Asano-level snark and keeps offending gods by accident.", "prem": "A man isekai'd into a world that runs on a fishing System just wants to fish. His fishing keeps offending gods, cults and the local church, and he reels in everything from kraken to conspiracies.", "kn": "HWFWM", "like": ["HWFWM", "DCC"]}, {"t": "The Warded Man", "s": "The Demon Cycle", "a": "Peter V. Brett", "nar": "Pete Bradbury", "len": "18h 10m", "books": "5 books", "st": "complete", "r": 4.5, "c": 12081, "y": 2009, "g": ["Epic Fantasy"], "vibe": "epic", "fit": 86, "why": "A complete five-book epic with rune magic that has clear rules, and heroes forged by trauma into legends. It hits the same Stormlight and Lightbringer notes.", "prem": "Every night demons rise from the ground, and humanity cowers behind magic wards. Three kids from different towns grow up refusing to accept that, and one learns to tattoo the wards onto his own skin.", "kn": "", "like": ["Stormlight", "Lightbringer"]}, {"t": "Stuff and Nonsense", "s": "Threadbare", "a": "Andrew Seiple", "nar": "Tim Gerard Reynolds", "len": "10h 40m", "books": "6 books", "st": "complete", "r": 4.6, "c": 2587, "y": 2018, "g": ["LitRPG", "Cozy & Funny"], "vibe": "heartfelt", "fit": 80, "why": "It has Wandering Inn heart and The Land's class crunch, it's complete, and it's narrated by Tim Gerard Reynolds, the Red Rising voice.", "prem": "A teddy bear is brought to life as a golem in a world of RPG classes. He has to level up to protect the little girl who loves him. It sounds silly, but it gets surprisingly epic and emotional.", "kn": "Red Rising", "like": ["HWFWM", "DCC"]}, {"t": "Blood Song", "s": "Raven's Shadow", "a": "Anthony Ryan", "nar": "Steven Brand", "len": "23h 5m", "books": "3 books + 2-book sequel", "st": "complete", "r": 4.6, "c": 16638, "y": 2013, "g": ["Epic Fantasy"], "vibe": "epic", "fit": 90, "why": "The closest match to Kingkiller here: a legend tells his own story in a frame narrative, with a brutal training order and gorgeous prose. Unlike Kingkiller, the series is finished.", "prem": "Vaelin Al Sorna is given to a warrior order as a child. The first book is his training and rise, told as he's escorted to a duel. Later books widen into a full war epic.", "kn": "", "like": ["Kingkiller", "Stormlight"]}, {"t": "The Years of Apocalypse", "s": "The Years of Apocalypse", "a": "Uranium Phoenix", "nar": "Jessica Threet", "len": "22h 29m", "books": "2 books", "st": "ongoing", "r": 4.7, "c": 213, "y": 2026, "new": 1, "g": ["Progression / Cultivation", "Time Loop"], "vibe": "epic", "fit": 80, "why": "A 2026 time-loop progression series pitched straight at Mother of Learning and Arcane Ascension readers.", "prem": "An apprentice arcanist is caught in a loop that resets each time the world ends. She has to master magic and unravel the apocalypse's cause, one doomed timeline at a time.", "kn": "", "like": ["Cradle", "Kingkiller"]}, {"t": "The Path of Flames", "s": "Chronicles of the Black Gate", "a": "Phil Tucker", "nar": "Noah Michael Levine", "len": "16h 45m", "books": "6 books", "st": "complete", "r": 4.5, "c": 674, "y": 2017, "g": ["Epic Fantasy"], "vibe": "epic", "fit": 80, "why": "A complete, heroic epic about knights who bond demons. It's a deep cut that Audible rarely surfaces.", "prem": "An order of Ascendant knights who bond with demons is long gone. As an ancient enemy returns, a disgraced lord, a young noblewoman and others must take on the old powers and the price that comes with them.", "kn": "", "like": ["Stormlight", "Lightbringer"]}, {"t": "Magician: Apprentice", "s": "The Riftwar Saga", "a": "Raymond E. Feist", "nar": "Nicholas Guy Smith", "len": "17h 16m", "books": "30+ books in the Riftwar Cycle", "st": "complete", "r": 4.7, "c": 4733, "y": 1982, "g": ["Epic Fantasy", "Classic"], "vibe": "epic", "fit": 80, "why": "The original orphan-to-archmage saga, with a magic-school start like Kingkiller's and a huge connected world to live in for years.", "prem": "Pug, a kitchen boy, becomes a magician's apprentice just as a rift opens to an invading empire from another world. The war, and his path to becoming the most powerful mage alive, spans generations.", "kn": "", "like": ["Kingkiller", "Spellmonger"]}, {"t": "12 Miles Below", "s": "12 Miles Below", "a": "Mark Arrows", "nar": "Scott Aiello", "len": "14h 29m", "books": "7 books", "st": "ongoing", "r": 4.6, "c": 481, "y": 2023, "g": ["LitRPG", "Progression / Cultivation"], "vibe": "funny", "fit": 83, "why": "The closest DCC match here: a deadly underground crawl, a scheming hero with a 'useless' class, and dark humor.", "prem": "A man with a seemingly useless class wakes up deep underground in a world of monsters and towering ruins. He has to climb toward the surface, using his wits more than his stats.", "kn": "", "like": ["DCC", "Primal Hunter"]}, {"t": "Skyward", "s": "Skyward", "a": "Brandon Sanderson", "nar": "Suzy Jackson", "len": "15h 28m", "books": "4 books + novellas + spin-off", "st": "complete", "r": 4.8, "c": 43153, "y": 2018, "g": ["Sci-Fi", "YA"], "vibe": "heartfelt", "fit": 68, "why": "This is YA, from the same lane as Sanderson's Reckoners. The fit score is lowered for that. It's complete and very highly rated, but it's teen-protagonist Sanderson, not Stormlight.", "prem": "Spensa lives on a planet under constant alien attack and dreams of being a fighter pilot despite her father's disgrace. She finds a broken starship with an AI that has a lot of opinions.", "kn": "", "like": ["Stormlight"]}, {"t": "Empire of Silence", "s": "Sun Eater", "a": "Christopher Ruocchio", "nar": "Samuel Roukin", "len": "26h 6m", "books": "Long, ongoing", "st": "ongoing", "r": 4.4, "c": 5030, "y": 2018, "g": ["Sci-Fi"], "vibe": "epic", "fit": 86, "p": 1, "why": "Kingkiller's structure (a legend's own memoir with a 'how did I become this' frame) at Stormlight scale, in space.", "prem": "Hadrian Marlowe, remembered as the man who burned a sun, tells his own story: from a lord's son who ran from his destiny to the soldier and diplomat at the center of humanity's war with an alien race.", "kn": "", "like": ["Kingkiller", "Stormlight"]}, {"t": "Paranoid Mage", "s": "Paranoid Mage", "a": "Inadvisably Compelled", "nar": "Jeremy Frazier", "len": "10h 53m", "books": "5 books", "st": "ongoing", "r": 4.7, "c": 805, "y": 2022, "g": ["Progression / Cultivation", "Urban / Modern"], "vibe": "funny", "fit": 74, "why": "Modern hidden-magic fantasy with a hero who's actually competent: Dresden's setting without Dresden's flailing.", "prem": "An ordinary guy discovers he's a mage in a secret magical society that would happily use or kill him. So he prepares for absolutely everything, often to hilarious excess.", "kn": "", "like": ["HWFWM"]}, {"t": "The Raven Scholar", "s": "Eternal Path Trilogy", "a": "Antonia Hodgson", "nar": "Daphne Kouma", "len": "24h 12m", "books": "Book 1 of 3", "st": "ongoing", "r": 4.7, "c": 1591, "y": 2025, "new": 1, "g": ["Epic Fantasy", "Mystery"], "vibe": "epic", "fit": 76, "why": "One of 2025's best-reviewed fantasy debuts, twisty the way Licanius is. Only book 1 is out, so expect a wait for the rest of the trilogy.", "prem": "A brilliant, abrasive scholar competes in a trial to choose the empire's next ruler. Then a rival is murdered, and she has to find the killer while staying alive in the contest.", "kn": "", "like": ["Stormlight"]}, {"t": "Beneath the Dragoneye Moons", "s": "Beneath the Dragoneye Moons", "a": "Selkie Myth", "nar": "Andrea Emmes", "len": "13h 16m", "books": "16 books", "st": "ongoing", "r": 4.4, "c": 878, "y": 2021, "g": ["Progression / Cultivation", "LitRPG"], "vibe": "epic", "fit": 72, "why": "A huge sixteen-book backlog of 'competent hero in a giant world,' following a healer who becomes a war medic.", "prem": "A woman reborn in a fantasy world builds her healer class into something nobody has seen, from village life to the front lines of a magical war.", "kn": "", "like": ["HWFWM"]}, {"t": "Red Sister", "s": "Book of the Ancestor", "a": "Mark Lawrence", "nar": "Heather O'Neill", "len": "19h 21m", "books": "3 books", "st": "complete", "r": 4.5, "c": 6838, "y": 2017, "g": ["Epic Fantasy"], "vibe": "dark", "fit": 76, "why": "A complete trilogy with a lethal school, the University years of Kingkiller turned all the way up. It's darker than the rest of this list, but not cynical.", "prem": "A young girl saved from the gallows is taken in by a convent that trains nuns as assassins and warrior-mystics, on a dying world slowly being crushed by ice.", "kn": "", "like": ["Kingkiller"]}, {"t": "Pawn of Prophecy", "s": "The Belgariad", "a": "David Eddings", "nar": "Brian Wiggins", "len": "10h 14m", "books": "5 books + Malloreon sequel", "st": "complete", "r": 4.3, "c": 252, "y": 1982, "g": ["Epic Fantasy", "Classic"], "vibe": "cozy", "fit": 68, "why": "Classic comfort-food fantasy for Wheel of Time and Sword of Truth fans, and much funnier. This is a newer 2024 recording.", "prem": "Garion, a farm boy, finds out his aunt and the old storyteller are ancient sorcerers. He's swept into a quest to recover a stolen magical orb across a continent of colorful kingdoms.", "kn": "", "like": ["Spellmonger"]}, {"t": "The Mayor of Noobtown", "s": "Noobtown", "a": "Ryan Rimmel", "nar": "Johnathan McClain", "len": "8h 2m", "books": "9 books", "st": "complete", "r": 4.6, "c": 25, "y": 2018, "g": ["LitRPG", "Cozy & Funny"], "vibe": "funny", "fit": 64, "why": "Goofy town-building LitRPG in the Good Guys/Bad Guys vein. A filler pick, not a main course.", "prem": "A guy wakes up in a fantasy world with the worst starting class imaginable and finds himself mayor of a starter village. He has to grow it into a real town while everything tries to kill it.", "kn": "", "like": ["DCC"]}, {"t": "Shadow Slave: Child of Shadows", "s": "Shadow Slave", "a": "Guiltythree", "nar": "Garrett Michael Brown", "len": "15h 28m", "books": "Book 1 (books 2–3 due 2027)", "st": "ongoing", "r": null, "c": 0, "y": 2026, "new": 1, "g": ["Progression / Cultivation"], "vibe": "dark", "fit": 80, "why": "A darker, huge web-novel phenomenon with a deadly System, nightmare trials and a hero who hides what he is. It's for the Primal Hunter crowd. The audio launched Nov 10, 2026, and books 2–3 are due in 2027.", "prem": "In a world where a nightmare 'Spell' tests people with deadly trials, a slum kid gets a cursed, deceptive power. He has to survive nightmare realms and a cutthroat academy without anyone learning what he is.", "kn": "", "like": ["Primal Hunter", "DCC"]}, {"t": "Wraithwood Botanist", "s": "Wraithwood Botanist", "a": "Little Lynx", "nar": "Reba Buhr", "len": "12h 44m", "books": "4 books", "st": "ongoing", "r": 4.6, "c": 619, "y": 2025, "new": 1, "g": ["Progression / Cultivation", "Cozy & Funny"], "vibe": "cozy", "fit": 62, "why": "Cozy progression built around levelling up a garden. It's a palate cleanser between big series volumes.", "prem": "A botanist in a haunted forest grows magical plants, and the plants, the forest and the botanist grow stronger together.", "kn": "", "like": ["Cradle"]}, {"t": "Blue Core", "s": "Blue Core", "a": "Inadvisably Compelled", "nar": "Jeremy Frazier", "len": "32h 35m", "books": "3 books", "st": "ongoing", "r": 4.6, "c": 457, "y": 2022, "g": ["LitRPG", "Dungeon Core"], "vibe": "funny", "fit": 68, "why": "Told from the dungeon's point of view, a fresh angle after The Wandering Inn's dungeon arcs.", "prem": "A man reincarnates as a dungeon core. He'd rather befriend adventurers than kill them, which makes him a target for everyone who expects dungeons to behave.", "kn": "", "like": ["DCC"]}, {"t": "Senlin Ascends", "s": "The Books of Babel", "a": "Josiah Bancroft", "nar": "John Banks", "len": "14h 15m", "books": "4 books", "st": "complete", "r": 4.4, "c": 2229, "y": 2018, "g": ["Epic Fantasy"], "vibe": "heartfelt", "fit": 70, "why": "A complete, strange and beautiful series unlike anything else here. Good for when you want something different.", "prem": "A mild schoolmaster loses his wife on their honeymoon at the Tower of Babel. Each level of the tower is its own bizarre society, and he climbs through them all to find her.", "kn": "", "like": ["Kingkiller"]}, {"t": "Runeforged: Path of the Paladin", "s": "Runeforged", "a": "M.S. Davidson", "nar": "Gary Tiedemann", "len": "29h 2m", "books": "Book 1", "st": "ongoing", "r": 4.3, "c": 41, "y": 2026, "new": 1, "g": ["LitRPG"], "vibe": "funny", "fit": 72, "why": "A 2026 launch pitched at HWFWM fans, with snark and explosive progression. It's very new, so there aren't many ratings yet.", "prem": "An isekai'd restaurant server uses his reflexes from waiting tables to survive a brutal new world. He climbs from zero toward paladin.", "kn": "", "like": ["HWFWM"]}, {"t": "Dao of Money", "s": "Dao of Money", "a": "Extra26 & T.C. Liyanage", "nar": "Peter Berkrot", "len": "22h 15m", "books": "2 books", "st": "ongoing", "r": 4.4, "c": 127, "y": 2026, "new": 1, "g": ["Progression / Cultivation"], "vibe": "epic", "fit": 66, "why": "A 2026 cultivation series built around money and scheming, for when DotF's sect politics were the fun part.", "prem": "A ruthless man is reborn as a child in a cultivation world where wealth is power. He sets out to out-earn and out-cultivate the rivals who'll underestimate him.", "kn": "", "like": ["Cradle"]}, {"t": "All Systems Red", "s": "The Murderbot Diaries", "a": "Martha Wells", "nar": "Kevin R. Free", "len": "3h 17m", "books": "8 books", "st": "ongoing", "r": 4.5, "c": 22846, "y": 2017, "g": ["Sci-Fi"], "vibe": "funny", "fit": 64, "p": 1, "why": "Short, funny, sarcastic sci-fi. The books are novella-length, so they're quick between big listens.", "prem": "A security android hacks its own governor module and would rather watch TV shows, but it keeps having to save its annoying humans from corporate violence.", "kn": "", "like": ["DCC"]}, {"t": "The Daughters' War", "s": "Blacktongue", "a": "Christopher Buehlman", "nar": "Nikki Garcia", "len": "13h 14m", "books": "2 books", "st": "ongoing", "r": 4.5, "c": 1203, "y": 2024, "g": ["Epic Fantasy"], "vibe": "dark", "fit": 66, "why": "A prequel to The Blacktongue Thief: sword and sorcery with a sharp narrator voice.", "prem": "Set years before The Blacktongue Thief, it follows Galva, the knight from that book, through the brutal goblin war, in Buehlman's darkly funny style.", "kn": "", "like": ["Kingkiller"]}, {"t": "The Ember Blade", "s": "The Darkwater Legacy", "a": "Chris Wooding", "nar": "Simon Bubb", "len": "30h 40m", "books": "Book 1 only (since 2018)", "st": "stalled", "r": 4.6, "c": 4324, "y": 2018, "g": ["Epic Fantasy"], "vibe": "epic", "fit": 58, "why": "A great classic quest. The warning: book 2 still isn't out years later, so it's a world with no ending yet.", "prem": "Two young men are thrown in with a band of rebels trying to steal back a legendary sword from the occupiers who conquered their land.", "kn": "", "like": ["Kingkiller"]}, {"t": "Hell Difficulty Tutorial", "s": "Hell Difficulty Tutorial", "a": "Cerim", "nar": "Henry Kramer", "len": "18h 34m", "books": "6 books", "st": "ongoing", "r": 3.9, "c": 1506, "y": 2024, "g": ["LitRPG", "Progression / Cultivation"], "vibe": "epic", "fit": 82, "like": ["Primal Hunter"], "why": "In the genre it's ranked right next to Primal Hunter: a lone grinder in a brutal tutorial who refuses to leave until he's overpowered. Its Audible score is far below its reputation, though, so sample the narration first.", "prem": "Dropped into a tutorial on the hardest difficulty, one man decides not to leave. He grinds floor after deadly floor to become absurdly strong before the real world ever sees him.", "kn": ""}, {"t": "Age of Stone", "s": "Rise of Mankind", "a": "Jez Cajiao", "nar": "Neil Hellegers", "len": "16h 44m", "books": "Age of Stone, Bronze, Iron…", "st": "ongoing", "r": 4.6, "c": 2577, "y": 2021, "g": ["LitRPG", "Dungeon Core"], "vibe": "epic", "fit": 84, "kn": "The Land", "like": ["Primal Hunter", "DCC"], "why": "Narrated by Neil Hellegers, the voice of The Land. Reviewers keep comparing it to The Land/Chaos Seeds. Common complaints: the MC gets abrasive late in book 1, one side character divides people, and it's more adult than most LitRPG.", "prem": "Right after the world's systems collapse into a magical apocalypse, an ordinary guy stumbles into control of a dungeon core. He has to build it into a fortress for the survivors before monsters and worse people get there first."}], "catch": [{"s": "Spellmonger", "next": "Seamage (Book 18, Mar 2026)", "q": "Seamage Terry Mancour", "note": "Practical Adept is also out, so check you haven't skipped it."}, {"s": "Arcane Ascension", "next": "When Wizards Follow Fools (Book 5)", "q": "When Wizards Follow Fools Andrew Rowe", "note": "The audiobook came out in April 2025."}, {"s": "Mother of Learning", "next": "Arcs 1–3 (complete)", "q": "Mother of Learning Arc 2", "note": "The full time-loop story is out."}, {"s": "Riyria / Legends of the First Empire", "next": "Riyria Chronicles + Rise and Fall trilogy (Nolyn, Esrahaddon, Farilane)", "q": "Michael J. Sullivan Nolyn", "note": "Rise and Fall bridges Legends of the First Empire and Riyria."}, {"s": "The Bound and The Broken", "next": "Of Blood and Fire → Of Darkness and Light → onward", "q": "Ryan Cahill Bound and the Broken", "note": "A dragon-rider epic that keeps getting bigger."}, {"s": "Defiance of the Fall", "next": "Books 14–17", "q": "Defiance of the Fall 17", "note": "Book 18 is listed for 2027. It's long, and the later books are slower."}, {"s": "Red Rising", "next": "Books 1–6 out", "q": "Light Bringer Pierce Brown", "note": "Red God (Book 7) has no release date yet. 2027 looks likely."}], "parked": [], "caught": ["He Who Fights with Monsters: Book 13 (Oct 2026)", "The Primal Hunter: Book 15", "Mark of the Fool: Book 10 (finale)", "The Wandering Inn: Book 20 (Nov 2026)", "Cradle: complete", "Dungeon Crawler Carl: Book 8 (Book 9 undated)", "Stormlight: Wind and Truth (Book 5)", "Randidly Ghosthound: Book 14"], "anchors": ["HWFWM", "Stormlight", "Kingkiller", "Primal Hunter", "DCC", "Cradle", "Spellmonger", "Lightbringer"]};
+const VIBES={cozy:"Cozy",funny:"Funny",heartfelt:"Heartfelt",epic:"Big & epic",dark:"Darker"};
+const ST={complete:"Complete",ongoing:"Ongoing",stalled:"Stalled"};
+let st={g:"All",v:"All",l:"All"},saved={},dis={},W=30;
+try{saved=JSON.parse(localStorage.getItem("bt_saved")||"{}");dis=JSON.parse(localStorage.getItem("bt_dis")||"{}");const w=localStorage.getItem("bt_w");if(w)W=+w}catch(e){}
+const persist=()=>{try{localStorage.setItem("bt_saved",JSON.stringify(saved));localStorage.setItem("bt_dis",JSON.stringify(dis));localStorage.setItem("bt_w",W)}catch(e){}};
+const aud=s=>"https://www.audible.com/search?keywords="+encodeURIComponent(s);
+const gr=s=>"https://www.goodreads.com/search?q="+encodeURIComponent(s);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt=n=>n>=1000?(n/1000).toFixed(n>=10000?0:1)+"k":String(n);
+function crowd(r){if(r.r==null)return 50;const raw=Math.max(0,Math.min(100,(r.r-3.9)*100));const conf=Math.min(1,Math.log10(r.c+1)/3);return Math.round(raw*conf+50*(1-conf))}
+function score(r){const wc=W/100;return Math.round(r.fit*(1-wc)+crowd(r)*wc)}
+function tier(s){return s>=82?"S":s>=74?"A":s>=64?"B":"C"}
+const TD={S:"Start here",A:"Strong bets",B:"Good, with a caveat",C:"Situational"};
+function stars(x){if(x==null)return '<span class="note">no ratings yet</span>';const f=Math.round(x*2)/2;let s="";for(let i=1;i<=5;i++)s+=f>=i?"★":f>=i-.5?"⯪":"☆";return `<span class="stars">${s}</span> <b>${x.toFixed(1)}</b>`}
+const genres=["All",...[...new Set(D.recs.flatMap(r=>r.g))].sort()];
+function chips(el,list,key,labels){el.innerHTML=list.map(x=>`<button class="chip${st[key]===x?" on":""}" data-x="${esc(x)}">${esc(labels?labels[x]||x:x)}</button>`).join("");
+ el.querySelectorAll(".chip").forEach(b=>b.onclick=()=>{st[key]=b.dataset.x;render()})}
+function card(r){const s=score(r),t=tier(s),id=r.t,cr=crowd(r);
+ return `<div class="card${dis[id]?" dim":""}" style="--tc:var(--${t})">
+ <div class="badge"><b>${t}</b><small>${s}</small></div>
+ <h3>${esc(r.t)}</h3><div class="by">${esc(r.s)} · ${esc(r.a)}</div>
+ <div class="stats">
+  <div>${stars(r.r)} <span>(${fmt(r.c)})</span></div>
+  <div>Series: <b>${esc(r.books)}</b></div>
+  <div>Book 1: <b>${esc(r.len)}</b></div>
+  <div class="${r.kn?"kn":""}">Narr: <b class="${r.kn?"kn":""}">${esc(r.nar)}</b>${r.kn?` · voice of ${esc(r.kn)}`:""}</div>
+ </div>
+ <div class="bars">
+  <div class="bar"><span>Taste fit</span><i style="--w:${r.fit}%;--bc:var(--amber)"></i><em>${r.fit}</em></div>
+  <div class="bar"><span>Listeners</span><i style="--w:${cr}%;--bc:var(--teal)"></i><em>${cr}</em></div>
+ </div>
+ <div class="like">If you loved <b>${r.like.map(esc).join("</b> or <b>")}</b></div>
+ <p class="why">${esc(r.why)}</p>
+ <details><summary>What it's about</summary><p>${esc(r.prem)}</p></details>
+ <div class="tags"><span class="tag ${r.st==="complete"?"done":r.st==="stalled"?"warn":""}">${ST[r.st]}</span>${r.g.map(g=>`<span class="tag">${esc(g)}</span>`).join("")}<span class="tag">${VIBES[r.vibe]}</span>${r.new?'<span class="tag new">New '+r.y+'</span>':""}${r.p?'<span class="tag push">Audible already suggests</span>':""}</div>
+ <div class="actions"><a class="btn go" href="${aud(r.t+" "+r.a)}" target="_blank" rel="noopener">Audible</a>
+ <a class="btn" href="${gr(r.t+" "+r.a)}" target="_blank" rel="noopener">Goodreads</a>
+ <button class="btn${saved[id]?" on":""}" data-s="${esc(id)}">${saved[id]?"Saved":"Save"}</button>
+ <button class="btn" data-d="${esc(id)}">${dis[id]?"Undo":"Not for me"}</button></div></div>`}
+function wire(root){root.querySelectorAll("[data-s]").forEach(b=>b.onclick=()=>{const k=b.dataset.s;saved[k]?delete saved[k]:saved[k]=1;persist();render()});
+ root.querySelectorAll("[data-d]").forEach(b=>b.onclick=()=>{const k=b.dataset.d;dis[k]?delete dis[k]:dis[k]=1;persist();render()})}
+function render(){
+ document.getElementById("w").value=W;
+ document.getElementById("wv").textContent=W<35?"Mostly taste fit":W>65?"Mostly the crowd":"Balanced ("+(100-W)+"/"+W+")";
+ chips(document.getElementById("anchors"),["All",...D.anchors],"l",Object.fromEntries(D.anchors.map((a,i)=>[a,(i<5?"★ ":"")+a])));
+ chips(document.getElementById("genres"),genres,"g");
+ chips(document.getElementById("vibes"),["All",...Object.keys(VIBES)],"v",{All:"All",...VIBES});
+ const q=document.getElementById("q").value.toLowerCase();
+ const list=D.recs.filter(r=>(st.l==="All"||r.like.includes(st.l))&&(st.g==="All"||r.g.includes(st.g))&&(st.v==="All"||r.vibe===st.v)&&(!fNew.checked||r.new)&&(!fPush.checked||!r.p)&&(!fDone.checked||r.st==="complete")&&(!fDis.checked||!dis[r.t])&&(!q||(r.t+r.s+r.a+r.nar+r.why).toLowerCase().includes(q)))
+  .sort((a,b)=>score(b)-score(a));
+ document.getElementById("count").textContent=list.length+" of "+D.recs.length+" series";
+ const T=document.getElementById("tiers");
+ T.innerHTML=["S","A","B","C"].map(t=>{const l=list.filter(r=>tier(score(r))===t);return l.length?`<div class="tierhead"><span class="big" style="color:var(--${t})">${t}</span><span>${TD[t]} · ${l.length}</span></div><div class="grid">${l.map(card).join("")}</div>`:""}).join("")||'<p class="note">Nothing matches. Loosen a filter.</p>';
+ wire(T);
+ const s=D.recs.filter(r=>saved[r.t]);document.getElementById("savedN").textContent=s.length?"("+s.length+")":"";
+ const sg=document.getElementById("sgrid");sg.innerHTML=s.map(card).join("")||'<p class="note">Tap "Save" on any pick to keep a shortlist here.</p>';wire(sg);
+}
+document.getElementById("ctable").innerHTML=D.catch.map(c=>`<tr><td><b>${esc(c.s)}</b></td><td>${esc(c.next)}<div class="note">${esc(c.note)}</div></td><td><a href="${aud(c.q)}" target="_blank" rel="noopener">Audible →</a></td></tr>`).join("");
+document.getElementById("caught").innerHTML=D.caught.map(c=>`<span>${esc(c)}</span>`).join("");
+["fNew","fPush","fDis","fDone"].forEach(i=>document.getElementById(i).onchange=render);
+document.getElementById("q").oninput=render;
+document.getElementById("w").oninput=e=>{W=+e.target.value;persist();render()};
+document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("on",x===t));["recs","catch","saved"].forEach(v=>document.getElementById("v-"+v).classList.toggle("hidden",v!==t.dataset.v))});
+render();
+</script>
+</body>
+</html>
